@@ -14,17 +14,24 @@ def number_of_ways(n):
     possible_ways = 0
     lastday_abs_ways = 0
     val=['P','A'] # total : 2**n ways
+    if n>0 and n<=4:
+        possible_ways=2**n
+        lastday_abs_ways=(2**n)-1
+        return f"{lastday_abs_ways}/{possible_ways}"
+    elif n<=0:
+        return f"Invalid number of days -> {n} provided"
     for ter in itertools.product(val, repeat=n):
         val_str = ''.join(ter)
-        if 'AAAA' not in val_str:
+        if 'AAAA' not in val_str :
             possible_ways += 1
             if val_str[-1] == 'A':
                 lastday_abs_ways += 1
         count += 1
+    
     print(f"Total ways : {count}")
     print(f"Number of ways to attend classes over {N} days: {possible_ways} & last day absence ways: {lastday_abs_ways}")
     return f"{lastday_abs_ways}/{possible_ways}"
 
-N=5 #Nth day
+N=8 #Nth day
 final=number_of_ways(N)
 print(f"For {N} days: {final}")
