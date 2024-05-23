@@ -20,7 +20,9 @@ Solution Provided:
 
 a. Calculated total number of possible ways to attend the college for 'N' days.
    -> count : (2^N) Represents total number of ways to attend college for N days
+   
 b. Number of ways to attend classes over 'N' days : 2^N -(ways of missing four or more consecutive days).
    -> possible_ways : Represents total number of ways to attend without 4 or more consecutive days absent
+   
 c. Probability that you will miss your graduation ceremony.
    -> lastday_abs_ways : Represent total number of ways to not attend Graduation day even if it's eligible to attend
