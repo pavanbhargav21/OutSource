@@ -14,9 +14,9 @@ def number_of_ways(n):
     possible_ways = 0
     lastday_abs_ways = 0
     val=['P','A'] # total : 2**n ways
-    if n>0 and n<=4:
+    if n>0 and n<4:
         possible_ways=2**n
-        lastday_abs_ways=(2**n)-1
+        lastday_abs_ways=possible_ways-(2**(n-1))
         return f"{lastday_abs_ways}/{possible_ways}"
     elif n<=0:
         return f"Invalid number of days -> {n} provided"
