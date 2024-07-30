@@ -2,22 +2,21 @@
   <v-container>
     <v-card flat>
       <v-card-text>
-        <v-form ref="form">
-          <v-row>
-            <v-col cols="6" md="8">
+        <v-form ref="form" v-model="isFormValid">
+          <v-row align="center">
+            <v-col cols="12" md="6">
               <v-autocomplete
                 v-model="form.workflow_name"
-                :items="filteredWorkflowNames"
+                :items="workflowNames.map(workflow => workflow.workflow_name)"
                 label="Please specify the workflow name"
                 placeholder="Type"
                 prepend-icon="mdi-database-arrow-up"
                 solo
                 dense
                 return-object
-                :allow-custom="true"
                 class="custom-font"
-                :menu-props="{ maxHeight: '400' }"
-                @change="handleWorkflowNameChange"
+                allow-input
+                :rules="[v => !!v || 'Workflow name is required']"
               >
                 <template v-slot:prepend>
                   <span class="custom-label">Workflow Name: </span>
@@ -31,9 +30,8 @@
             </v-col>
           </v-row>
 
-          <v-row>
-            <v-col cols="7">
-              <!-- Workflow URL Field -->
+          <v-row align="center">
+            <v-col cols="12" md="6">
               <v-text-field
                 class="custom-font"
                 v-model="form.url"
@@ -47,7 +45,7 @@
               </v-text-field>
             </v-col>
 
-            <v-col cols="5">
+            <v-col cols="12" md="6">
               <v-select
                 v-model="form.environment"
                 :items="dropdownItems"
@@ -63,16 +61,13 @@
             </v-col>
           </v-row>
 
-          <v-row>
-            <v-col cols="6">
-              <!-- Window Titles Field -->
+          <v-row align="center">
+            <v-col cols="12" md="6">
               <v-text-field
                 class="custom-font"
                 v-model="form.titles"
                 label="Page titles (Comma Separated)"
                 prepend-icon="mdi-page-next"
-                style="width: 100%;"
-                solo
                 :rules="[v => !!v || 'Titles are required']"
               >
                 <template v-slot:prepend>
@@ -82,39 +77,13 @@
             </v-col>
           </v-row>
 
-          <v-btn color="primary" @click="submitForm">Submit</v-btn>
+          <div class="text-center">
+            <v-btn color="primary" @click="submitForm" :disabled="!isFormValid">Submit</v-btn>
+          </div>
         </v-form>
 
-        <v-dialog v-model="dialog" max-width="1000">
-          <v-card>
-            <v-card-title>
-              <span class="headline">Workflow Master</span>
-            </v-card-title>
-            <v-card-text>
-              <v-form ref="newWorkflowForm">
-                <v-text-field
-                  v-model="newWorkflow.workflow_name"
-                  label="Workflow name"
-                  :rules="[v => !!v || 'Workflow Name is required']"
-                  required
-                  class="custom-font"
-                ></v-text-field>
-                <v-text-field
-                  v-model="newWorkflow.system"
-                  label="System name"
-                  :rules="[v => !!v || 'System Name is required']"
-                  required
-                  class="custom-font"
-                ></v-text-field>
-              </v-form>
-            </v-card-text>
-            <v-card-actions>
-              <v-btn color="success" @click="submitWorkflow">Save</v-btn>
-              <v-spacer></v-spacer>
-              <v-btn color="primary" @click="dialog = false">Close</v-btn>
-            </v-card-actions>
-          </v-card>
-        </v-dialog>
+        <!-- Dialog content... -->
+
       </v-card-text>
     </v-card>
   </v-container>
@@ -127,6 +96,7 @@ import EventBus from '../eventBus';
 export default {
   data() {
     return {
+      isFormValid: false,
       form: {
         workflow_name: '',
         url: '',
@@ -142,84 +112,16 @@ export default {
       dialog: false
     };
   },
-  computed: {
-    filteredWorkflowNames() {
-      return this.workflowNames.filter(workflow =>
-        workflow.workflow_name.toLowerCase().includes(this.form.workflow_name.toLowerCase())
-      );
-    }
-  },
   created() {
     this.fetchWorkflowNames();
   },
   methods: {
-    async submitForm() {
-      const isFormValid = this.$refs.form.validate();
-      if (isFormValid) {
-        try {
-          await axios.post('/api/whitelists/', this.form);
-          alert('Form submitted successfully');
-          this.resetForm();
-          EventBus.$emit('workflowconfig-added');
-        } catch (error) {
-          console.error(error);
-        }
-      }
-    },
-    async submitWorkflow() {
-      const isFormValid = this.$refs.newWorkflowForm.validate();
-      if (isFormValid) {
-        try {
-          await axios.post('/api/workflows/', this.newWorkflow);
-          this.dialog = false;
-          alert('Workflow added successfully');
-          this.resetNewWorkflowForm();
-          this.fetchWorkflowNames();
-        } catch (error) {
-          console.error(error);
-        }
-      }
-    },
-    openDialog() {
-      this.dialog = true;
-    },
-    resetForm() {
-      this.form = {
-        workflow_name: '',
-        url: '',
-        environment: '',
-        titles: '',
-      };
-      this.$refs.form.reset();
-    },
-    resetNewWorkflowForm() {
-      this.newWorkflow = {
-        workflow_name: '',
-        system: '',
-      };
-      this.$refs.newWorkflowForm.reset();
-    },
-    async fetchWorkflowNames() {
-      try {
-        const response = await axios.get('/api/workflows');
-        this.workflowNames = response.data.map(workflow => ({
-          workflow_name: workflow.workflow_name,
-          id: workflow.id
-        }));
-      } catch (error) {
-        console.error(error);
-      }
-    },
-    handleWorkflowNameChange(value) {
-      if (typeof value === 'string' && !this.workflowNames.some(workflow => workflow.workflow_name === value)) {
-        this.form.workflow_name = value; // This sets the new value in the form
-      }
-    }
+    // ... existing methods ...
   }
 };
 </script>
 
-<style>
+<style scoped>
 .custom-font {
   font-family: 'Gill Sans', sans-serif;
   font-size: 14px;
@@ -235,10 +137,24 @@ export default {
   font-size: 40px;
 }
 
-.v-autocomplete .v-input__control .v-select__selections,
-.v-text-field .v-input__control .v-text-field__input,
-.v-select .v-input__control .v-select__selections {
-  font-family: 'Gill Sans', sans-serif;
-  font-size: 14px;
+.text-center {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.v-text-field,
+.v-select,
+.v-autocomplete {
+  width: 100%;
+}
+</style>
+
+<style>
+.v-select__selection,
+.v-select__selection-text,
+.v-list-item__title {
+  font-family: 'Gill Sans', sans-serif !important;
+  font-size: 14px !important;
 }
 </style>
