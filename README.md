@@ -1,29 +1,212 @@
-## Question
+<template>
+  <v-container>    
+    <v-card flat>
+      <v-card-text>
+        <v-form ref="form">
+          <v-row>
+            <v-col cols="6" md="8">
+              <v-autocomplete
+                v-model="form.workflow_name"
+                :items="workflowNames.map(workflow => workflow.workflow_name)"
+                label="Please specify the workflow name"
+                placeholder="Type"
+                prepend-icon="mdi-database-arrow-up"
+                solo
+                dense
+                return-object
+                :rules="[v => !!v || 'Workflow name is required']"
+                class="custom-font"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Workflow Name: </span>
+                </template>
+                <template v-slot:append>
+                  <v-btn icon @click="openDialog" color="white">
+                    <v-icon class="font-size-40" color="black">mdi-plus-circle</v-icon>
+                  </v-btn>
+                </template>
+              </v-autocomplete>
+            </v-col>
+          </v-row>
 
-In a university, your attendance determines whether you will be
-allowed to attend your graduation ceremony.
-You are not allowed to miss classes for four or more consecutive days.
-Your graduation ceremony is on the last day of the academic year,
-which is the Nth day.
+          <v-row>
+            <v-col cols="7">
+              <v-text-field
+                class="spaced-field custom-font"
+                v-model="form.url"
+                label="Please specify the workflow URL"
+                prepend-icon="mdi-link-variant"
+                dense
+                :rules="[v => !!v || 'URL is required']"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Workflow URL: </span>
+                </template>
+              </v-text-field>
+            </v-col>
 
-Your task is to determine the following:
-1. The number of ways to attend classes over N days.
-2. The probability that you will miss your graduation ceremony.
+            <v-col cols="5">
+              <v-select
+                v-model="form.environment"
+                :items="dropdownItems"
+                label="Select an option"
+                prepend-icon="mdi-rotate-orbit"
+                dense
+                :rules="[v => !!v || 'Environment is required']"
+                class="custom-font"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Environment:</span>
+                </template>
+              </v-select>
+            </v-col>
+          </v-row>
 
-Represent the solution in the string format as "Answer of (2) / Answer
-of (1)", don't actually divide or reduce the fraction to decimal
+          <v-row>
+            <v-col cols="6">
+              <v-text-field 
+                v-model="form.titles"
+                label="Page titles (Comma Separated)"
+                prepend-icon="mdi-page-next"
+                dense
+                :rules="[v => !!v || 'Titles are required']"
+                class="custom-font"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Window Titles: </span>
+                </template>
+              </v-text-field>
+            </v-col>
+          </v-row>
 
-Test cases:
-for 5 days: 14/29
-for 10 days: 372/773
+          <v-btn color="primary" @click="submitForm">Submit</v-btn>
+        </v-form>
 
-Solution Provided:
+        <v-dialog v-model="dialog" max-width="1000">
+          <v-card>
+            <v-card-title>
+              <span class="headline">Workflow Master</span>
+            </v-card-title>
+            <v-card-text>
+              <v-form ref="newWorkflowForm">
+                <v-text-field v-model="newWorkflow.workflow_name" label="Workflow name" :rules="[v => !!v || 'Workflow Name is required']" dense required class="custom-font"></v-text-field>
+                <v-text-field v-model="newWorkflow.system" label="System name" :rules="[v => !!v || 'System Name is required']" dense required class="custom-font"></v-text-field>
+              </v-form>
+            </v-card-text>
+            <v-card-actions>
+              <v-btn color="success" @click="submitWorkflow">Save</v-btn>
+              <v-spacer></v-spacer>
+              <v-btn color="primary" @click="dialog = false">Close</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
+      </v-card-text>
+    </v-card>
+  </v-container>
+</template>
 
-a. Calculated total number of possible ways to attend the college for 'N' days.
-   -> count : (2^N) Represents total number of ways to attend college for N days
-   
-b. Number of ways to attend classes over 'N' days : 2^N -(ways of missing four or more consecutive days).
-   -> possible_ways : Represents total number of ways to attend without 4 or more consecutive days absent
-   
-c. Probability that you will miss your graduation ceremony.
-   -> lastday_abs_ways : Represent total number of ways to not attend Graduation day even if it's eligible to attend
+<script>
+import axios from '../axios';
+import EventBus from '../eventBus';
+
+export default {
+  data() {
+    return {
+      form: {
+        workflow_name: '',
+        url: '',
+        environment: '',
+        titles: '',
+      },
+      workflowNames: [],
+      newWorkflow: {
+        workflow_name: '',
+        system: '',
+      },
+      dropdownItems: ['UAT', 'Testing', 'Production'],
+      dialog: false
+    };
+  },
+  created() {
+    this.fetchWorkflowNames();
+  },
+  methods: {
+    async submitForm() {
+      const isFormValid = this.$refs.form.validate();
+      if (isFormValid) {
+        try {
+          await axios.post('/api/whitelists/', this.form);
+          alert('Form submitted successfully');
+          this.resetForm();
+          EventBus.$emit('workflowconfig-added');
+        } catch (error) {
+          console.error(error);
+        }
+      }
+    },
+    async submitWorkflow() {
+      const isFormValid = this.$refs.newWorkflowForm.validate();
+      if (isFormValid) {
+        try {
+          await axios.post('/api/workflows/', this.newWorkflow);
+          this.dialog = false;
+          alert('Workflow added successfully');
+          this.resetNewWorkflowForm();
+          this.fetchWorkflowNames();
+        } catch (error) {
+          console.error(error);
+        }
+      }
+    },
+    openDialog() {
+      this.dialog = true;
+    },
+    resetForm() {
+      this.form = {
+        workflow_name: '',
+        url: '',
+        environment: '',
+        titles: '',
+      };
+      this.$refs.form.reset();
+    },
+    resetNewWorkflowForm() {
+      this.newWorkflow = {
+        workflow_name: '',
+        system: '',
+      };
+      this.$refs.newWorkflowForm.reset();
+    },
+    async fetchWorkflowNames() {
+      try {
+        const response = await axios.get('/api/workflows');
+        this.workflowNames = response.data.map(workflow => ({
+          workflow_name: workflow.workflow_name,
+          id: workflow.id
+        }));
+      } catch (error) {
+        console.error(error);
+      }
+    },
+  }
+};
+</script>
+
+<style scoped>
+.spaced-field {
+  margin-bottom: 10px;
+}
+
+.custom-font {
+  font-family: 'Gill Sans';
+}
+
+.custom-label {
+  font-family: 'Gill Sans';
+  font-weight: bold;
+}
+
+.font-size-40 {
+  font-size: 40px;
+}
+</style>
