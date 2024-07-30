@@ -1,5 +1,5 @@
 <template>
-  <v-container>    
+  <v-container>
     <v-card flat>
       <v-card-text>
         <v-form ref="form">
@@ -14,10 +14,8 @@
                 solo
                 dense
                 return-object
-                :rules="[v => !!v || 'Workflow name is required']"
-                class="custom-font"
                 :allow-custom
-                @input="handleCustomInput"
+                class="custom-font"
               >
                 <template v-slot:prepend>
                   <span class="custom-label">Workflow Name: </span>
@@ -31,12 +29,90 @@
             </v-col>
           </v-row>
 
-          <!-- Other form fields remain unchanged -->
+          <v-row>
+            <v-col cols="7">
+              <!-- Workflow URL Field -->
+              <v-text-field
+                class="custom-font"
+                v-model="form.url"
+                label="Please specify the workflow URL"
+                prepend-icon="mdi-link-variant"
+                :rules="[v => !!v || 'URL is required']"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Workflow URL: </span>
+                </template>
+              </v-text-field>
+            </v-col>
+
+            <v-col cols="5">
+              <v-select
+                v-model="form.environment"
+                :items="dropdownItems"
+                label="Select an option"
+                prepend-icon="mdi-rotate-orbit"
+                :rules="[v => !!v || 'Environment is required']"
+                class="custom-font"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Environment: </span>
+                </template>
+              </v-select>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="6">
+              <!-- Window Titles Field -->
+              <v-text-field
+                class="custom-font"
+                v-model="form.titles"
+                label="Page titles (Comma Separated)"
+                prepend-icon="mdi-page-next"
+                style="width: 100%;"
+                solo
+                :rules="[v => !!v || 'Titles are required']"
+              >
+                <template v-slot:prepend>
+                  <span class="custom-label">Window Titles: </span>
+                </template>
+              </v-text-field>
+            </v-col>
+          </v-row>
 
           <v-btn color="primary" @click="submitForm">Submit</v-btn>
         </v-form>
 
-        <!-- Dialog code remains unchanged -->
+        <v-dialog v-model="dialog" max-width="1000">
+          <v-card>
+            <v-card-title>
+              <span class="headline">Workflow Master</span>
+            </v-card-title>
+            <v-card-text>
+              <v-form ref="newWorkflowForm">
+                <v-text-field
+                  v-model="newWorkflow.workflow_name"
+                  label="Workflow name"
+                  :rules="[v => !!v || 'Workflow Name is required']"
+                  required
+                  class="custom-font"
+                ></v-text-field>
+                <v-text-field
+                  v-model="newWorkflow.system"
+                  label="System name"
+                  :rules="[v => !!v || 'System Name is required']"
+                  required
+                  class="custom-font"
+                ></v-text-field>
+              </v-form>
+            </v-card-text>
+            <v-card-actions>
+              <v-btn color="success" @click="submitWorkflow">Save</v-btn>
+              <v-spacer></v-spacer>
+              <v-btn color="primary" @click="dialog = false">Close</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </v-card-text>
     </v-card>
   </v-container>
@@ -72,15 +148,6 @@ export default {
       const isFormValid = this.$refs.form.validate();
       if (isFormValid) {
         try {
-          // Ensure the workflow name is saved if it's a new custom entry
-          if (typeof this.form.workflow_name === 'string') {
-            const isExisting = this.workflowNames.some(workflow => workflow.workflow_name === this.form.workflow_name);
-            if (!isExisting) {
-              await axios.post('/api/workflows/', { workflow_name: this.form.workflow_name });
-              // Refresh the dropdown list
-              this.fetchWorkflowNames();
-            }
-          }
           await axios.post('/api/whitelists/', this.form);
           alert('Form submitted successfully');
           this.resetForm();
@@ -89,10 +156,6 @@ export default {
           console.error(error);
         }
       }
-    },
-    handleCustomInput(value) {
-      // Handle custom input here if needed
-      this.form.workflow_name = value;
     },
     async submitWorkflow() {
       const isFormValid = this.$refs.newWorkflowForm.validate();
@@ -141,3 +204,25 @@ export default {
   }
 };
 </script>
+
+<style>
+.custom-font {
+  font-family: 'Gill Sans', sans-serif;
+  font-size: 14px;
+}
+
+.custom-label {
+  font-family: 'Gill Sans', sans-serif;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.font-size-40 {
+  font-size: 40px;
+}
+
+.v-autocomplete .v-input__control .v-select__selections {
+  font-family: 'Gill Sans', sans-serif;
+  font-size: 14px;
+}
+</style>
