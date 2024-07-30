@@ -15,7 +15,9 @@
                 dense
                 return-object
                 class="custom-font"
-                :allow-custom
+                :allow-custom="true"
+                :menu-props="{ maxHeight: '400' }"
+                @change="handleWorkflowNameChange"
               >
                 <template v-slot:prepend>
                   <span class="custom-label">Workflow Name: </span>
@@ -201,6 +203,12 @@ export default {
         console.error(error);
       }
     },
+    handleWorkflowNameChange(value) {
+      if (typeof value === 'string' && !this.workflowNames.some(workflow => workflow.workflow_name === value)) {
+        // Optionally handle the new value here, if needed
+        this.form.workflow_name = value; // This sets the new value in the form
+      }
+    }
   }
 };
 </script>
