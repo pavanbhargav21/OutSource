@@ -14,8 +14,8 @@
                 solo
                 dense
                 return-object
-                :allow-custom
                 class="custom-font"
+                :allow-custom
               >
                 <template v-slot:prepend>
                   <span class="custom-label">Workflow Name: </span>
@@ -221,7 +221,9 @@ export default {
   font-size: 40px;
 }
 
-.v-autocomplete .v-input__control .v-select__selections {
+.v-autocomplete .v-input__control .v-select__selections,
+.v-text-field .v-input__control .v-text-field__input,
+.v-select .v-input__control .v-select__selections {
   font-family: 'Gill Sans', sans-serif;
   font-size: 14px;
 }
