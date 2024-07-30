@@ -7,15 +7,15 @@
             <v-col cols="6" md="8">
               <v-autocomplete
                 v-model="form.workflow_name"
-                :items="workflowNames.map(workflow => workflow.workflow_name)"
+                :items="filteredWorkflowNames"
                 label="Please specify the workflow name"
                 placeholder="Type"
                 prepend-icon="mdi-database-arrow-up"
                 solo
                 dense
                 return-object
-                class="custom-font"
                 :allow-custom="true"
+                class="custom-font"
                 :menu-props="{ maxHeight: '400' }"
                 @change="handleWorkflowNameChange"
               >
@@ -142,6 +142,13 @@ export default {
       dialog: false
     };
   },
+  computed: {
+    filteredWorkflowNames() {
+      return this.workflowNames.filter(workflow =>
+        workflow.workflow_name.toLowerCase().includes(this.form.workflow_name.toLowerCase())
+      );
+    }
+  },
   created() {
     this.fetchWorkflowNames();
   },
@@ -205,7 +212,6 @@ export default {
     },
     handleWorkflowNameChange(value) {
       if (typeof value === 'string' && !this.workflowNames.some(workflow => workflow.workflow_name === value)) {
-        // Optionally handle the new value here, if needed
         this.form.workflow_name = value; // This sets the new value in the form
       }
     }
