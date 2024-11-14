@@ -441,3 +441,112 @@ ControlType: Window, Name: Untitled - Notepad, Class: Notepad
 
 This output helps you understand the hierarchy and properties of each control, which you can then use to identify and interact with specific elements based on ControlType, Name, or ClassName.
 
+
+
+
+method-5:
+
+Sure, here’s an example code snippet that follows this approach using pyautogui to capture a small area around the mouse click and pytesseract for OCR to detect if a particular button (e.g., an “OK” button) is in that region.
+
+This code assumes you’re checking for a specific word, like “OK,” on the button to determine if it’s your endpoint. If the word is detected, it will then trigger a full-screen capture.
+
+Code Example
+
+import pyautogui
+import pytesseract
+from PIL import Image
+import time
+
+# Configure pytesseract path if needed
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+def capture_and_check_button(click_x, click_y, region_size=(100, 50)):
+    """
+    Captures a small region around the click coordinates and checks for the target text.
+    :param click_x: X-coordinate of the click.
+    :param click_y: Y-coordinate of the click.
+    :param region_size: Size of the region to capture around the click (width, height).
+    :return: True if the target text is found, False otherwise.
+    """
+    # Define the region to capture around the click (x, y, width, height)
+    region = (click_x - region_size[0] // 2, click_y - region_size[1] // 2, region_size[0], region_size[1])
+    
+    # Capture the region
+    small_capture = pyautogui.screenshot(region=region)
+    
+    # Use OCR to read text from the captured region
+    text = pytesseract.image_to_string(small_capture)
+    print(f"OCR Text Detected: {text.strip()}")
+    
+    # Check if the target text (e.g., "OK") is present in the text
+    return "OK" in text.strip()
+
+def monitor_clicks(region_size=(100, 50)):
+    """
+    Monitors mouse clicks and captures the full screen if the target button is clicked.
+    :param region_size: Size of the region to capture around each click.
+    """
+    print("Monitoring clicks... Press Ctrl+C to stop.")
+    
+    try:
+        while True:
+            # Wait for a mouse click
+            if pyautogui.mouseDown(button="left"):
+                # Get mouse position
+                click_x, click_y = pyautogui.position()
+                
+                # Check if the small capture contains the endpoint button (e.g., "OK")
+                if capture_and_check_button(click_x, click_y, region_size):
+                    print("Endpoint button clicked! Capturing the full screen...")
+                    
+                    # Capture full screen if the endpoint button was clicked
+                    full_screenshot = pyautogui.screenshot()
+                    full_screenshot.save("full_screenshot.png")
+                    print("Full screen captured.")
+                
+                # Allow a small delay to avoid multiple triggers from a single click
+                time.sleep(0.5)
+                
+    except KeyboardInterrupt:
+        print("Click monitoring stopped.")
+
+# Start monitoring clicks
+monitor_clicks()
+
+Explanation
+
+1. capture_and_check_button():
+
+This function captures a small region around the click location (specified by click_x, click_y).
+
+It uses OCR to read any text in the captured image.
+
+If the OCR detects the word “OK” in the text, it returns True to indicate that the endpoint button is clicked.
+
+
+
+2. monitor_clicks():
+
+Continuously monitors for left mouse clicks.
+
+For each click, it retrieves the mouse position and passes it to capture_and_check_button() to check for the endpoint button.
+
+If capture_and_check_button() returns True, it captures the full screen and saves it as “full_screenshot.png”.
+
+
+
+
+How to Adjust for Performance
+
+Adjust region_size: Try different values to find the smallest region that reliably detects your button.
+
+OCR Optimization: Since pytesseract can be slow, reduce OCR workload by:
+
+Setting a specific OCR language or whitelist.
+
+Considering alternatives like OpenCV template matching if button appearance is consistent.
+
+
+
+This setup should process quickly for small regions, minimizing time compared to full-screen processing at each click.
+
