@@ -1,6 +1,216 @@
 
 import uiautomation as auto
 import win32gui
+import time
+from datetime import datetime
+import os
+from PIL import ImageGrab
+import logging
+
+class ClaudeMonitor:
+    def __init__(self):
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            filename='claude_monitor.log'
+        )
+        
+        # Create screenshots directory
+        self.screenshot_dir = "claude_screenshots"
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        
+        # Initialize monitoring flag
+        self.monitoring = True
+        
+        # Configure window and button settings
+        self.window_title = "Claude"
+        self.button_name = "OK"
+        
+        # Store last button state
+        self.last_button_state = None
+        
+        logging.info("Claude Monitor initialized")
+
+    def is_claude_window(self, window_title):
+        """Check if the window is Claude"""
+        return self.window_title.lower() in window_title.lower()
+
+    def capture_screenshot(self, window_handle):
+        """Capture screenshot of the window"""
+        try:
+            # Get window coordinates
+            rect = win32gui.GetWindowRect(window_handle)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.screenshot_dir}/claude_{timestamp}.png"
+            
+            # Capture and save screenshot
+            screenshot = ImageGrab.grab(bbox=rect)
+            screenshot.save(filename)
+            
+            logging.info(f"Screenshot saved: {filename}")
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Screenshot error: {e}")
+            return None
+
+    def find_ok_button(self, window_handle):
+        """Find OK button using multiple methods"""
+        try:
+            # Get window control
+            window = auto.ControlFromHandle(window_handle)
+            if not window:
+                return None
+            
+            # Method 1: Direct search
+            try:
+                button = window.ButtonControl(Name=self.button_name)
+                if button.Exists():
+                    return button
+            except:
+                pass
+            
+            # Method 2: Search all descendants
+            try:
+                buttons = window.GetChildren()
+                for control in buttons:
+                    try:
+                        if isinstance(control, auto.ButtonControl) and \
+                           self.button_name.lower() in control.Name.lower():
+                            return control
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Method 3: Deep search
+            try:
+                buttons = window.FindAll(auto.ButtonControl)
+                for button in buttons:
+                    try:
+                        if self.button_name.lower() in button.Name.lower():
+                            return button
+                    except:
+                        continue
+            except:
+                pass
+                
+            return None
+            
+        except Exception as e:
+            logging.error(f"Button search error: {e}")
+            return None
+
+    def is_button_clicked(self, button):
+        """Check if button was clicked using multiple methods"""
+        try:
+            # Method 1: Check invoke pattern
+            try:
+                invoke_pattern = button.GetInvokePattern()
+                if invoke_pattern:
+                    current_state = button.CurrentIsInvoked
+                    if current_state != self.last_button_state:
+                        self.last_button_state = current_state
+                        return current_state
+            except:
+                pass
+
+            # Method 2: Check selection pattern
+            try:
+                selection_pattern = button.GetSelectionPattern()
+                if selection_pattern:
+                    return selection_pattern.IsSelected
+            except:
+                pass
+
+            # Method 3: Check toggle pattern
+            try:
+                toggle_pattern = button.GetTogglePattern()
+                if toggle_pattern:
+                    return toggle_pattern.ToggleState == auto.ToggleState.On
+            except:
+                pass
+
+            # Method 4: Check button state
+            try:
+                current_state = button.GetLegacyIAccessiblePattern().CurrentState
+                was_clicked = bool(current_state & auto.State.Pressed)
+                return was_clicked
+            except:
+                pass
+
+            return False
+
+        except Exception as e:
+            logging.error(f"Button click check error: {e}")
+            return False
+
+    def monitor_claude(self):
+        """Main monitoring loop"""
+        print("Starting Claude Monitor... Press Ctrl+C to stop")
+        logging.info("Monitoring started")
+        
+        last_capture_time = 0
+        capture_cooldown = 1  # Prevent double captures
+        
+        try:
+            while self.monitoring:
+                try:
+                    # Get active window
+                    active_window = win32gui.GetForegroundWindow()
+                    window_title = win32gui.GetWindowText(active_window)
+                    
+                    # Check if it's Claude window
+                    if self.is_claude_window(window_title):
+                        # Find OK button
+                        ok_button = self.find_ok_button(active_window)
+                        
+                        if ok_button and ok_button.Exists():
+                            # Check if button was clicked
+                            current_time = time.time()
+                            
+                            if self.is_button_clicked(ok_button):
+                                # Prevent duplicate captures
+                                if current_time - last_capture_time > capture_cooldown:
+                                    print("OK button clicked - Capturing screenshot")
+                                    logging.info("OK button clicked - Capturing screenshot")
+                                    self.capture_screenshot(active_window)
+                                    last_capture_time = current_time
+                    
+                    # Small sleep to prevent high CPU usage
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    logging.error(f"Monitoring error: {e}")
+                    continue
+                    
+        except KeyboardInterrupt:
+            print("\nStopping monitor...")
+        finally:
+            self.monitoring = False
+            logging.info("Monitoring stopped")
+
+if __name__ == "__main__":
+    # Create and start the monitor
+    monitor = ClaudeMonitor()
+    
+    try:
+        monitor.monitor_claude()
+    except Exception as e:
+        logging.error(f"Critical error: {e}")
+        print(f"Error: {e}")
+    finally:
+        print("Monitor stopped")
+
+
+
+
+
+import uiautomation as auto
+import win32gui
 import win32con
 import time
 from datetime import datetime
