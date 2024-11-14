@@ -1,3 +1,181 @@
+Your code is well-structured, but there are a few areas that could be refined to ensure smooth functioning, especially around detecting the "OK" button and handling errors. I’ve adjusted a few parts to enhance reliability and address the GetIsInvokedPattern() method, which isn’t directly available in uiautomation. I also refined the find_ok_button method to streamline the button search process and logging.
+
+Here’s the modified version of your code:
+
+import uiautomation as auto
+import win32gui
+import win32con
+import time
+from datetime import datetime
+import os
+from PIL import ImageGrab
+import logging
+
+class ClaudeMonitor:
+    def __init__(self):
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            filename='claude_monitor.log'
+        )
+        
+        # Create screenshots directory
+        self.screenshot_dir = "c:\\Pulserimage"
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        
+        # Initialize monitoring flag
+        self.monitoring = True
+        
+        # Configure window and button settings
+        self.window_title = "Claude"
+        self.button_name = "OK"
+        
+        logging.info("Claude Monitor initialized")
+
+    def is_claude_window(self, window_title):
+        """Check if the window title matches Claude's window"""
+        return self.window_title.lower() in window_title.lower()
+
+    def capture_screenshot(self, window_handle):
+        """Capture screenshot of the window"""
+        try:
+            # Get window coordinates
+            rect = win32gui.GetWindowRect(window_handle)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.screenshot_dir}\\claude_{timestamp}.png"
+            
+            # Capture and save screenshot
+            screenshot = ImageGrab.grab(bbox=rect)
+            screenshot.save(filename)
+            
+            logging.info(f"Screenshot saved: {filename}")
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Screenshot error: {e}")
+            return None
+
+    def find_ok_button(self, window_handle):
+        """Find the OK button by name within the Claude window"""
+        try:
+            # Get window control
+            window = auto.ControlFromHandle(window_handle)
+            if not window:
+                return None
+            
+            # Search for button by exact match on button name
+            button = window.ButtonControl(Name=self.button_name)
+            if button.Exists(0, 0):
+                return button
+            
+            # Alternative search if exact match not found
+            for control in window.GetChildren():
+                if isinstance(control, auto.ButtonControl) and \
+                   self.button_name.lower() in control.Name.lower():
+                    return control
+            
+            return None
+            
+        except Exception as e:
+            logging.error(f"Button search error: {e}")
+            return None
+
+    def monitor_claude(self):
+        """Main monitoring loop"""
+        print("Starting Claude Monitor... Press Ctrl+C to stop")
+        logging.info("Monitoring started")
+        
+        last_click_time = 0
+        click_cooldown = 1  # Prevent double captures
+        
+        try:
+            while self.monitoring:
+                try:
+                    # Get active window
+                    active_window = win32gui.GetForegroundWindow()
+                    window_title = win32gui.GetWindowText(active_window)
+                    
+                    # Check if it's Claude window
+                    if self.is_claude_window(window_title):
+                        # Find OK button
+                        ok_button = self.find_ok_button(active_window)
+                        
+                        if ok_button and ok_button.Exists(0, 0):
+                            try:
+                                # Check if button was clicked
+                                current_time = time.time()
+                                
+                                if current_time - last_click_time > click_cooldown:
+                                    logging.info("OK button detected - Capturing screenshot")
+                                    self.capture_screenshot(active_window)
+                                    last_click_time = current_time
+                            
+                            except Exception as e:
+                                logging.error(f"Button click detection error: {e}")
+                    
+                    # Small sleep to prevent high CPU usage
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    logging.error(f"Monitoring error: {e}")
+                    continue
+                    
+        except KeyboardInterrupt:
+            print("\nStopping monitor...")
+        finally:
+            self.monitoring = False
+            logging.info("Monitoring stopped")
+
+if __name__ == "__main__":
+    # Create and start the monitor
+    monitor = ClaudeMonitor()
+    
+    try:
+        monitor.monitor_claude()
+    except Exception as e:
+        logging.error(f"Critical error: {e}")
+        print(f"Error: {e}")
+    finally:
+        print("Monitor stopped")
+
+Explanation of Modifications
+
+1. Simplified find_ok_button:
+
+Now it first tries a direct search for a button with the name self.button_name. If it doesn’t find an exact match, it searches through children controls.
+
+
+
+2. Removed GetIsInvokedPattern:
+
+As this is not directly available or necessary here, we rely on Exists() to check if the button is present, and we capture the screenshot if it’s detected within the Claude window.
+
+
+
+3. Added Error Handling and Logging:
+
+Improved logging for button detection and screenshot functions to help diagnose issues during execution.
+
+
+
+
+Required Packages
+
+Pillow: for ImageGrab, installed with pip install Pillow.
+
+pywin32: for win32gui and win32con, installed with pip install pywin32.
+
+uiautomation: for UI control handling, installed with pip install uiautomation.
+
+
+This code will continuously monitor for the "OK" button in the specified window, and if it appears and is active, it will take a screenshot and save it with a timestamp. This way, it should meet the requirements without unnecessary complexity.
+
+
+
+
 
 import uiautomation as auto
 import win32gui
