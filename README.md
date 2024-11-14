@@ -256,3 +256,119 @@ Scalability: Easily adaptable if you need to monitor other UI elements or applic
 
 This approach avoids relying on visual matching and instead leverages UI properties, making it more robust for different types of applications.
 
+
+
+method-3:
+
+To streamline this process and avoid frequent image captures, you can use a more direct approach that combines system hooks and lightweight UI element checks. By using pyautogui to track specific clicks and uiautomation to verify elements only when a click occurs, you can avoid excessive image processing and reduce processing time. Here’s an optimized solution that focuses on capturing a screenshot only when the user clicks on the desired endpoint button (e.g., “OK”).
+
+Optimized Solution Outline
+
+1. Initial and Final Image Capture Only: Capture an initial image when the target window opens and a final image when the workflow endpoint is clicked (e.g., the “OK” button).
+
+
+2. Direct Click Monitoring with pyautogui: Track clicks and verify the active window title to ensure you only check for clicks within relevant applications.
+
+
+3. UI Automation for Click Validation: Instead of image processing for each click, use uiautomation to directly validate whether a click occurred on a specific button (like “OK”) within the target window.
+
+
+
+Implementation Steps
+
+This example captures a screenshot only when the “OK” button is clicked, marking the end of the workflow.
+
+from pynput import mouse
+import pyautogui
+import time
+import datetime
+from PIL import ImageGrab
+import uiautomation as automation
+from ctypes import windll
+import ctypes
+
+# Target application and button configurations
+TARGET_APPS = ["OWS", "AWS", "JWS"]
+TARGET_BUTTON_NAMES = ["OK", "Submit", "Done"]
+
+# Track start and end times
+start_time = None
+
+# Helper to get the current active window title
+def get_active_window_title():
+    hwnd = windll.user32.GetForegroundWindow()
+    length = windll.user32.GetWindowTextLengthW(hwnd)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value
+
+# Capture screenshot function
+def capture_screenshot():
+    filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    screenshot = ImageGrab.grab()
+    screenshot.save(filename)
+    print(f"Screenshot saved as {filename}")
+
+# Function to verify button click
+def check_if_button_clicked(x, y):
+    control = automation.Control(x=x, y=y)
+    if control.ControlTypeName == 'Button' and control.Name in TARGET_BUTTON_NAMES:
+        return control.Name
+    return None
+
+# Event handler for mouse clicks
+def on_click(x, y, button, pressed):
+    global start_time
+    if pressed:
+        active_window = get_active_window_title()
+
+        # Check if active window is one of the target applications
+        if any(app in active_window for app in TARGET_APPS):
+            # Track start time on first detected click in target app
+            if start_time is None:
+                start_time = datetime.datetime.now()
+                print("Start time recorded:", start_time)
+
+            # Check if the clicked element is a target button
+            clicked_button = check_if_button_clicked(x, y)
+            if clicked_button:
+                print(f"'{clicked_button}' button clicked at ({x}, {y})")
+
+                # Capture end time and screenshot if the endpoint is clicked
+                if clicked_button in TARGET_BUTTON_NAMES:
+                    end_time = datetime.datetime.now()
+                    duration = (end_time - start_time).total_seconds()
+                    print(f"End of workflow detected. Duration: {duration} seconds.")
+                    capture_screenshot()  # Capture final screenshot
+                    start_time = None  # Reset for next workflow
+
+# Start listening for mouse events
+with mouse.Listener(on_click=on_click) as listener:
+    listener.join()
+
+Explanation of the Optimized Solution
+
+1. Window Title Check: Each click event first checks the active window title to ensure clicks are within the target application. This avoids unnecessary checks outside the relevant applications.
+
+
+2. Direct Click Validation: When a click is detected, the code uses uiautomation to verify if it’s on a button matching the endpoint criteria (like "OK"). This avoids image comparisons, reducing processing time to milliseconds.
+
+
+3. Minimal Screenshot Capture: Screenshots are only taken at the start (optional) and end of the workflow, ensuring no redundant image captures during the workflow.
+
+
+4. Timing Control: The start_time and end_time are recorded only when the relevant window is active, and the workflow endpoint button is clicked, allowing for precise tracking of workflow duration.
+
+
+
+Performance Considerations
+
+Efficiency: By reducing image captures and relying on UI element checks only when needed, this method avoids the delays associated with frequent image processing.
+
+Accuracy: Using uiautomation ensures that you’re validating clicks on actual UI elements (like buttons) rather than relying on pixel-based image matching.
+
+Responsiveness: This approach minimizes overhead, so the response time should be close to milliseconds for each click check.
+
+
+This setup should meet the requirement for fast, efficient tracking without the heavy processing of frequent image analysis.
+
