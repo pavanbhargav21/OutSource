@@ -1,4 +1,31 @@
 
+import pyautogui
+import time
+
+# Move the mouse to the top-left corner of the first monitor (laptop screen)
+pyautogui.moveTo(100, 100)
+print("Moved mouse to first monitor")
+
+# Wait for 2 seconds to observe the mouse
+time.sleep(2)
+
+# Move the mouse to the top-left corner of the second monitor (TV)
+# Adjust the coordinates based on your setup (e.g., if your TV is to the right, x=1920 for 1080p laptop)
+pyautogui.moveTo(1920 + 100, 100)
+print("Moved mouse to second monitor (TV)")
+
+# Wait for 2 seconds to observe the mouse
+time.sleep(2)
+
+# Perform a click action on the second monitor
+pyautogui.click(1920 + 100, 100)  # Adjust based on the screen resolution and location
+print("Clicked on second monitor")
+
+
+
+
+
+
 To handle exiting the mouse.Listener loop based on a flag, you can use a global variable that gets updated when the flag condition is met. This flag can be checked inside the on_click function, and if the condition is true, it will stop the listener.
 
 To implement this, modify the on_click function to check the flag after each click. If the flag indicates that the program should stop, you can call listener.stop() to exit the loop.
