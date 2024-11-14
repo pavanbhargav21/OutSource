@@ -1,3 +1,171 @@
+
+import uiautomation as auto
+import win32gui
+import win32con
+import time
+from datetime import datetime
+import os
+from PIL import ImageGrab
+import logging
+
+class ClaudeMonitor:
+    def __init__(self):
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            filename='claude_monitor.log'
+        )
+        
+        # Create screenshots directory
+        self.screenshot_dir = "claude_screenshots"
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        
+        # Initialize monitoring flag
+        self.monitoring = True
+        
+        # Configure window and button settings
+        self.window_title = "Claude"
+        self.button_name = "OK"
+        
+        logging.info("Claude Monitor initialized")
+
+    def is_claude_window(self, window_title):
+        """Check if the window is Claude"""
+        return self.window_title.lower() in window_title.lower()
+
+    def capture_screenshot(self, window_handle):
+        """Capture screenshot of the window"""
+        try:
+            # Get window coordinates
+            rect = win32gui.GetWindowRect(window_handle)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.screenshot_dir}/claude_{timestamp}.png"
+            
+            # Capture and save screenshot
+            screenshot = ImageGrab.grab(bbox=rect)
+            screenshot.save(filename)
+            
+            logging.info(f"Screenshot saved: {filename}")
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Screenshot error: {e}")
+            return None
+
+    def find_ok_button(self, window_handle):
+        """Find OK button using multiple methods"""
+        try:
+            # Get window control
+            window = auto.ControlFromHandle(window_handle)
+            if not window:
+                return None
+            
+            # Method 1: Direct search for OK button
+            try:
+                button = window.ButtonControl(Name=self.button_name)
+                if button.Exists():
+                    return button
+            except:
+                pass
+            
+            # Method 2: Search all buttons
+            try:
+                all_buttons = window.GetChildren()
+                for control in all_buttons:
+                    try:
+                        if isinstance(control, auto.ButtonControl) and \
+                           self.button_name.lower() in control.Name.lower():
+                            return control
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Method 3: Deep search
+            try:
+                buttons = window.FindAllControl(auto.ButtonControl)
+                for button in buttons:
+                    try:
+                        if self.button_name.lower() in button.Name.lower():
+                            return button
+                    except:
+                        continue
+            except:
+                pass
+                
+            return None
+            
+        except Exception as e:
+            logging.error(f"Button search error: {e}")
+            return None
+
+    def monitor_claude(self):
+        """Main monitoring loop"""
+        print("Starting Claude Monitor... Press Ctrl+C to stop")
+        logging.info("Monitoring started")
+        
+        last_click_time = 0
+        click_cooldown = 1  # Prevent double captures
+        
+        try:
+            while self.monitoring:
+                try:
+                    # Get active window
+                    active_window = win32gui.GetForegroundWindow()
+                    window_title = win32gui.GetWindowText(active_window)
+                    
+                    # Check if it's Claude window
+                    if self.is_claude_window(window_title):
+                        # Find OK button
+                        ok_button = self.find_ok_button(active_window)
+                        
+                        if ok_button and ok_button.Exists():
+                            try:
+                                # Check if button was clicked
+                                current_time = time.time()
+                                
+                                if ok_button.GetIsInvokedPattern():
+                                    # Prevent duplicate captures
+                                    if current_time - last_click_time > click_cooldown:
+                                        logging.info("OK button clicked - Capturing screenshot")
+                                        self.capture_screenshot(active_window)
+                                        last_click_time = current_time
+                            except:
+                                pass
+                    
+                    # Small sleep to prevent high CPU usage
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    logging.error(f"Monitoring error: {e}")
+                    continue
+                    
+        except KeyboardInterrupt:
+            print("\nStopping monitor...")
+        finally:
+            self.monitoring = False
+            logging.info("Monitoring stopped")
+
+if __name__ == "__main__":
+    # Create and start the monitor
+    monitor = ClaudeMonitor()
+    
+    try:
+        monitor.monitor_claude()
+    except Exception as e:
+        logging.error(f"Critical error: {e}")
+        print(f"Error: {e}")
+    finally:
+        print("Monitor stopped")
+
+
+
+
+-------------------
+
 import uiautomation as auto
 import win32gui
 import win32con
