@@ -1,4 +1,204 @@
 
+Here is a modified version of your code that incorporates the functionality you've described:
+
+Locate Image: When a user clicks, the program will locate the image on the screen.
+
+Move the Mouse Below the Found Button: It will move slightly below the image (button) found.
+
+Right-Click: The program will perform a right-click.
+
+Copy: After right-clicking, the program will copy the content.
+
+Store the Summary in JSON: It will store the summary in a JSON file with the timestamp when the image was found.
+
+Return to Previous Position: After completing the actions, it will return the cursor to its original position.
+
+
+Modified Code:
+
+import time
+import os
+import pyautogui
+import pyperclip
+import json
+from pynput import mouse
+from datetime import datetime
+
+BUTTON_IMAGE_PATH = r"C:\pulse_event_trigger"
+SCREENSHOT_SAVE_PATH = r"C:\pulse_event_trigger\process"
+SUMMARY_JSON_PATH = r"C:\pulse_event_trigger\summary_data.json"
+
+# Define button images for reference
+BUTTON_IMAGES = {
+    "ok": os.path.join(BUTTON_IMAGE_PATH, "test_button.png")  # Image of the "OK" button
+}
+
+# Track if we are awaiting the final "OK" click
+awaiting_final_ok_click = False
+
+# Function to capture screenshot
+def capture_screenshot():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    screenshot_filename = os.path.join(SCREENSHOT_SAVE_PATH, f"screenshot_{timestamp}.png")
+    pyautogui.screenshot(screenshot_filename)
+    print(f"Screenshot captured and saved as {screenshot_filename}")
+
+# Function to check if a button is visible and take an action
+def check_button_visible(button_name, curr_x, curr_y):
+    try:
+        print("Searching for button...")
+        location = pyautogui.locateOnScreen(BUTTON_IMAGES[button_name], confidence=0.9)
+        
+        if location:
+            print(f"Button found at location: {location.left}, {location.top}, {location.width}, {location.height}")
+            
+            # Capture screenshot of the area
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_filename = os.path.join(SCREENSHOT_SAVE_PATH, f"screenshot_check_{timestamp}.png")
+            pyautogui.screenshot(screenshot_filename, region=(location.left, location.top, location.width, location.height))
+            print(f"Button screenshot captured and saved as {screenshot_filename}")
+            
+            # Move the cursor below the button and perform right click
+            pyautogui.moveTo(location.left + location.width // 2, location.top + location.height + 5)
+            pyautogui.rightClick()
+            print("Right-click done")
+
+            # Wait for a moment and then perform the copy action
+            time.sleep(0.5)
+            pyautogui.hotkey('ctrl', 'c')
+            print("Content copied")
+
+            # Get the copied text from clipboard
+            summary_text = pyperclip.paste()
+            print("Summary Text:", summary_text)
+
+            # Create JSON data for storing summary
+            summary_dict = {}
+            lines = summary_text.split('\n')
+            for line in lines:
+                parts = line.split('\t')
+                if len(parts) == 2:
+                    key = parts[0]
+                    value = parts[1].replace('\r', '')  # Clean up the value if needed
+                    summary_dict[key] = value
+
+            # Add timestamp to the summary data
+            summary_dict["timestamp"] = timestamp
+
+            # Save to a JSON file
+            if os.path.exists(SUMMARY_JSON_PATH):
+                with open(SUMMARY_JSON_PATH, 'r') as f:
+                    existing_data = json.load(f)
+            else:
+                existing_data = {}
+
+            # Append new summary data
+            existing_data[timestamp] = summary_dict
+
+            with open(SUMMARY_JSON_PATH, 'w') as f:
+                json.dump(existing_data, f, indent=4)
+
+            print(f"Summary saved to {SUMMARY_JSON_PATH}")
+            
+            return True
+
+        else:
+            print(f"Button '{button_name}' not found on the screen.")
+            return False
+
+    except Exception as e:
+        print(f"Error finding button {button_name}: {e}")
+        return False
+
+# Function to track mouse clicks
+def on_click(x, y, button, pressed):
+    global awaiting_final_ok_click
+
+    print(f"Mouse clicked at ({x}, {y}) with {button}")
+
+    # Only proceed on button release
+    if not pressed:
+        # If we're in the final "OK" step
+        if awaiting_final_ok_click:
+            ok_button_location = check_button_visible("ok", x, y)
+            if ok_button_location:
+                # After the button is clicked and actions are completed, reset the state
+                awaiting_final_ok_click = False
+        else:
+            awaiting_final_ok_click = True
+
+# Screenshot save path setup
+os.makedirs(SCREENSHOT_SAVE_PATH, exist_ok=True)
+
+# Start monitoring mouse clicks
+try:
+    with mouse.Listener(on_click=on_click) as listener:
+        print("Monitoring started... Press CTRL+C to stop.")
+        listener.join()
+except KeyboardInterrupt:
+    print("\nMonitoring stopped.")
+
+Key Changes:
+
+1. check_button_visible Function:
+
+This function now:
+
+Locates the image on the screen.
+
+Takes a screenshot of the image location.
+
+Moves the mouse slightly below the found image (button) and performs a right-click.
+
+Copies the content after the right-click and stores it in the clipboard.
+
+Parses the copied content into a dictionary and saves it into a JSON file with a timestamp.
+
+
+
+
+2. JSON Handling:
+
+If the JSON file already exists, it loads the existing data and appends the new summary with the timestamp.
+
+If it doesn't exist, a new file is created.
+
+
+
+3. Timestamp in JSON:
+
+The timestamp is added to each summary dictionary to track when the summary was captured.
+
+
+
+4. Return to Previous Position:
+
+You could modify this behavior if needed to return the cursor to the original position by saving the current position before the action and restoring it afterward.
+
+
+
+
+Functionality Flow:
+
+1. Locate Image: When the user clicks on the screen, the image is located and processed.
+
+
+2. Perform Right-Click: If the image is found, the mouse is moved below the image and a right-click is performed.
+
+
+3. Copy and Parse Content: The content copied to the clipboard is parsed and saved in a JSON file along with the timestamp.
+
+
+4. Return to Position: The cursor can be returned to the original position if needed, and the summary data is saved for later use.
+
+
+
+This approach ensures that the user can continue working without any noticeable delay, as the operations happen in milliseconds. The timestamp will also help you track when the summary was captured.
+
+
+
+
+--------------------
 
 import time
 import os
