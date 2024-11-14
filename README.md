@@ -1,3 +1,518 @@
+ Let me break down the solution and explain its limitations and reliability.
+
+The current approach has several potential issues that could affect reliability. Let me explain the core components and suggest a more robust approach.
+
+
+
+<antArtifact identifier="robust-application-monitor" type="application/vnd.ant.code" language="python" title="Robust Application Monitor with UI Automation">
+import uiautomation as auto
+import win32gui
+import win32con
+import logging
+import time
+from datetime import datetime
+import os
+from PIL import ImageGrab
+
+class RobustApplicationMonitor:
+    def __init__(self):
+        # Configure endpoints with more specific identifiers
+        self.app_configs = {
+            "OWS": {
+                "window_pattern": "OWS",
+                "endpoint": {
+                    "button_name": "OK",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,  # Add if known
+                    "class_name": None      # Add if known
+                }
+            },
+            "AWS": {
+                "window_pattern": "AWS",
+                "endpoint": {
+                    "button_name": "Submit",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,
+                    "class_name": None
+                }
+            },
+            "JWS": {
+                "window_pattern": "JWS",
+                "endpoint": {
+                    "button_name": "Done",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,
+                    "class_name": None
+                }
+            }
+        }
+        
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename='app_monitor_detailed.log'
+        )
+        
+        self.screenshot_dir = "screenshots"
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        self.workflow_starts = {}
+        self.monitoring = True
+        
+        # Cache for window handles
+        self.window_cache = {}
+        
+    def find_window_by_title(self, title_pattern):
+        """
+        Find window using partial title match with caching
+        """
+        try:
+            # First check cache
+            if title_pattern in self.window_cache:
+                if win32gui.IsWindow(self.window_cache[title_pattern]):
+                    return self.window_cache[title_pattern]
+                else:
+                    del self.window_cache[title_pattern]
+            
+            def callback(hwnd, windows):
+                if win32gui.IsWindowVisible(hwnd):
+                    window_title = win32gui.GetWindowText(hwnd)
+                    if title_pattern.lower() in window_title.lower():
+                        windows.append(hwnd)
+            
+            windows = []
+            win32gui.EnumWindows(callback, windows)
+            
+            if windows:
+                self.window_cache[title_pattern] = windows[0]
+                return windows[0]
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error finding window '{title_pattern}': {e}")
+            return None
+
+    def get_button_in_window(self, window_handle, button_config):
+        """
+        Find button using UI Automation with multiple fallback methods
+        """
+        try:
+            if not window_handle:
+                return None
+                
+            window = auto.ControlFromHandle(window_handle)
+            if not window:
+                return None
+            
+            # Try multiple search methods in order of reliability
+            button = None
+            
+            # 1. Try by Automation ID if available
+            if button_config['automation_id']:
+                button = window.ButtonControl(AutomationId=button_config['automation_id'])
+            
+            # 2. Try by Name and Class
+            if not button and button_config['class_name']:
+                button = window.ButtonControl(
+                    Name=button_config['button_name'],
+                    ClassName=button_config['class_name']
+                )
+            
+            # 3. Try by Name only
+            if not button:
+                buttons = window.GetButtonControls()
+                for btn in buttons:
+                    if button_config['button_name'].lower() in btn.Name.lower():
+                        button = btn
+                        break
+            
+            return button
+            
+        except Exception as e:
+            logging.error(f"Error finding button: {e}")
+            return None
+
+    def capture_screenshot(self, app_name, window_handle):
+        """
+        Capture screenshot of specific window
+        """
+        try:
+            if not window_handle:
+                return None
+                
+            # Get window coordinates
+            rect = win32gui.GetWindowRect(window_handle)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.screenshot_dir}/{app_name}_{timestamp}.png"
+            
+            # Capture specific window
+            screenshot = ImageGrab.grab(bbox=rect)
+            screenshot.save(filename)
+            
+            # Log workflow duration
+            if app_name in self.workflow_starts:
+                duration = time.time() - self.workflow_starts[app_name]
+                logging.info(f"Workflow duration for {app_name}: {duration:.2f} seconds")
+                del self.workflow_starts[app_name]
+            
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Error capturing screenshot: {e}")
+            return None
+
+    def monitor_applications(self):
+        """
+        Main monitoring loop using UI Automation
+        """
+        logging.info("Starting robust application monitoring...")
+        
+        try:
+            while self.monitoring:
+                # Get active window
+                active_window = win32gui.GetForegroundWindow()
+                active_title = win32gui.GetWindowText(active_window)
+                
+                # Check each configured application
+                for app_name, config in self.app_configs.items():
+                    if config['window_pattern'].lower() in active_title.lower():
+                        # Start workflow timing if not started
+                        if app_name not in self.workflow_starts:
+                            self.workflow_starts[app_name] = time.time()
+                            logging.info(f"Started monitoring {app_name}")
+                        
+                        # Find and monitor the endpoint button
+                        button = self.get_button_in_window(active_window, config['endpoint'])
+                        
+                        if button and button.GetClickablePoint():
+                            # Check if button was clicked
+                            if button.GetWindowPattern().WindowVisualState == auto.WindowVisualState.Normal:
+                                if button.GetTogglePattern().ToggleState == auto.ToggleState.On:
+                                    logging.info(f"Endpoint triggered for {app_name}")
+                                    screenshot_path = self.capture_screenshot(app_name, active_window)
+                                    if screenshot_path:
+                                        logging.info(f"Screenshot saved: {screenshot_path}")
+                                        # Add your trigger code here
+                                        pass
+                
+                time.sleep(0.1)  # Reduce CPU usage
+                
+        except KeyboardInterrupt:
+            logging.info("Monitoring stopped by user")
+        except Exception as e:
+            logging.error(f"Error in monitoring loop: {e}")
+        finally:
+            self.monitoring = False
+            logging.info("Monitoring stopped")
+
+if __name__ == "__main__":
+    monitor = RobustApplicationMonitor()
+    monitor.monitor_applications()
+</antArtifact>
+
+Let me explain why the previous approach wasn't 100% reliable and how this new version is more robust:
+
+1. Key Improvements:
+
+- Uses UI Automation instead of mouse position tracking
+- Multiple button detection methods
+- Window-specific screenshot capture
+- Improved error handling and logging
+- Caching for better performance
+- More reliable event detection
+
+2. Reliability Factors:
+
+The previous version had these issues:
+- Relied on mouse position (unreliable)
+- Couldn't detect buttons accurately
+- No fallback methods
+- Vulnerable to window changes
+
+The new version is more reliable because:
+
+a) Button Detection:
+   - Uses Windows UI Automation framework
+   - Multiple search methods (Automation ID, Class Name, Name)
+   - Doesn't rely on screen coordinates
+   - Can detect actual UI elements
+
+b) Window Handling:
+   - Proper window detection
+   - Caches window handles
+   - Handles window state changes
+   - Window-specific screenshots
+
+c) Error Prevention:
+   - Multiple fallback methods
+   - Extensive error handling
+   - Detailed logging
+   - Resource cleanup
+
+3. Limitations (Still Not 100%):
+
+Even this improved version has some limitations:
+
+- Some applications might block UI Automation
+- Custom UI frameworks might not be fully compatible
+- Window titles might change
+- System performance could affect timing
+- Some applications might use non-standard controls
+
+4. To Make It More Reliable:
+
+You should:
+
+1. Add application-specific details:
+```python
+"OWS": {
+    "window_pattern": "OWS",
+    "endpoint": {
+        "button_name": "OK",
+        "automation_id": "okButton",  # Add actual ID
+        "class_name": "Button"        # Add actual class
+    }
+}
+```
+
+2. Test with your specific applications and add:
+   - Exact window titles
+   - Button automation IDs
+   - Class names
+   - Any specific patterns
+
+3. Add additional error handling for your environment
+
+To use this version:
+
+1. Install requirements:
+```python
+pip install uiautomation pillow pywin32
+```
+
+2. Run the script:
+```python
+python robust_monitor.py
+```
+
+Would you like me to:
+1. Add support for specific applications you're using?
+2. Implement additional detection methods?
+3. Add specific error handling for your environment?
+4. Add custom triggers for when endpoints are detected?
+
+
+
+
+import uiautomation as auto
+import win32gui
+import win32con
+import logging
+import time
+from datetime import datetime
+import os
+from PIL import ImageGrab
+
+class RobustApplicationMonitor:
+    def __init__(self):
+        # Configure endpoints with more specific identifiers
+        self.app_configs = {
+            "OWS": {
+                "window_pattern": "OWS",
+                "endpoint": {
+                    "button_name": "OK",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,  # Add if known
+                    "class_name": None      # Add if known
+                }
+            },
+            "AWS": {
+                "window_pattern": "AWS",
+                "endpoint": {
+                    "button_name": "Submit",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,
+                    "class_name": None
+                }
+            },
+            "JWS": {
+                "window_pattern": "JWS",
+                "endpoint": {
+                    "button_name": "Done",
+                    "control_type": auto.ButtonControl,
+                    "automation_id": None,
+                    "class_name": None
+                }
+            }
+        }
+        
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename='app_monitor_detailed.log'
+        )
+        
+        self.screenshot_dir = "screenshots"
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        self.workflow_starts = {}
+        self.monitoring = True
+        
+        # Cache for window handles
+        self.window_cache = {}
+        
+    def find_window_by_title(self, title_pattern):
+        """
+        Find window using partial title match with caching
+        """
+        try:
+            # First check cache
+            if title_pattern in self.window_cache:
+                if win32gui.IsWindow(self.window_cache[title_pattern]):
+                    return self.window_cache[title_pattern]
+                else:
+                    del self.window_cache[title_pattern]
+            
+            def callback(hwnd, windows):
+                if win32gui.IsWindowVisible(hwnd):
+                    window_title = win32gui.GetWindowText(hwnd)
+                    if title_pattern.lower() in window_title.lower():
+                        windows.append(hwnd)
+            
+            windows = []
+            win32gui.EnumWindows(callback, windows)
+            
+            if windows:
+                self.window_cache[title_pattern] = windows[0]
+                return windows[0]
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error finding window '{title_pattern}': {e}")
+            return None
+
+    def get_button_in_window(self, window_handle, button_config):
+        """
+        Find button using UI Automation with multiple fallback methods
+        """
+        try:
+            if not window_handle:
+                return None
+                
+            window = auto.ControlFromHandle(window_handle)
+            if not window:
+                return None
+            
+            # Try multiple search methods in order of reliability
+            button = None
+            
+            # 1. Try by Automation ID if available
+            if button_config['automation_id']:
+                button = window.ButtonControl(AutomationId=button_config['automation_id'])
+            
+            # 2. Try by Name and Class
+            if not button and button_config['class_name']:
+                button = window.ButtonControl(
+                    Name=button_config['button_name'],
+                    ClassName=button_config['class_name']
+                )
+            
+            # 3. Try by Name only
+            if not button:
+                buttons = window.GetButtonControls()
+                for btn in buttons:
+                    if button_config['button_name'].lower() in btn.Name.lower():
+                        button = btn
+                        break
+            
+            return button
+            
+        except Exception as e:
+            logging.error(f"Error finding button: {e}")
+            return None
+
+    def capture_screenshot(self, app_name, window_handle):
+        """
+        Capture screenshot of specific window
+        """
+        try:
+            if not window_handle:
+                return None
+                
+            # Get window coordinates
+            rect = win32gui.GetWindowRect(window_handle)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.screenshot_dir}/{app_name}_{timestamp}.png"
+            
+            # Capture specific window
+            screenshot = ImageGrab.grab(bbox=rect)
+            screenshot.save(filename)
+            
+            # Log workflow duration
+            if app_name in self.workflow_starts:
+                duration = time.time() - self.workflow_starts[app_name]
+                logging.info(f"Workflow duration for {app_name}: {duration:.2f} seconds")
+                del self.workflow_starts[app_name]
+            
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Error capturing screenshot: {e}")
+            return None
+
+    def monitor_applications(self):
+        """
+        Main monitoring loop using UI Automation
+        """
+        logging.info("Starting robust application monitoring...")
+        
+        try:
+            while self.monitoring:
+                # Get active window
+                active_window = win32gui.GetForegroundWindow()
+                active_title = win32gui.GetWindowText(active_window)
+                
+                # Check each configured application
+                for app_name, config in self.app_configs.items():
+                    if config['window_pattern'].lower() in active_title.lower():
+                        # Start workflow timing if not started
+                        if app_name not in self.workflow_starts:
+                            self.workflow_starts[app_name] = time.time()
+                            logging.info(f"Started monitoring {app_name}")
+                        
+                        # Find and monitor the endpoint button
+                        button = self.get_button_in_window(active_window, config['endpoint'])
+                        
+                        if button and button.GetClickablePoint():
+                            # Check if button was clicked
+                            if button.GetWindowPattern().WindowVisualState == auto.WindowVisualState.Normal:
+                                if button.GetTogglePattern().ToggleState == auto.ToggleState.On:
+                                    logging.info(f"Endpoint triggered for {app_name}")
+                                    screenshot_path = self.capture_screenshot(app_name, active_window)
+                                    if screenshot_path:
+                                        logging.info(f"Screenshot saved: {screenshot_path}")
+                                        # Add your trigger code here
+                                        pass
+                
+                time.sleep(0.1)  # Reduce CPU usage
+                
+        except KeyboardInterrupt:
+            logging.info("Monitoring stopped by user")
+        except Exception as e:
+            logging.error(f"Error in monitoring loop: {e}")
+        finally:
+            self.monitoring = False
+            logging.info("Monitoring stopped")
+
+if __name__ == "__main__":
+    monitor = RobustApplicationMonitor()
+    monitor.monitor_applications()
+
+
+
+
+
+
 merhod-1 :
 
 In this case, since the endpoint (like the "OK" button) doesn't exist in the window title, we'll need a way to detect specific buttons on the screen by using image recognition to look for UI elements. Here’s how we can achieve this with pyautogui to recognize on-screen buttons and trigger the screenshot capture when the final button (like "OK") is clicked.
