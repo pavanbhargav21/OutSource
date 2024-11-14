@@ -1,4 +1,104 @@
 
+To handle exiting the mouse.Listener loop based on a flag, you can use a global variable that gets updated when the flag condition is met. This flag can be checked inside the on_click function, and if the condition is true, it will stop the listener.
+
+To implement this, modify the on_click function to check the flag after each click. If the flag indicates that the program should stop, you can call listener.stop() to exit the loop.
+
+Here's how you can modify the code:
+
+import time
+import os
+import pyautogui
+from pynput import mouse
+from datetime import datetime
+
+BUTTON_IMAGE_PATH = r"C:\pulse_event_trigger"
+SCREENSHOT_SAVE_PATH = r"C:\pulse_event_trigger\process"
+
+# Define button images for reference
+BUTTON_IMAGES = {
+    "ok": os.path.join(BUTTON_IMAGE_PATH, "test_button.png")  # Image of the "OK" button
+}
+
+# Track if we are awaiting the final "OK" click and the button region
+awaiting_final_ok_click = False
+ok_button_region = None  # Store button's bounding box
+exit_flag = False  # Flag to indicate when to stop the listener
+
+def capture_screenshot():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    screenshot_filename = os.path.join(SCREENSHOT_SAVE_PATH, f"screenshot_{timestamp}.png")
+    pyautogui.screenshot(screenshot_filename)
+    print(f"Screenshot captured and saved as {screenshot_filename}")
+
+def check_button_visible(button_name):
+    global ok_button_region
+    try:
+        print("Checking for button visibility...")
+        location = pyautogui.locateOnScreen(BUTTON_IMAGES[button_name], confidence=0.9)
+        if location:
+            print(f"Button found at {location.left}, {location.top}, {location.width}, {location.height}")
+            # Store the bounding box as (left, top, width, height)
+            ok_button_region = location
+        return location
+    except Exception as e:
+        print(f"Error finding button {button_name}: {e}")
+        return None
+
+def on_click(x, y, button, pressed):
+    global awaiting_final_ok_click, ok_button_region, exit_flag
+
+    # Only proceed on button release
+    if not pressed:
+        print(f"Mouse clicked at ({x}, {y})")
+        if awaiting_final_ok_click:
+            # Check if the OK button is visible and a region is defined
+            if ok_button_region:
+                # Check if click is within the button region
+                left, top, width, height = ok_button_region.left, ok_button_region.top, ok_button_region.width, ok_button_region.height
+                if left <= x <= left + width and top <= y <= top + height:
+                    print("Click is within OK button region. Capturing screenshot.")
+                    capture_screenshot()
+                    awaiting_final_ok_click = False  # Reset state after capture
+                    exit_flag = True  # Set exit flag to stop the listener
+        else:
+            # Update the OK button location and enable the awaiting click state
+            if check_button_visible("ok"):
+                awaiting_final_ok_click = True
+
+        # Stop the listener if the exit flag is set
+        if exit_flag:
+            return False
+
+# Screenshot save path setup
+os.makedirs(SCREENSHOT_SAVE_PATH, exist_ok=True)
+
+# Start monitoring
+try:
+    with mouse.Listener(on_click=on_click) as listener:
+        print("Monitoring started... Press CTRL+C to stop.")
+        listener.join()
+except KeyboardInterrupt:
+    print("\nMonitoring stopped.")
+
+Explanation of Changes:
+
+1. exit_flag Variable: This variable is set to True when the condition to stop the listener is met.
+
+
+2. Condition to Stop Listener: In the on_click function, if exit_flag is True, the listener stops by returning False, which breaks out of the listener.join() loop.
+
+
+3. Flag Update: After capturing a screenshot, exit_flag is set to True, stopping the listener after the next click.
+
+
+
+Now, the code will automatically stop the listener when the exit_flag is set to True, allowing you to exit the loop when the desired condition is met.
+
+
+
+
+
+
 Here is a modified version of your code that incorporates the functionality you've described:
 
 Locate Image: When a user clicks, the program will locate the image on the screen.
