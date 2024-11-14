@@ -1,3 +1,65 @@
+
+
+import time
+import os
+import pyautogui
+from pynput import mouse
+from datetime import datetime
+
+BUTTON_IMAGE_PATH = r"C:\pulse_event_trigger"
+SCREENSHOT_SAVE_PATH = r"C:\pulse_event_trigger\process"
+
+# Define button images for reference
+BUTTON_IMAGES = {
+    "ok": os.path.join(BUTTON_IMAGE_PATH, "ok_button.png")  # Image of the "OK" button
+}
+
+# Track if we are awaiting the final "OK" click
+awaiting_final_ok_click = False
+
+def capture_screenshot():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    screenshot_filename = os.path.join(SCREENSHOT_SAVE_PATH, f"screenshot_{timestamp}.png")
+    pyautogui.screenshot(screenshot_filename)
+    print(f"Screenshot captured and saved as {screenshot_filename}")
+
+def check_button_visible(button_name):
+    try:
+        location = pyautogui.locateOnScreen(BUTTON_IMAGES[button_name], confidence=0.8)
+        return location
+    except Exception as e:
+        print(f"Error finding button {button_name}: {e}")
+        return None
+
+def on_click(x, y, button, pressed):
+    global awaiting_final_ok_click
+
+    # Only proceed on button release
+    if not pressed:
+        # If we're in the final OK step
+        if awaiting_final_ok_click:
+            ok_button_location = check_button_visible("ok")
+            if ok_button_location:
+                if ok_button_location.left <= x <= ok_button_location.left + ok_button_location.width and \
+                   ok_button_location.top <= y <= ok_button_location.top + ok_button_location.height:
+                    print("OK button clicked. Capturing screenshot.")
+                    capture_screenshot()
+                    awaiting_final_ok_click = False  # Reset state after capture
+        else:
+            # Placeholder for additional logic to handle other buttons
+            awaiting_final_ok_click = True
+
+# Screenshot save path setup
+os.makedirs(SCREENSHOT_SAVE_PATH, exist_ok=True)
+
+# Start monitoring
+with mouse.Listener(on_click=on_click) as listener:
+    print("Monitoring started...")
+    listener.join()
+
+
+
+
 Your code is well-structured, but there are a few areas that could be refined to ensure smooth functioning, especially around detecting the "OK" button and handling errors. I’ve adjusted a few parts to enhance reliability and address the GetIsInvokedPattern() method, which isn’t directly available in uiautomation. I also refined the find_ok_button method to streamline the button search process and logging.
 
 Here’s the modified version of your code:
