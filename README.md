@@ -1,3 +1,79 @@
+
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    if window:
+        print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+        start_time = datetime.now()
+        data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Track okay_button
+        while True:
+            # Track okay_button only if JSON is not created
+            if not json_created:
+                location, start_id_time = track_image(okay_button_path, "okay_button")
+                if location:
+                    # Get X, Y from located position of the okay_button
+                    x, y = location
+                    
+                    # Move to detected location and adjust to the appropriate offset for right-click
+                    pyautogui.moveTo(x + 20, y + 20)
+                    pyautogui.rightClick()  # Right-click on the okay_button location
+                    time.sleep(0.5)
+
+                    # Move to "Copy" option in the context menu and click to copy text
+                    pyautogui.moveTo(x + 40, y + 60)  # Adjust coordinates to hover on "Copy"
+                    pyautogui.click()  # Click on "Copy" option
+                    time.sleep(0.5)
+
+                    # Paste the copied content
+                    summary_text = pyperclip.paste()
+
+                    # Parse the pasted content into key-value pairs
+                    summary_dict = {}
+                    lines = summary_text.split('\n')
+                    for line in lines:
+                        if line.strip():  # Ignore empty lines
+                            parts = line.split('\t')  # Split by tab
+                            key = parts[0].strip() if len(parts) > 0 else ""
+                            value = parts[1].strip() if len(parts) > 1 else ""
+                            summary_dict[key] = value
+                    
+                    # Update data_dict with parsed summary_dict
+                    data_dict.update(summary_dict)
+                    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                    # Create JSON file
+                    case_id = "example_case_id"  # Replace with actual case ID
+                    save_to_json(data_dict, case_id)
+                    json_created = True  # Mark JSON as created
+                    print("JSON created with OK button data.")
+
+            # After JSON creation, start tracking end_button
+            if json_created:
+                location_end, end_time = track_image(end_button_path, "end_button")
+                if location_end:
+                    # Store end_button location details
+                    end_button_region = {
+                        "left": location_end[0] - 10,
+                        "top": location_end[1] - 10,
+                        "right": location_end[0] + 10,
+                        "bottom": location_end[1] + 10
+                    }
+                    print("End button detected, monitoring for clicks in region.")
+                    
+                    # Monitor clicks in the end button region
+                    monitor_clicks_in_region(end_button_region)
+                    return  # Exit after tracking the end button event
+
+            time.sleep(1)  # Check every second
+
+
+
+
 Given the updated requirements, here’s an approach to handle each step:
 
 1. Detect the OK Button: When the okay_button image is first found, create a JSON file named with the specified format, and include details such as timestamp and extracted text. Skip creating the JSON file again if it already exists.
