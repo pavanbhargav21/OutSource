@@ -1,4 +1,57 @@
 
+def get_monitor_index(window, monitors):
+    """Determine on which monitor the majority of the window is visible."""
+    max_overlap_area = 0
+    best_monitor_index = 0
+
+    window_rect = {
+        "left": window.left,
+        "top": window.top,
+        "right": window.left + window.width,
+        "bottom": window.top + window.height
+    }
+
+    for index, monitor in enumerate(monitors):
+        monitor_rect = {
+            "left": monitor['x'],
+            "top": monitor['y'],
+            "right": monitor['x'] + monitor['width'],
+            "bottom": monitor['y'] + monitor['height']
+        }
+
+        # Calculate the overlapping area
+        overlap_left = max(window_rect['left'], monitor_rect['left'])
+        overlap_top = max(window_rect['top'], monitor_rect['top'])
+        overlap_right = min(window_rect['right'], monitor_rect['right'])
+        overlap_bottom = min(window_rect['bottom'], monitor_rect['bottom'])
+
+        # Overlap dimensions
+        overlap_width = max(0, overlap_right - overlap_left)
+        overlap_height = max(0, overlap_bottom - overlap_top)
+        overlap_area = overlap_width * overlap_height
+
+        print(f"Monitor {index} overlap area: {overlap_area}")
+        
+        # Update the best monitor based on the largest overlap area
+        if overlap_area > max_overlap_area:
+            max_overlap_area = overlap_area
+            best_monitor_index = index
+
+    if max_overlap_area > 0:
+        print(f"Window is primarily on monitor {best_monitor_index + 1} (index {best_monitor_index})")
+        return best_monitor_index
+
+    # Default to the first monitor if no overlap is found
+    print("No significant overlap with any monitor; defaulting to primary monitor.")
+    return 0 if monitors else None
+
+
+----
+
+
+
+
+
 
 import time
 import threading
