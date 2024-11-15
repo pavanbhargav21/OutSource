@@ -1,3 +1,92 @@
+def monitor_clicks_and_track_end_button(end_button_path):
+    """Monitor clicks and track the 'end button' when clicked."""
+    print("Monitoring clicks to find the 'end button'.")
+    while True:
+        x, y = pyautogui.position()
+        pyautogui.waitForClick()  # Wait for a click event
+        
+        # After a click, try to locate the 'end button'
+        location_end, end_time = track_final_image(end_button_path, "end_button")
+        if location_end:
+            # Store end_button location details
+            end_button_region = {
+                "left": location_end[0] - 10,
+                "top": location_end[1] - 10,
+                "right": location_end[2] + 10,
+                "bottom": location_end[3] + 10
+            }
+            print("End button detected, monitoring for clicks in region.")
+            
+            # Monitor clicks in the end button region
+            monitor_clicks_in_region(end_button_region)
+            break  # Exit after tracking the 'end button' event
+        
+        time.sleep(0.1)  # Allow for quick reaction to clicks
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    # Track active window
+    while True:
+        if window.isActive:
+            print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+            start_time = datetime.now()
+            data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+            # Track summary_button only if JSON is not created
+            if not json_created:
+                location, start_id_time = track_image(summary_button_path, "summary_button")
+                if location:
+                    # Capture and process summary data
+                    capture_summary_data(location, start_id_time)
+            
+            # Start monitoring for end button after JSON creation
+            if json_created:
+                monitor_clicks_and_track_end_button(end_button_path)
+                return  # Exit after tracking the 'end button' event
+            
+            time.sleep(1)  # Check every second
+
+def capture_summary_data(location, start_id_time):
+    """Capture summary data and save it to JSON."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyautogui.moveTo(x + 20, y + 20)
+    pyautogui.rightClick()
+    pyautogui.moveTo(x + 30, y + 30)
+    pyautogui.click()
+    summary_text = pyperclip.paste()  # Copy extracted data
+    pyautogui.moveTo(curr_x, curr_y)
+    print("Summary Text copied:", summary_text)
+
+    # Parse the pasted content into key-value pairs
+    summary_dict = {}
+    lines = summary_text.split('\n')
+    for line in lines:
+        if line.strip():
+            parts = line.split('\t')
+            key = parts[0].strip() if len(parts) > 0 else ""
+            value = parts[1].strip() if len(parts) > 1 else ""
+            summary_dict[key] = value
+            if key == "Id":
+                case_id = value
+            else:
+                case_id = "dummy"
+    print("Summary Dict", summary_dict)
+
+    # Update data_dict and save to JSON
+    data_dict.update(summary_dict)
+    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+    save_to_json(data_dict, case_id)
+    global json_created
+    json_created = True
+    print("JSON created with Summary data.")
+
+
+
+
 
 import time
 import threading
