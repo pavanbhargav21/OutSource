@@ -1,4 +1,29 @@
+import screeninfo
+import pygetwindow as gw
 
+def get_monitor_index(window_title):
+    # Get a list of all monitors
+    monitors = screeninfo.get_monitors()
+    # Try to find the specified window by title
+    try:
+        window = gw.getWindowsWithTitle(window_title)[0]
+    except IndexError:
+        print(f"Window with title '{window_title}' not found.")
+        return None
+
+    # Get the window's x, y position
+    win_x, win_y = window.left, window.top
+    
+    # Loop through each monitor and find where the window is located
+    for index, monitor in enumerate(monitors):
+        if (monitor.x <= win_x < monitor.x + monitor.width and
+                monitor.y <= win_y < monitor.y + monitor.height):
+            print(f"Window found on monitor {index + 1} (index {index})")
+            return index
+
+    # If no monitor contains the window, default to the first monitor
+    print("Window position did not match any monitor, defaulting to primary monitor.")
+    return 0 if monitors else None
 
 def monitor_process(target_title):
     global json_created
