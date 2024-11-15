@@ -1,4 +1,294 @@
+Given the updated requirements, here’s an approach to handle each step:
 
+1. Detect the OK Button: When the okay_button image is first found, create a JSON file named with the specified format, and include details such as timestamp and extracted text. Skip creating the JSON file again if it already exists.
+
+
+2. Monitor for the End Button: Once the okay_button is detected and JSON is created, start monitoring for end_button.
+
+
+3. Handle Clicks in the End Button Region: If end_button is detected, track its coordinates (left, top, bottom, width). If any clicks happen within this region, immediately take a full screenshot and store it in the process folder.
+
+
+4. Threading and Click Monitoring: Use threads for continuous monitoring and to ensure click events in the end_button region are detected for capturing screenshots.
+
+
+
+Here’s how the updated code would look:
+
+import time
+import threading
+from datetime import datetime
+import json
+from screeninfo import get_monitors
+import pyautogui
+import pygetwindow as gw
+import mss
+import pyperclip
+import os
+
+# Define paths for images and folders
+okay_button_path = "path/to/okay_button.png"
+end_button_path = "path/to/end_button.png"
+process_folder = "path/to/process_folder"
+
+# Dictionary to store extracted data
+data_dict = {}
+json_created = False  # Flag to check if JSON file is already created
+
+def get_active_monitors():
+    """Get active monitor details."""
+    monitors = get_monitors()
+    monitor_details = [{"x": m.x, "y": m.y, "width": m.width, "height": m.height} for m in monitors]
+    return monitor_details
+
+def check_window_title(target_title, monitor_details):
+    """Monitor for a specific window title on any monitor."""
+    while True:
+        windows = gw.getAllTitles()
+        for win in windows:
+            if target_title in win:
+                window = gw.getWindowsWithTitle(win)[0]
+                monitor_index = get_monitor_index(window, monitor_details)
+                return window, monitor_index  # Return active window and monitor index
+        time.sleep(1)
+
+def get_monitor_index(window, monitors):
+    """Determine on which monitor the window is open."""
+    for i, monitor in enumerate(monitors):
+        if (monitor['x'] <= window.left < monitor['x'] + monitor['width'] and
+            monitor['y'] <= window.top < monitor['y'] + monitor['height']):
+            return i
+    return None
+
+def track_image(image_path, action_name):
+    """Locate an image on screen and track coordinates and time."""
+    location = pyautogui.locateOnScreen(image_path, confidence=0.9)
+    if location:
+        x, y = pyautogui.center(location)
+        print(f"{action_name} located at {x}, {y}")
+        return (x, y), datetime.now()
+    else:
+        return None, None
+
+def save_to_json(data, case_id):
+    """Save tracked data to JSON with formatted name."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"CaseId_{case_id}_{timestamp}.json")
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    if window:
+        print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+        start_time = datetime.now()
+        data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Track okay_button
+        while True:
+            # Track okay_button only if JSON is not created
+            if not json_created:
+                location, start_id_time = track_image(okay_button_path, "okay_button")
+                if location:
+                    # JSON creation and copying data once
+                    x, y = location
+                    pyautogui.moveTo(x + 20, y + 20)
+                    pyautogui.rightClick()
+                    pyautogui.hotkey('ctrl', 'c')
+                    copied_text = pyperclip.paste()  # Copy extracted data
+
+                    # Store data in dictionary
+                    data_dict['copied_data'] = copied_text
+                    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                    # Create JSON file
+                    case_id = "example_case_id"  # Replace with actual case ID
+                    save_to_json(data_dict, case_id)
+                    json_created = True  # Mark JSON as created
+                    print("JSON created with OK button data.")
+
+            # After JSON creation, start tracking end_button
+            if json_created:
+                location_end, end_time = track_image(end_button_path, "end_button")
+                if location_end:
+                    # Store end_button location details
+                    end_button_region = {
+                        "left": location_end[0] - 10,
+                        "top": location_end[1] - 10,
+                        "right": location_end[0] + 10,
+                        "bottom": location_end[1] + 10
+                    }
+                    print("End button detected, monitoring for clicks in region.")
+                    
+                    # Monitor clicks in the end button region
+                    monitor_clicks_in_region(end_button_region)
+                    return  # Exit after tracking the end button event
+
+            time.sleep(1)  # Check every second
+
+def monitor_clicks_in_region(region):
+    """Monitor for clicks in a specific region and take a screenshot."""
+    with mss.mss() as sct:
+        while True:
+            x, y = pyautogui.position()
+            if (region['left'] <= x <= region['right'] and
+                region['top'] <= y <= region['bottom'] and
+                pyautogui.mouseDown()):
+                
+                # Capture full screen and save to process folder
+                screenshot_path = os.path.join(process_folder, f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                sct.shot(output=screenshot_path)
+                print(f"Screenshot saved at {screenshot_path}")
+                break  # Exit after capturing the screenshot
+            time.sleep(0.1)  # Check clicks frequently
+
+# Main entry point
+if __name__ == "__main__":
+    target_window_title = "Case Management -"
+
+    # Run the monitor process in a separate thread
+    monitor_thread = threading.Thread(target=monitor_process, args=(target_window_title,))
+    monitor_thread.start()
+    monitor_thread.join()
+
+Explanation of Updates:
+
+1. Flag for JSON Creation (json_created):
+
+A flag json_created is set to False initially.
+
+Once the okay_button is detected and JSON is created, json_created is set to True, so subsequent detections of okay_button will be ignored.
+
+
+
+2. monitor_clicks_in_region Function:
+
+Tracks clicks within the end_button region.
+
+On detecting a click in the region, a full screenshot is taken and saved in the process_folder with a timestamped name.
+
+After taking a screenshot, the function breaks out, ending the monitoring.
+
+
+
+3. Modifications to monitor_process:
+
+JSON creation is now triggered only on the first detection of okay_button.
+
+Once the JSON is created, end_button tracking begins.
+
+When end_button is detected, the system monitors clicks within its region and captures a screenshot on a detected click.
+
+
+
+
+This code structure meets your requirements for efficient, click-based tracking of the end_button and conditions around JSON creation. Adjust file paths, image paths, and case_id as necessary for your specific setup.
+
+
+____((((()))))___&&
+
+Thank you for the clarification! Here’s how we can update the code to parse the copied text line-by-line, split it into key-value pairs, and store it as separate entries in the dictionary. This way, each line will be processed individually, with the first part as the key and the remaining part as the value.
+
+Here's the updated monitor_process function with the necessary changes:
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    if window:
+        print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+        start_time = datetime.now()
+        data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Track okay_button
+        while True:
+            # Track okay_button only if JSON is not created
+            if not json_created:
+                location, start_id_time = track_image(okay_button_path, "okay_button")
+                if location:
+                    # JSON creation and copying data once
+                    x, y = location
+                    pyautogui.moveTo(x + 20, y + 20)
+                    pyautogui.rightClick()
+                    pyautogui.hotkey('ctrl', 'c')
+                    copied_text = pyperclip.paste()  # Copy extracted data
+
+                    # Parse the copied text line by line into key-value pairs
+                    parsed_data = {}
+                    for line in copied_text.splitlines():
+                        if line.strip():  # Ignore empty lines
+                            key_value = line.split(maxsplit=1)  # Split into key and value based on first whitespace
+                            if len(key_value) == 2:  # Ensure there is both a key and a value
+                                key, value = key_value
+                                parsed_data[key.strip()] = value.strip()
+
+                    # Store parsed key-value pairs in data_dict
+                    data_dict.update(parsed_data)
+                    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                    # Create JSON file
+                    case_id = "example_case_id"  # Replace with actual case ID
+                    save_to_json(data_dict, case_id)
+                    json_created = True  # Mark JSON as created
+                    print("JSON created with OK button data.")
+
+            # After JSON creation, start tracking end_button
+            if json_created:
+                location_end, end_time = track_image(end_button_path, "end_button")
+                if location_end:
+                    # Store end_button location details
+                    end_button_region = {
+                        "left": location_end[0] - 10,
+                        "top": location_end[1] - 10,
+                        "right": location_end[0] + 10,
+                        "bottom": location_end[1] + 10
+                    }
+                    print("End button detected, monitoring for clicks in region.")
+                    
+                    # Monitor clicks in the end button region
+                    monitor_clicks_in_region(end_button_region)
+                    return  # Exit after tracking the end button event
+
+            time.sleep(1)  # Check every second
+
+Explanation of Updates:
+
+1. Parsing copied_text into Key-Value Pairs:
+
+Each line of copied_text is processed individually by splitting it into key and value using line.split(maxsplit=1). This splits only at the first space, ensuring the key and value are separated correctly.
+
+Only lines that contain both a key and a value are included in parsed_data.
+
+Each key and value is stripped of extra whitespace for cleaner formatting.
+
+
+
+2. Updating data_dict with Parsed Data:
+
+After parsing, data_dict.update(parsed_data) is used to add the key-value pairs into data_dict.
+
+This ensures that each key-value pair from the copied text is stored individually in the JSON.
+
+
+
+3. Creating JSON with Parsed Data:
+
+save_to_json(data_dict, case_id) is called to save the formatted data in JSON format, as previously.
+
+
+
+
+This will result in a JSON file where each extracted line is stored as a separate key-value pair, as specified.
+
+
+
+
+-----------------
 import pyautogui
 import time
 
