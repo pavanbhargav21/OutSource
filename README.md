@@ -1,3 +1,152 @@
+
+import time
+import threading
+from datetime import datetime
+import json
+from screeninfo import get_monitors
+import pyautogui
+import pygetwindow as gw
+import mss
+import pyperclip
+import os
+
+# Define paths for images and folders
+summary_button_path = r"C:\pulse_event_trigger\summary_button.png"
+end_button_path = r"C:\pulse_event_trigger\end_button.png"
+process_folder = r"C:\pulse_event_trigger\process"
+
+# Dictionary to store extracted data
+data_dict = {}
+json_created = False  # Flag to check if JSON file is already created
+
+def get_active_monitors():
+    monitors = get_monitors()
+    monitor_details = [{"x": m.x, "y": m.y, "width": m.width, "height": m.height} for m in monitors]
+    print("Monitors Info", monitor_details)
+    return monitor_details
+
+def check_window_title(target_title, monitor_details):
+    while True:
+        windows = gw.getAllTitles()
+        for win in windows:
+            if target_title in win:
+                window = gw.getWindowsWithTitle(win)[0]
+                monitor_index = get_monitor_index(window, monitor_details)
+                return window, monitor_index  # Return active window and monitor index
+        time.sleep(1)
+
+def get_monitor_index(window, monitors):
+    for index, monitor in enumerate(monitors):
+        if (monitor['x'] <= window.left < monitor['x'] + monitor['width'] and
+                monitor['y'] <= window.top < monitor['y'] + monitor['height']):
+            print(f"Window found on monitor {index + 1} (index {index})")
+            return index
+    return 0 if monitors else None
+
+def track_image(image_path, action_name):
+    location = pyautogui.locateOnScreen(image_path, confidence=0.9)
+    if location:
+        x, y = pyautogui.center(location)
+        print(f"{action_name} located at {x}, {y}")
+        return (x, y), datetime.now()
+    return None, None
+
+def track_final_image(image_path, action_name):
+    location = pyautogui.locateOnScreen(image_path, confidence=0.9)
+    if location:
+        w, x, y, z = location.left, location.top, location.width, location.height
+        print(f"{action_name} located at {w}, {x}, {y}, {z}")
+        return (w, x, y, z), datetime.now()
+    return None, None
+
+def save_to_json(data, case_id):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"CaseId_{case_id}_{timestamp}.json")
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    while True:
+        if window.isActive:
+            print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+            start_time = datetime.now()
+            data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+            if not json_created:
+                location, start_id_time = track_image(summary_button_path, "summary_button")
+                if location:
+                    x, y = location
+                    curr_x, curr_y = pyautogui.position()
+                    pyautogui.moveTo(x + 20, y + 20)
+                    pyautogui.rightClick()
+                    pyautogui.moveTo(x + 30, y + 30)
+                    pyautogui.click()
+                    summary_text = pyperclip.paste()
+                    pyautogui.moveTo(curr_x, curr_y)
+                    summary_dict = {}
+                    lines = summary_text.split('\n')
+                    for line in lines:
+                        if line.strip():
+                            parts = line.split('\t')
+                            key = parts[0].strip() if len(parts) > 0 else ""
+                            value = parts[1].strip() if len(parts) > 1 else ""
+                            summary_dict[key] = value
+                            if key == "Id":
+                                case_id = value
+                            else:
+                                case_id = "dummy"
+                    print("Summary Dict", summary_dict)
+                    data_dict.update(summary_dict)
+                    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+                    save_to_json(data_dict, case_id)
+                    json_created = True
+                    print("JSON created with Summary data.")
+
+            if json_created:
+                while True:
+                    location_end, end_time = track_final_image(end_button_path, "end_button")
+                    if location_end:
+                        end_button_region = {
+                            "left": location_end[0] - 10,
+                            "top": location_end[1] - 10,
+                            "right": location_end[2] + 10,
+                            "bottom": location_end[3] + 10
+                        }
+                        print("End button detected, monitoring for clicks in region.")
+                        monitor_clicks_in_region(end_button_region)
+                        return
+                    time.sleep(1)
+
+            time.sleep(1)
+
+def monitor_clicks_in_region(region):
+    with mss.mss() as sct:
+        while True:
+            x, y = pyautogui.position()
+            if (region['left'] <= x <= region['right'] and
+                region['top'] <= y <= region['bottom'] and
+                pyautogui.mouseDown()):
+                screenshot_path = os.path.join(process_folder, f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                sct.shot(output=screenshot_path)
+                print(f"Screenshot saved at {screenshot_path}")
+                break
+            time.sleep(0.1)
+
+# Main entry point
+if __name__ == "__main__":
+    target_window_title = "Case Management -"
+    monitor_thread = threading.Thread(target=monitor_process, args=(target_window_title,))
+    monitor_thread.start()
+    monitor_thread.join()
+
+
+
+
 import screeninfo
 import pygetwindow as gw
 
