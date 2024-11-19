@@ -1,4 +1,86 @@
 
+import cv2
+import pyautogui
+from screeninfo import get_monitors
+
+def get_screen_resolution():
+    """
+    Get the resolution of the primary screen using ScreenInfo.
+    """
+    for monitor in get_monitors():
+        # Assuming the primary monitor
+        print(f"Monitor: {monitor.name}, Resolution: {monitor.width}x{monitor.height}")
+        return monitor.width, monitor.height
+
+def perform_image_matching(fixed_image_path, fixed_resolution, threshold=0.8):
+    """
+    Perform image matching by scaling the fixed image to match the current screen resolution.
+    
+    Args:
+        fixed_image_path: Path to the fixed image.
+        fixed_resolution: Tuple of (width, height) for the fixed image's original resolution.
+        threshold: Confidence threshold for template matching.
+
+    Returns:
+        The coordinates of the top-left corner of the matched area if found, else None.
+    """
+    # Get the current screen resolution
+    current_width, current_height = get_screen_resolution()
+    print(f"Current Screen Resolution: {current_width}x{current_height}")
+
+    # Scaling factors
+    original_width, original_height = fixed_resolution
+    scale_width = current_width / original_width
+    scale_height = current_height / original_height
+
+    # Capture the current screen
+    screenshot = pyautogui.screenshot()
+    screenshot.save("screenshot.png")
+
+    # Load images
+    fixed_image = cv2.imread(fixed_image_path)
+    screenshot_image = cv2.imread("screenshot.png")
+
+    # Resize the fixed image to match the current resolution
+    resized_fixed_image = cv2.resize(fixed_image, (0, 0), fx=scale_width, fy=scale_height)
+
+    # Perform template matching
+    result = cv2.matchTemplate(screenshot_image, resized_fixed_image, cv2.TM_CCOEFF_NORMED)
+
+    # Get the best match position
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+
+    print(f"Match confidence: {max_val}")
+    if max_val >= threshold:
+        print(f"Match found at coordinates: {max_loc}")
+        # Highlight the matched area on the screenshot (optional)
+        top_left = max_loc
+        h, w = resized_fixed_image.shape[:2]
+        bottom_right = (top_left[0] + w, top_left[1] + h)
+        cv2.rectangle(screenshot_image, top_left, bottom_right, (0, 255, 0), 2)
+        cv2.imwrite("output_match.png", screenshot_image)
+        return top_left
+    else:
+        print("No match found.")
+        return None
+
+if __name__ == "__main__":
+    # Path to the fixed image (1920x1080 resolution)
+    fixed_image_path = "fixed_image.png"
+
+    # Fixed resolution of the reference image
+    fixed_resolution = (1920, 1080)
+
+    # Perform the image matching
+    match_coordinates = perform_image_matching(fixed_image_path, fixed_resolution)
+
+    if match_coordinates:
+        print(f"Element located at: {match_coordinates}")
+    else:
+        print("Element not found on the screen.")
+
+
+
 
 import time
 import threading
