@@ -1,3 +1,91 @@
+def process_key_store(self, key_store_data, workflow_dict, keyname_store_set, keyname_mapping_set,
+                      business_function_dict, delivery_function_dict, process_function_dict,
+                      session, user_id, user_name, user_email):
+    key_store_entries = key_store_data.to_dict(orient='records')
+    key_store_request_id = None
+    seen_keynames = set()
+    serial_number = 1
+
+    # Group entries by ProcessName, DeliveryService, BusinessLevel, and WorkflowName
+    grouped_entries = {}
+    for entry in key_store_entries:
+        group_key = (
+            entry['ProcessName'],
+            entry['DeliveryService'],
+            entry['BusinessLevel'],
+            entry['WorkflowName']
+        )
+        grouped_entries.setdefault(group_key, []).append(entry)
+
+    # Validate each group
+    for group_key, entries in grouped_entries.items():
+        is_unique_values = [entry['UniqueKey'] for entry in entries]
+        yes_count = is_unique_values.count("Yes")
+        no_count = is_unique_values.count("No")
+
+        # Check if the group has exactly one "Yes" and not all "No"
+        if yes_count != 1:
+            return jsonify({
+                'message': f'Group {group_key} must have exactly one "Yes" in UniqueKey field.'
+            }), 400
+        if no_count == len(is_unique_values):
+            return jsonify({
+                'message': f'Group {group_key} cannot have all entries as "No" in UniqueKey field.'
+            }), 400
+
+    # Process each entry after validation
+    for entry in key_store_entries:
+        workflow_name = entry['WorkflowName']
+        workflow_id = workflow_dict.get(workflow_name)
+
+        if workflow_id is None:
+            return jsonify({'message': f'Workflow "{workflow_name}" does not exist in KEY_STORE sheet'}), 400
+
+        key_name = entry['KeyName']
+        if key_name in seen_keynames:
+            return jsonify({'message': f'Duplicate KeyName "{key_name}" in KEY_STORE sheet'}), 400
+
+        seen_keynames.add(key_name)
+
+        if (workflow_id, key_name) in keyname_store_set or (workflow_id, key_name) in keyname_mapping_set:
+            return jsonify({'message': f'Duplicate KeyName "{key_name}" for Workflow "{workflow_name}" in KEY_STORE'}), 400
+
+        if not key_store_request_id:
+            new_request = KeynameStoreRequests(
+                count=len(key_store_entries),
+                req_created_date=datetime.utcnow(),
+                modified_date=datetime.utcnow(),
+                created_by=user_id,
+                creator_name=user_name,
+                creator_email=user_email,
+                is_active=True,
+                status="open",
+            )
+            session.add(new_request)
+            session.flush()
+            key_store_request_id = new_request.request_id
+
+        new_keyname_config = KeynameStoreConfigRequests(
+            request_id=key_store_request_id,
+            workflow_id=workflow_id,
+            serial_number=serial_number,
+            business_level_id=business_function_dict.get(entry['BusinessLevel']),
+            delivery_service_id=delivery_function_dict.get(entry['DeliveryService']),
+            process_name_id=process_function_dict.get(entry['ProcessName']),
+            activity_key_name=key_name,
+            activity_key_layout=entry['Layout'],
+            is_unique=entry['UniqueKey'] == 'Yes',
+            remarks=str(entry['Remarks']),
+            is_active=True,
+            status_ar='open'
+        )
+        session.add(new_keyname_config)
+        serial_number += 1
+
+    return None
+
+
+
 
 import cv2
 import pyautogui
