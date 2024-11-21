@@ -1,3 +1,46 @@
+
+from pywinauto import Application
+from pywinauto.findwindows import ElementNotFoundError
+
+def list_controls_with_text(window):
+    """
+    Lists all controls with their text and control type in the given window.
+    :param window: The Pywinauto WindowSpecification object.
+    """
+    print("All Controls and Their Text:")
+    print("=" * 80)
+
+    try:
+        # Find all descendants (all elements in the window hierarchy)
+        elements = window.descendants()
+        for elem in elements:
+            try:
+                # Get the control type and text
+                control_type = elem.friendly_class_name()
+                control_text = elem.window_text()
+                print(f"Control Type: {control_type}, Text: '{control_text}', Rect: {elem.rectangle()}")
+            except Exception as e:
+                print(f"Error processing element: {e}")
+    except Exception as e:
+        print(f"Error while retrieving controls: {e}")
+
+
+# Main Execution
+try:
+    # Connect to the application window
+    app = Application(backend="uia").connect(title_re=".*Case Management.*")
+    window = app.window(title_re=".*Case Management.*")
+
+    print(f"Inspecting the 'Case Management' window for all controls and text:\n")
+    list_controls_with_text(window)
+
+except ElementNotFoundError:
+    print("Error: The specified window 'Case Management' was not found.")
+except Exception as e:
+    print(f"Unexpected error: {e}")
+
+
+
 from pywinauto import Application
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.uia_defines import IUIA
