@@ -26,6 +26,141 @@ def find_window_by_title(partial_title):
         time.sleep(1)
 
 
+def find_element_by_text(window, search_text):
+    """Find an element in the window that matches the search text."""
+    try:
+        window.set_focus()
+        elements = window.descendants(control_type="Text")  # Get all text elements
+        for element in elements:
+            if search_text.lower() in element.window_text().lower():
+                print(f"Found element with text: {element.window_text()}")
+                return element
+        print(f"No element found with text: {search_text}")
+    except Exception as e:
+        print(f"Error finding element: {e}")
+    return None
+
+
+def scroll_and_interact(window, element, search_text):
+    """Scroll to an element and interact with it."""
+    try:
+        # Ensure the window is focused
+        window.set_focus()
+
+        # Simulate scrolling until the element is visible
+        for _ in range(10):  # Adjust scroll attempts as needed
+            element = find_element_by_text(window, search_text)
+            if element:
+                # Right-click on the found element
+                element.right_click_input()
+                send_keys("^c")  # Simulate Ctrl+C for copying
+                return True
+            else:
+                # Scroll down if the element is not found
+                send_keys("{PGDN}")  # Page Down
+                time.sleep(1)
+        print("Failed to locate the element after scrolling.")
+    except Exception as e:
+        print(f"Error interacting with element: {e}")
+    return False
+
+
+def capture_summary_data(window, search_text="Summary"):
+    """Capture summary data by searching for a specific element."""
+    try:
+        # Find the desired element by text and scroll to it
+        element = find_element_by_text(window, search_text)
+        if not element:
+            print(f"Scrolling to find the element with text '{search_text}'")
+            if not scroll_and_interact(window, element, search_text):
+                return
+
+        # Fetch the copied content
+        summary_text = os.popen("powershell -command Get-Clipboard").read()
+        print("Summary Text copied:", summary_text)
+
+        # Parse the pasted content into key-value pairs
+        summary_dict = {}
+        lines = summary_text.split('\n')
+        for line in lines:
+            if line.strip():
+                parts = line.split('\t')
+                key = parts[0].strip() if len(parts) > 0 else ""
+                value = parts[1].strip() if len(parts) > 1 else ""
+                summary_dict[key] = value
+        print("Summary Dict:", summary_dict)
+
+        # Update data_dict and save to JSON
+        start_id_time = datetime.now()
+        data_dict.update(summary_dict)
+        data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+        save_to_json(data_dict)
+        global json_created
+        json_created = True
+        print("JSON created with Summary data.")
+    except Exception as e:
+        print(f"Error capturing summary data: {e}")
+
+
+def save_to_json(data):
+    """Save tracked data to JSON."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"Case_{timestamp}.json")
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+
+def monitor_process(target_title):
+    """Monitor a specific window and capture data."""
+    global json_created
+    window = find_window_by_title(target_title)
+    print(f"Tracking started for '{target_title}'")
+    
+    start_time = datetime.now()
+    data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Capture data from the window
+    capture_summary_data(window)
+
+
+# Main entry point
+if __name__ == "__main__":
+    target_window_title = "Case Management -"
+    try:
+        monitor_process(target_window_title)
+    except KeyboardInterrupt:
+        print("Process interrupted by user.")
+
+
+
+from pywinauto import Desktop, Application
+from pywinauto.keyboard import send_keys
+from datetime import datetime
+import json
+import os
+import time
+
+# Define paths for JSON output and other settings
+process_folder = r"C:\pulse_event_trigger\process"
+data_dict = {}
+json_created = False  # Flag to check if JSON file is already created
+
+
+def find_window_by_title(partial_title):
+    """Find a window by its partial title."""
+    while True:
+        try:
+            windows = Desktop(backend="uia").windows()
+            for win in windows:
+                if partial_title in win.window_text():
+                    print(f"Found window: {win.window_text()}")
+                    return win
+        except Exception as e:
+            print(f"Error finding window: {e}")
+        time.sleep(1)
+
+
 def get_window_coordinates(window):
     """Retrieve the coordinates of the given window."""
     rect = window.rectangle()
