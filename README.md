@@ -1,3 +1,65 @@
+import time
+from pywinauto import Application, timings
+
+# Set logging level to help debug and understand what's happening internally
+timings.Timings.LOG_LEVEL = 3
+
+def print_controls(window):
+    """
+    Recursively print all controls within the given window.
+    """
+    for control in window.children():
+        try:
+            control_type = control.friendly_class_name()
+            control_text = control.window_text()
+            print(f"Control Type: {control_type}, Text: '{control_text}'")
+
+            # Recursively check child elements of complex controls like panels, groupboxes, etc.
+            if control_type in ['TabControl', 'GroupBox', 'Pane', 'Panel', 'TabItem', 'Frame']:
+                print_controls(control)  # Dig deeper if it's a container or group
+
+        except Exception as e:
+            print(f"Error inspecting control {control}: {e}")
+
+def explore_tabs_and_controls(window):
+    """
+    Explore tabs and nested elements (if applicable), ensuring all controls are printed.
+    """
+    # First, ensure the main window is visible
+    window.wait('visible', timeout=30)  # Wait for the main window to be visible
+
+    # Print all controls at the top level
+    print_controls(window)
+
+    # If there are tabs, explore them as well
+    if window.child_window(control_type="TabControl").exists():
+        tab_control = window.child_window(control_type="TabControl")
+        tabs = tab_control.children()
+
+        # Iterate through each tab and explore its contents
+        for tab in tabs:
+            print(f"Exploring tab: {tab.window_text()}")
+            tab.click_input(double=True)  # Double-click to select the tab
+            time.sleep(1)  # Wait for tab to load content
+            print_controls(window)  # Print all controls in the current tab
+
+def main():
+    # Connect to the application
+    app = Application(backend="uia").connect(title_re=".*YourApplicationTitle.*")  # Adjust with your app's title
+    window = app.window(title_re=".*YourApplicationTitle.*")  # Adjust window title regex to match
+
+    # Ensure window is visible and ready for interaction
+    window.wait('visible', timeout=30)
+    print(f"Window {window.window_text()} is now visible.")
+
+    # Call function to explore and print all controls
+    explore_tabs_and_controls(window)
+
+if __name__ == "__main__":
+    main()
+
+
+
 
 from pywinauto import Application
 from pywinauto.findwindows import ElementNotFoundError
