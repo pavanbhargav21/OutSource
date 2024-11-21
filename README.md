@@ -1,4 +1,117 @@
 
+from pywinauto import Desktop, Application
+from pywinauto.keyboard import send_keys
+from datetime import datetime
+import json
+import os
+import time
+
+# Define paths for JSON output and other settings
+process_folder = r"C:\pulse_event_trigger\process"
+data_dict = {}
+json_created = False  # Flag to check if JSON file is already created
+
+
+def find_window_by_title(partial_title):
+    """Find a window by its partial title."""
+    while True:
+        try:
+            windows = Desktop(backend="uia").windows()
+            for win in windows:
+                if partial_title in win.window_text():
+                    print(f"Found window: {win.window_text()}")
+                    return win
+        except Exception as e:
+            print(f"Error finding window: {e}")
+        time.sleep(1)
+
+
+def get_window_coordinates(window):
+    """Retrieve the coordinates of the given window."""
+    rect = window.rectangle()
+    coords = {
+        "left": rect.left,
+        "top": rect.top,
+        "right": rect.right,
+        "bottom": rect.bottom,
+        "width": rect.width(),
+        "height": rect.height(),
+    }
+    print(f"Window coordinates: {coords}")
+    return coords
+
+
+def capture_summary_data(window):
+    """Capture summary data by simulating interactions."""
+    try:
+        # Right-click on the window and copy data
+        window.set_focus()
+        window.right_click_input()
+        send_keys("^c")  # Simulate Ctrl+C for copying
+        
+        # Fetch the copied content
+        summary_text = os.popen("powershell -command Get-Clipboard").read()
+        print("Summary Text copied:", summary_text)
+
+        # Parse the pasted content into key-value pairs
+        summary_dict = {}
+        lines = summary_text.split('\n')
+        for line in lines:
+            if line.strip():
+                parts = line.split('\t')
+                key = parts[0].strip() if len(parts) > 0 else ""
+                value = parts[1].strip() if len(parts) > 1 else ""
+                summary_dict[key] = value
+        print("Summary Dict:", summary_dict)
+
+        # Update data_dict and save to JSON
+        start_id_time = datetime.now()
+        data_dict.update(summary_dict)
+        data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+        save_to_json(data_dict)
+        global json_created
+        json_created = True
+        print("JSON created with Summary data.")
+    except Exception as e:
+        print(f"Error capturing summary data: {e}")
+
+
+def save_to_json(data):
+    """Save tracked data to JSON."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"Case_{timestamp}.json")
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+
+def monitor_process(target_title):
+    """Monitor a specific window and capture data."""
+    global json_created
+    window = find_window_by_title(target_title)
+    print(f"Tracking started for '{target_title}'")
+    
+    start_time = datetime.now()
+    data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Get window coordinates (if needed)
+    coords = get_window_coordinates(window)
+
+    # Capture data from the window
+    capture_summary_data(window)
+
+
+# Main entry point
+if __name__ == "__main__":
+    target_window_title = "Case Management -"
+    try:
+        monitor_process(target_window_title)
+    except KeyboardInterrupt:
+        print("Process interrupted by user.")
+
+
+
+
 
 Overview of PyAutoGUI
 
