@@ -1,4 +1,46 @@
 from pywinauto import Application
+from pywinauto.controls.uiawrapper import UIAWrapper
+from pywinauto.findwindows import ElementNotFoundError
+
+def print_element_hierarchy(element, level=0):
+    """
+    Recursively prints the hierarchy of all elements in the given element's subtree.
+    :param element: The root element to inspect.
+    :param level: The depth of the current element (for indentation).
+    """
+    try:
+        indent = "  " * level
+        element_type = element.control_type()
+        element_text = element.window_text()
+        element_rect = element.rectangle()
+
+        print(f"{indent}- Control Type: {element_type}, Text: '{element_text}', "
+              f"Rect: {element_rect}")
+
+        # Recursively inspect all child elements
+        for child in element.children():
+            print_element_hierarchy(child, level + 1)
+    except Exception as e:
+        print(f"{indent}- Error accessing element: {e}")
+
+# Main Execution
+try:
+    # Connect to the application window
+    app = Application(backend="uia").connect(title_re=".*Case Management.*")
+    window = app.window(title_re=".*Case Management.*")
+
+    print("Inspecting the entire element hierarchy of the 'Case Management' window:")
+    print_element_hierarchy(window)
+except ElementNotFoundError:
+    print("Error: The specified window 'Case Management' was not found.")
+except Exception as e:
+    print(f"Unexpected error: {e}")
+
+
+
+
+
+from pywinauto import Application
 
 def print_and_find_element(window, level=0, search_text="summary"):
     """
