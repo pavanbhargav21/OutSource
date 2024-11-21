@@ -1,4 +1,56 @@
 from pywinauto import Application
+from pywinauto.findwindows import ElementNotFoundError
+from pywinauto.uia_defines import IUIA
+
+def list_supported_controls(window):
+    """
+    Lists and prints all supported controls in the given window.
+    :param window: The Pywinauto WindowSpecification object.
+    """
+    control_types = [
+        "Button", "CheckBox", "RadioButton", "GroupBox", "ComboBox", "Edit",
+        "Header", "ListBox", "ListView", "PopupMenu", "Static", "StatusBar",
+        "TabControl", "Toolbar", "ToolTips", "TreeView", "UpDown"
+    ]
+
+    print("Supported Controls Found:")
+    print("=" * 50)
+
+    # Find all descendants and filter by control type
+    try:
+        elements = window.descendants()
+        for elem in elements:
+            try:
+                control_type = elem.friendly_class_name()
+                if control_type in control_types:
+                    print(f"Control Type: {control_type}, Text: '{elem.window_text()}', "
+                          f"Rect: {elem.rectangle()}")
+            except Exception as e:
+                print(f"Error processing element: {e}")
+    except Exception as e:
+        print(f"Error while listing controls: {e}")
+
+
+# Main Execution
+try:
+    # Connect to the application window
+    app = Application(backend="uia").connect(title_re=".*Case Management.*")
+    window = app.window(title_re=".*Case Management.*")
+
+    print(f"Inspecting the 'Case Management' window for supported control types:\n")
+    list_supported_controls(window)
+
+except ElementNotFoundError:
+    print("Error: The specified window 'Case Management' was not found.")
+except Exception as e:
+    print(f"Unexpected error: {e}")
+
+
+
+
+
+
+from pywinauto import Application
 from pywinauto.controls.uiawrapper import UIAWrapper
 from pywinauto.findwindows import ElementNotFoundError
 
