@@ -1,3 +1,51 @@
+from pywinauto import Application
+
+def print_and_find_element(window, level=0, search_text="summary"):
+    """
+    Recursively prints all elements in the window with their text and control type.
+    If an element matches the search_text, performs right-click and copy operation.
+    :param window: The window or container element.
+    :param level: The depth level in the hierarchy (used for indentation).
+    :param search_text: The text to search for in the elements.
+    """
+    try:
+        elements = window.descendants()
+        for element in elements:
+            indent = "  " * level
+            try:
+                # Print the element's details
+                text = element.window_text()
+                control_type = element.control_type()
+                print(f"{indent}- Text: '{text}', Control Type: '{control_type}'")
+
+                # Check if the text matches the search target
+                if search_text.lower() in text.lower():
+                    print(f"{indent}>>> Found element with text '{search_text}'!")
+                    # Right-click and copy
+                    element.right_click_input()
+                    element.type_keys("^c")  # Simulate Ctrl+C to copy
+                    print(f"{indent}>>> Copied text from the element.")
+
+                # Recursively print child elements if available
+                print_and_find_element(element, level + 1, search_text)
+            except Exception as e:
+                print(f"{indent}- Error accessing element: {e}")
+    except Exception as e:
+        print(f"Error fetching descendants: {e}")
+
+# Main program
+try:
+    # Connect to the "Case Management" window
+    app = Application(backend="uia").connect(title_re=".*Case Management.*")
+    window = app.window(title_re=".*Case Management.*")
+
+    print("Inspecting all elements in the 'Case Management' window...")
+    print_and_find_element(window, search_text="summary")
+except Exception as e:
+    print(f"Error: {e}")
+
+
+
 
 from pywinauto import Desktop, Application
 from pywinauto.keyboard import send_keys
