@@ -1,3 +1,96 @@
+
+import json
+import os
+from datetime import datetime
+import pyautogui
+import pyperclip
+
+data_dict = {}
+process_folder = "./output"  # Update to your desired folder path
+
+
+def capture_summary_data(location, start_id_time):
+    """Capture summary data and save it to JSON."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyautogui.moveTo(x + 20, y + 20)
+    pyautogui.rightClick()
+    pyautogui.moveTo(x + 30, y + 30)
+    pyautogui.click()
+    summary_text = pyperclip.paste()  # Copy extracted data
+    pyautogui.moveTo(curr_x, curr_y)
+    print("Summary Text copied:", summary_text)
+
+    # Parse the pasted content into key-value pairs
+    summary_dict = {}
+    lines = summary_text.split('\n')
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        # Check for "Action By" and extract date/time
+        if "Action By" in line:
+            date_time = extract_date_time(line)
+            summary_dict["Action By Date/Time"] = date_time
+
+            # Look for "Transition" in the next line
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if "Transition" in next_line:
+                    transition_text = extract_transition(next_line)
+                    summary_dict["Transition"] = transition_text
+
+    # Save additional metadata
+    summary_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+    print("Summary Dict", summary_dict)
+
+    # Update data_dict and save to JSON
+    data_dict.update(summary_dict)
+    save_to_json(data_dict, summary_dict.get("Id", "dummy"))
+    print("JSON created with Summary data.")
+
+
+def extract_date_time(line):
+    """Extract date and time from a line."""
+    # Assuming date/time is in the format "YYYY-MM-DD HH:MM:SS"
+    parts = line.split()
+    for part in parts:
+        try:
+            date_time = datetime.strptime(part, "%Y-%m-%d %H:%M:%S")
+            return date_time.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    return "Unknown Date/Time"
+
+
+def extract_transition(line):
+    """Extract transition text from a line."""
+    if "Transition" in line:
+        parts = line.split("Transition")
+        if len(parts) > 1:
+            return parts[1].strip()
+    return "Unknown Transition"
+
+
+def save_to_json(data, case_id):
+    """Save tracked data to JSON with formatted name."""
+    if not os.path.exists(process_folder):
+        os.makedirs(process_folder)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"CaseId_{case_id}_{timestamp}.json")
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+
+# Example usage (replace with your actual parameters)
+capture_summary_data((100, 200), datetime.now())
+
+
+
+
 import time
 from pywinauto import Application, timings
 
