@@ -1,3 +1,147 @@
+import time
+from datetime import datetime
+import json
+from screeninfo import get_monitors
+import pyautogui
+import pygetwindow as gw
+import pyperclip
+import os
+
+# Define paths for images and folders
+summary_button_path = r"C:\pulse_event_trigger\summary_button.png"
+end_button_path = r"C:\pulse_event_trigger\end_button.png"
+process_folder = r"C:\pulse_event_trigger\process"
+
+summary_location = (0.07, 0.7)
+end_location = (0.5, 0.825)
+
+# Dictionary to store extracted data
+data_dict = {}
+json_created = False  # Flag to check if JSON file is already created
+
+
+def get_active_monitors():
+    """Get active monitor details."""
+    monitors = get_monitors()
+    monitor_details = [{"x": m.x, "y": m.y, "width": m.width, "height": m.height} for m in monitors]
+    print("Monitors Info:", monitor_details)
+    return monitor_details
+
+
+def check_window_title(target_title, monitor_details):
+    """Monitor for a specific window title on any monitor."""
+    while True:
+        windows = gw.getAllTitles()
+        print("All window titles:", windows)
+
+        for win in windows:
+            if target_title in win:
+                print("Checking with:", win)
+                window = gw.getWindowsWithTitle(win)[0]
+                print("Window is:", window)
+                monitor_index = get_monitor_index(window, monitor_details)
+                return window, monitor_index  # Return active window and monitor index
+        time.sleep(1)
+
+
+def get_monitor_index(window, monitors):
+    """Determine on which monitor the majority of the window is visible."""
+    max_overlap_area = 0
+    best_monitor_index = 0
+
+    window_rect = {
+        "left": window.left,
+        "top": window.top,
+        "right": window.left + window.width,
+        "bottom": window.top + window.height,
+    }
+
+    for index, monitor in enumerate(monitors):
+        monitor_rect = {
+            "left": monitor["x"],
+            "top": monitor["y"],
+            "right": monitor["x"] + monitor["width"],
+            "bottom": monitor["y"] + monitor["height"],
+        }
+
+        # Calculate the overlapping area
+        overlap_left = max(window_rect["left"], monitor_rect["left"])
+        overlap_top = max(window_rect["top"], monitor_rect["top"])
+        overlap_right = min(window_rect["right"], monitor_rect["right"])
+        overlap_bottom = min(window_rect["bottom"], monitor_rect["bottom"])
+
+        # Overlap dimensions
+        overlap_width = max(0, overlap_right - overlap_left)
+        overlap_height = max(0, overlap_bottom - overlap_top)
+        overlap_area = overlap_width * overlap_height
+
+        print(f"Monitor {index} overlap area: {overlap_area}")
+
+        # Update the best monitor based on the largest overlap area
+        if overlap_area > max_overlap_area:
+            max_overlap_area = overlap_area
+            best_monitor_index = index
+
+    if max_overlap_area > 0:
+        print(f"Window is primarily on monitor {best_monitor_index + 1} (index {best_monitor_index})")
+        return best_monitor_index
+
+    # Default to the first monitor if no overlap is found
+    print("No significant overlap with any monitor; defaulting to primary monitor.")
+    return 0 if monitors else None
+
+
+def track_location(location_tuple, action_name, monitor_index, monitor_details):
+    """Locate a specific location based on the active monitor."""
+    x_ratio, y_ratio = location_tuple
+    monitor = monitor_details[monitor_index]
+
+    # Calculate absolute coordinates with padding
+    x = monitor["x"] + int(monitor["width"] * x_ratio)
+    y = monitor["y"] + int(monitor["height"] * y_ratio)
+
+    print(f"{action_name} located at ({x}, {y}) on monitor {monitor_index + 1}")
+    return (x, y), datetime.now()
+
+
+def save_to_json(data, case_id):
+    """Save tracked data to JSON with a formatted name."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(process_folder, f"CaseId_{case_id}_{timestamp}.json")
+    with open(filename, "w") as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to {filename}")
+
+
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    # Track active window
+    while True:
+        print("Tracking active window")
+        if window.isActive:
+            print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+            start_time = datetime.now()
+            data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+            time.sleep(1)
+
+            if not json_created:
+                # Track summary button location
+                location, start_id_time = track_location(summary_location, "Summary Button", monitor_index, monitor_details)
+                if location:
+                    save_to_json(data_dict, "summary_button")
+                break  # Exit tracking after handling JSON creation
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    target_title = "Your Window Title"  # Replace with your target window title
+    monitor_process(target_title)
+
+
+
 
 import json
 import os
