@@ -1,3 +1,63 @@
+def monitor_process(target_title):
+    global json_created
+    monitor_details = get_active_monitors()
+    window, monitor_index = check_window_title(target_title, monitor_details)
+
+    # Track active window
+    while True:
+        print("Tracking active window...")
+        if window.isActive:
+            print(f"Tracking started for '{target_title}' on monitor {monitor_index}")
+            start_time = datetime.now()
+            data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Perform right-click and copy
+            location, _ = track_location(summary_location, "summary_button", monitor_index, monitor_details)
+            capture_data(location, start_time)
+
+            if json_created:
+                print("JSON created. Monitoring for 'ChangeState' window...")
+                
+                # Monitor for 'ChangeState' window
+                change_state_window = None
+                while not change_state_window:
+                    windows = gw.getAllTitles()
+                    for win in windows:
+                        if "ChangeState" in win:
+                            print(f"'ChangeState' window detected: {win}")
+                            change_state_window = gw.getWindowsWithTitle(win)[0]
+                            break
+                    time.sleep(1)
+
+                # Wait for 'ChangeState' window to close
+                while change_state_window.isVisible:
+                    print("'ChangeState' window is still visible, waiting...")
+                    time.sleep(1)
+
+                print("'ChangeState' window closed. Proceeding to capture 'Copy All'...")
+                end_time = datetime.now()
+                time_difference = (end_time - start_time).total_seconds()
+
+                # Check if time difference is within the threshold
+                if time_difference <= 30:
+                    print(f"Time difference is {time_difference} seconds, updating JSON...")
+                    location, _ = track_location(end_location, "end_button", monitor_index, monitor_details)
+                    capture_entire_data(location, start_time)
+
+                    # Update JSON with state change data
+                    data_dict["state_change_detected"] = True
+                    data_dict["state_change_time"] = end_time.strftime("%Y-%m-%d %H:%M:%S")
+                    save_to_json(data_dict, "state_change")
+                else:
+                    print(f"Time difference of {time_difference} seconds exceeds threshold. Skipping update.")
+            else:
+                print("JSON not yet created. Continuing monitoring...")
+            time.sleep(5)  # Adjust sleep time as needed
+
+
+
+
+
 import time
 from datetime import datetime
 import json
