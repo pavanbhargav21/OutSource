@@ -1,3 +1,132 @@
+To determine the size and position of your application window (e.g., when it’s resized to half the screen width), you can use libraries like pygetwindow, pywinauto, or the Windows API (ctypes) to track the window's dimensions and coordinates, regardless of whether it is fullscreen or resized.
+
+Approach Using pygetwindow
+
+pygetwindow provides an easy way to retrieve the window's size and position.
+
+Installation:
+
+pip install PyGetWindow
+
+Example:
+
+import pygetwindow as gw
+
+# Get a list of all open windows
+windows = gw.getAllWindows()
+
+# Find your specific application by title
+for window in windows:
+    if 'YourAppTitle' in window.title:  # Replace 'YourAppTitle' with the actual window title
+        print(f"Title: {window.title}")
+        print(f"Size: {window.width}x{window.height}")
+        print(f"Position: ({window.left}, {window.top})")
+        if window.width < 1920 or window.height < 1080:
+            print("The window is not occupying the full screen.")
+        break
+
+This will give you the window's current size (width, height) and its position on the screen (left, top). You can use this information to check if the window is occupying the full screen.
+
+
+---
+
+Approach Using pywinauto
+
+If you need more advanced control, pywinauto can be used to retrieve window size and detect if it’s not fullscreen.
+
+Installation:
+
+pip install pywinauto
+
+Example:
+
+from pywinauto import Application
+
+# Connect to your application (replace 'YourAppTitle' with your window title)
+app = Application().connect(title_re=".*YourAppTitle.*")
+window = app.window(title_re=".*YourAppTitle.*")
+
+# Get the window's rectangle (left, top, right, bottom)
+rect = window.rectangle()
+width = rect.width()
+height = rect.height()
+
+print(f"Window Size: {width}x{height}")
+print(f"Position: ({rect.left}, {rect.top})")
+
+if width < 1920 or height < 1080:
+    print("The window is not occupying the full screen.")
+
+This method can handle minimized and hidden windows as well.
+
+
+---
+
+Approach Using Windows API (ctypes)
+
+For more low-level access, you can use ctypes to retrieve window dimensions using the Windows API.
+
+Example:
+
+import ctypes
+from ctypes import wintypes
+
+# Define Windows API functions and structures
+user32 = ctypes.WinDLL('user32', use_last_error=True)
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG)
+    ]
+
+def get_window_rect(title):
+    hwnd = user32.FindWindowW(None, title)  # Replace None with the title of your application window
+    if not hwnd:
+        raise Exception("Window not found!")
+    rect = RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return rect
+
+# Example usage
+title = "YourAppTitle"  # Replace with the exact title of your window
+rect = get_window_rect(title)
+width = rect.right - rect.left
+height = rect.bottom - rect.top
+
+print(f"Window Size: {width}x{height}")
+print(f"Position: ({rect.left}, {rect.top})")
+
+if width < 1920 or height < 1080:
+    print("The window is not occupying the full screen.")
+
+
+---
+
+Key Points
+
+1. Full-Screen Check: Compare the window's width and height to the full resolution (e.g., 1920x1080) to determine if it’s fullscreen.
+
+if window.width < 1920 or window.height < 1080:
+    print("The window is not fullscreen.")
+
+
+2. Coordinates: The left and top values of the window indicate its position on the screen.
+
+
+3. Cross-Monitor Considerations: If using multiple monitors, ensure you account for their combined resolutions or the specific monitor coordinates.
+
+
+
+Choose the method that best fits your requirements based on ease of use (pygetwindow) or control and extensibility (pywinauto or ctypes).
+
+
+
+
+
+
 def monitor_process(target_title):
     global json_created
     monitor_details = get_active_monitors()
