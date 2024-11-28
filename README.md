@@ -1,3 +1,41 @@
+import win32gui
+import ctypes
+from ctypes import wintypes
+
+user32 = ctypes.WinDLL('user32', use_last_error=True)
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG)
+    ]
+
+def find_window_by_partial_title(partial_title):
+    def callback(hwnd, titles):
+        if win32gui.IsWindowVisible(hwnd) and partial_title in win32gui.GetWindowText(hwnd):
+            titles.append(hwnd)
+    titles = []
+    win32gui.EnumWindows(callback, titles)
+    return titles[0] if titles else None
+
+def get_window_rect(hwnd):
+    rect = RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return rect
+
+partial_title = "Notepad"  # Replace with part of your application's title
+hwnd = find_window_by_partial_title(partial_title)
+if hwnd:
+    rect = get_window_rect(hwnd)
+    print(f"Window Size: {rect.right - rect.left}x{rect.bottom - rect.top}")
+    print(f"Position: ({rect.left}, {rect.top})")
+else:
+    print("Window not found!")
+
+
+
 To determine the size and position of your application window (e.g., when it’s resized to half the screen width), you can use libraries like pygetwindow, pywinauto, or the Windows API (ctypes) to track the window's dimensions and coordinates, regardless of whether it is fullscreen or resized.
 
 Approach Using pygetwindow
