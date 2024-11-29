@@ -1,4 +1,187 @@
 
+
+To integrate the logic you've provided with the initial tracking system, I'll modify the original code so it works with the specific window titles and locations from the app_store and app_store_location dictionaries. This means we’ll combine tracking of window titles, their respective actions, and handling the screen capture at the specified locations.
+
+Here's how we can adapt the approach:
+
+Modified Approach
+
+1. AppStore & Locations: The app_store dictionary contains application names and window titles. The app_store_location dictionary contains the specific locations (as ratios) for each action within each window.
+
+
+2. Monitor Window Title and Location: As we detect the active window title, we will then identify the corresponding application. Once identified, we will use the specific locations for each action to perform the required operations.
+
+
+3. Trigger Actions Dynamically: We'll dynamically track the first window title for each application, and when matched, locate the specified position based on the defined action.
+
+
+
+Refactored Code
+
+import time
+import threading
+from datetime import datetime
+import pyautogui
+import pygetwindow as gw
+from pynput.mouse import Listener
+
+# Dummy AppStore Details -> Will be replaced with Database Queries
+app_store = {
+    "OWS": "Case Management -,Change State",
+    "BPM": "Work Object,Process Work,Loan Maintenance"
+}
+app_store_location = {
+    "OWS": {
+        "Case Management -": [(0.07, 0.7)],
+        "Change State": [(0.5, 0.825)]
+    },
+    "BPM": {
+        "Work Object": [(0.07, 0.7), (0.5, 0.3)],
+        "Process Work": [(0.5, 0.825)],
+        "Loan Maintenance": [(0.24, 0.09)]
+    }
+}
+
+# Global state to track running threads
+running_threads = {}
+
+def get_active_window_title():
+    """Fetch the current active window title."""
+    return gw.getActiveWindow().title
+
+def get_app_from_window_title(window_title):
+    """Identify the application name based on the active window title."""
+    for app_name, titles in app_store.items():
+        first_title = titles.split(",")[0].strip()  # Extract the first window title
+        if window_title == first_title:
+            return app_name
+    return None
+
+def start_tracker(app_name, action_name):
+    """Start the tracker thread dynamically for the given app."""
+    if app_name in running_threads:
+        return  # Avoid starting duplicate threads
+
+    # Fetch and start the tracker class
+    tracker_class = globals().get(f"{app_name}Tracker")
+    if not tracker_class:
+        print(f"No tracker class found for {app_name}")
+        return
+
+    tracker_instance = tracker_class(action_name)  # Initialize the tracker class with action name
+    thread = threading.Thread(target=tracker_instance.run)
+    thread.daemon = True
+    thread.start()
+    running_threads[app_name] = thread
+    print(f"Started tracker for {app_name} - {action_name}")
+
+def monitor_windows():
+    """Continuously monitor active windows and start trackers as needed."""
+    while True:
+        active_window = get_active_window_title()
+        app_name = get_app_from_window_title(active_window)
+        if app_name:
+            # Get the corresponding action for the app (first action in the list for now)
+            actions = app_store_location.get(app_name)
+            for action_name, locations in actions.items():
+                start_tracker(app_name, action_name)
+                for location in locations:
+                    monitor_location(location, action_name)
+        time.sleep(1)
+
+def monitor_location(location, action_name):
+    """Monitor the location where action needs to be taken (e.g., click or capture data)."""
+    x_ratio, y_ratio = location
+    # Locate the window based on its coordinates and window info (would be dynamic in actual implementation)
+    window = gw.getWindowsWithTitle(action_name)[0]  # Get the window by action name
+    window_info = {"left": window.left, "top": window.top, "width": window.width, "height": window.height}
+    
+    # Calculate absolute coordinates relative to the window
+    x = window_info["left"] + int(window_info["width"] * x_ratio)
+    y = window_info["top"] + int(window_info["height"] * y_ratio)
+
+    print(f"{action_name} located at ({x}, {y})")
+    capture_data((x, y), datetime.now())
+
+def capture_data(location, start_id_time):
+    """Capture data and save it to JSON."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyautogui.copy('')
+    pyautogui.rightClick(x, y)
+    pyautogui.moveTo(x + 10, y + 10)
+    pyautogui.click()
+    
+    # For example, let's just log the capture action
+    print(f"Captured data at {location} at {start_id_time}")
+
+# Example tracker classes for specific actions
+class OWSTracker:
+    def __init__(self, action_name):
+        self.action_name = action_name
+
+    def run(self):
+        while True:
+            print(f"Tracking OWS for {self.action_name}...")
+            time.sleep(5)
+
+class BPMTracker:
+    def __init__(self, action_name):
+        self.action_name = action_name
+
+    def run(self):
+        while True:
+            print(f"Tracking BPM for {self.action_name}...")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    monitor_windows()
+
+Key Changes:
+
+1. Dynamic Action Handling:
+
+Based on the app_store_location dictionary, the code now tracks specific actions (e.g., Case Management -, Work Object) for each application.
+
+The start_tracker method now passes the action name to the tracker class for each application.
+
+
+
+2. Tracker Initialization:
+
+The tracker classes (OWSTracker, BPMTracker) are initialized with an action name, and they will execute based on which action is being tracked.
+
+
+
+3. Location Calculation:
+
+For each action within an application, the location is calculated based on window ratios (x_ratio, y_ratio).
+
+The coordinates are calculated dynamically based on the monitor and window size.
+
+
+
+4. Window Interaction:
+
+The capture_data method demonstrates how interaction with specific locations (like right-click and capture) can be implemented.
+
+
+
+
+Next Steps:
+
+Extend with More Actions: You can easily extend the system by adding more window titles and corresponding locations in app_store and app_store_location.
+
+Customize Tracker Logic: Each tracker class (like OWSTracker or BPMTracker) can have customized logic to perform actions specific to the application, such as capturing data, clicking buttons, or navigating the application.
+
+
+Let me know if you need further customization or enhancements!
+
+
+
+
+
+
 # Your imports and definitions remain unchanged...
 
 def check_window_title(target_title, monitor_details):
