@@ -1,4 +1,117 @@
 
+def calculate_dynamic_offset(monitor_details, window_info, base_offset):
+    """Calculate dynamic offset based on monitor and window size."""
+    monitor_width = monitor_details['width']
+    monitor_height = monitor_details['height']
+    window_width = window_info['width']
+    window_height = window_info['height']
+
+    # Calculate scaling factors
+    width_ratio = window_width / monitor_width
+    height_ratio = window_height / monitor_height
+
+    # Adjust the base offset dynamically
+    dynamic_x = int(base_offset[0] * width_ratio)
+    dynamic_y = int(base_offset[1] * height_ratio)
+
+    print(f"Dynamic offsets calculated: ({dynamic_x}, {dynamic_y})")
+    return dynamic_x, dynamic_y
+
+
+def capture_data(location, start_id_time, monitor_details, window_info):
+    """Capture data and save it to JSON with dynamic offset."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyperclip.copy('')
+
+    # Calculate dynamic offset
+    dynamic_offset = calculate_dynamic_offset(monitor_details, window_info, (30, 30))
+
+    # Perform actions with the adjusted offset
+    pyautogui.rightClick(x, y)
+    pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+    pyautogui.click()
+    summary_text = pyperclip.paste()  # Copy extracted data
+    pyautogui.moveTo(curr_x, curr_y)
+    print("Summary Text copied:", summary_text)
+
+    # Parse the pasted content into key-value pairs
+    summary_dict = {}
+    case_id = "dummy"
+    lines = summary_text.split('\n')
+    for line in lines:
+        if line.strip():
+            parts = line.split('\t')
+            key = parts[0].strip() if len(parts) > 0 else ""
+            value = parts[1].strip() if len(parts) > 1 else ""
+            summary_dict[key] = value
+            if key == "Id":
+                case_id = value
+
+    print("Summary Dict", summary_dict)
+
+    # Update data_dict and save to JSON
+    data_dict.update(summary_dict)
+    data_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+    save_to_json(data_dict, case_id)
+    global json_created
+    json_created = True
+    print("JSON created with Summary data.")
+
+
+def capture_entire_data(location, start_id_time, monitor_details, window_info):
+    """Capture data and save it to JSON with dynamic offset."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyperclip.copy('')
+
+    # Calculate dynamic offset
+    dynamic_offset = calculate_dynamic_offset(monitor_details, window_info, (10, 20))
+
+    # Perform actions with the adjusted offset
+    pyautogui.rightClick(x, y)
+    pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+    time.sleep(5)
+    pyautogui.click()
+    summary_text = pyperclip.paste()  # Copy extracted data
+    pyautogui.moveTo(curr_x, curr_y)
+    print("Log Text copied:", summary_text)
+
+    # Parse the pasted content into key-value pairs
+    summary_dict = {}
+    lines = summary_text.split('\n')
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        # Check for "Action by" and extract date/time
+        if "Action by" in line:
+            date_time = extract_date_time(line)
+            summary_dict["Action By Date/Time"] = date_time
+
+            # Look for "Transition" in the next line
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if "transition" in next_line:
+                    transition_text = extract_transition(next_line)
+                    summary_dict["Transition"] = transition_text
+                    break
+
+    # Save additional metadata
+    summary_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+    print("Log Dict", summary_dict)
+
+    # Update data_dict and save to JSON
+    data_dict.update(summary_dict)
+    save_to_json(data_dict, summary_dict.get("Transition", "dummy"))
+    print("JSON created with Log data.")
+
+
+-------------------------+++++++++++--------------
+
+
+
 
 To integrate the logic you've provided with the initial tracking system, I'll modify the original code so it works with the specific window titles and locations from the app_store and app_store_location dictionaries. This means we’ll combine tracking of window titles, their respective actions, and handling the screen capture at the specified locations.
 
