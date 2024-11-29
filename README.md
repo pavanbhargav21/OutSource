@@ -1,4 +1,72 @@
 
+import cv2
+import pyautogui
+
+def scale_image_with_opencv(cropped_image_path, original_resolution, current_resolution):
+    """
+    Scales the cropped image using OpenCV to match the current screen resolution.
+
+    Parameters:
+        cropped_image_path (str): Path to the cropped image.
+        original_resolution (tuple): (width, height) of the monitor where the image was cropped.
+        current_resolution (tuple): (width, height) of the current monitor.
+
+    Returns:
+        str: Path to the scaled image.
+    """
+    # Load the cropped image
+    cropped_image = cv2.imread(cropped_image_path, cv2.IMREAD_UNCHANGED)
+
+    # Calculate scale factors
+    original_width, original_height = original_resolution
+    current_width, current_height = current_resolution
+    width_scale = current_width / original_width
+    height_scale = current_height / original_height
+
+    # Calculate new dimensions
+    new_width = int(cropped_image.shape[1] * width_scale)
+    new_height = int(cropped_image.shape[0] * height_scale)
+
+    # Resize the cropped image
+    scaled_image = cv2.resize(cropped_image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+    # Save the scaled image temporarily
+    scaled_image_path = "scaled_image.png"
+    cv2.imwrite(scaled_image_path, scaled_image)
+
+    return scaled_image_path
+
+def locate_cropped_image_on_screen(cropped_image_path, original_resolution, current_resolution):
+    """
+    Scales the cropped image and uses PyAutoGUI to locate it on the visible screen.
+
+    Parameters:
+        cropped_image_path (str): Path to the cropped image.
+        original_resolution (tuple): (width, height) of the monitor where the image was cropped.
+        current_resolution (tuple): (width, height) of the current monitor.
+    """
+    # Scale the cropped image using OpenCV
+    scaled_image_path = scale_image_with_opencv(cropped_image_path, original_resolution, current_resolution)
+
+    # Locate the scaled image on the visible screen using PyAutoGUI
+    location = pyautogui.locateOnScreen(scaled_image_path, confidence=0.8)  # Adjust confidence as needed
+    if location:
+        print(f"Image found at: {location}")
+    else:
+        print("Image not found on the screen.")
+
+# Example usage
+original_resolution = (1920, 1080)  # Resolution of the monitor where the image was cropped
+current_resolution = (1366, 768)   # Resolution of the current monitor
+cropped_image_path = "Event_Trigger/cropped_image.png"  # Path to the cropped image
+
+locate_cropped_image_on_screen(cropped_image_path, original_resolution, current_resolution)
+
+
+
+
+
+----------------------
 def calculate_dynamic_offset(monitor_details, window_info, base_offset):
     """Calculate dynamic offset based on monitor and window size."""
     monitor_width = monitor_details['width']
