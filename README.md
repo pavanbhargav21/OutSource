@@ -1,3 +1,63 @@
+def monitor_ows_process(target_titles, monitor_details):
+    """Monitor the OWS process for Change State or Case Management windows."""
+    global json_created
+
+    while True:
+        # Track active windows
+        active_windows = gw.getAllTitles()
+        case_management_open = any(title for title in active_windows if "Case Management -" in title)
+        change_state_open = any(title for title in active_windows if "Change State" in title)
+
+        if not case_management_open and not change_state_open:
+            # Neither Case Management nor Change State is open, restart monitoring
+            print("Neither Case Management nor Change State window is open. Restarting monitoring...")
+            json_created = False  # Reset JSON created flag
+            break  # Exit monitoring loop to restart tracking
+
+        if json_created:
+            # If JSON is already created, monitor for Change State Window only
+            if change_state_open:
+                print("Monitoring Change State Window for state changes...")
+                # Add logic to handle Change State monitoring here
+                monitor_change_state(monitor_details)
+                break  # Exit loop once Change State monitoring starts
+            else:
+                print("Change State Window is not open. Waiting...")
+        else:
+            # JSON not created, check for Case Management Window
+            if case_management_open:
+                print("Capturing data from Case Management Window...")
+                case_window, monitor_index, window_info = check_window_title(
+                    "Case Management -", monitor_details
+                )
+                location, start_time = track_location(
+                    summary_location, "Summary Button", monitor_index, monitor_details, case_window
+                )
+                capture_data(location, start_time, monitor_details, monitor_index, case_window)
+            else:
+                print("Case Management Window is not open. Waiting...")
+
+        time.sleep(1)  # Pause briefly before checking again
+
+def monitor_change_state(monitor_details):
+    """Monitor the Change State Window for state changes."""
+    while True:
+        active_windows = gw.getAllTitles()
+        change_state_open = any(title for title in active_windows if "Change State" in title)
+
+        if not change_state_open:
+            # If Change State Window is closed, exit monitoring
+            print("Change State Window closed. Stopping monitoring...")
+            break
+
+        # Add logic for monitoring state changes within the Change State window
+        print("Monitoring Change State Window...")
+        time.sleep(1)
+
+
+
+
+
 import time
 import re
 import threading
