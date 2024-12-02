@@ -1,4 +1,329 @@
 
+import time
+import re
+import threading
+from datetime import datetime
+import json
+from screeninfo import get_monitors
+import pyautogui
+import pygetwindow as gw
+import pyperclip
+import os
+
+# Define paths and global configurations
+process_folder = r"C:\pulse_november_12_12_flow\pulse_agent\pulse_flowtrace\pulse_event_trigger\process"
+
+# App store configurations
+app_store = {
+    "OWS": "Case Management - ,Change State", 
+    "BPM": "Work Object,Process Work,Loan Maintenance"
+}
+
+app_store_location = {
+    "OWS": {
+        "Case Management -": [(0.07, 0.7)],
+        "Change State": [(0.5, 0.825)]
+    },
+    "BPM": {
+        "Work Object": [(0.07, 0.7), (0.5, 0.3)], 
+        "Process Work": [(0.5, 0.825)],
+        "Loan Maintenance": [(0.24, 0.09)]
+    }
+}
+
+# OWS related capture coordinates
+summary_location = (0.07, 0.7)
+end_location = (0.7, 0.825)
+
+class OWSProcessMonitor:
+    def __init__(self, target_window_title):
+        self.target_window_title = target_window_title
+        self.data_dict = {}
+        self.json_created = False
+        self.monitoring_active = True
+
+    def get_active_monitors(self):
+        """Get active monitor details."""
+        monitors = get_monitors()
+        return [{"x": m.x, "y": m.y, "width": m.width, "height": m.height} for m in monitors]
+
+    def get_monitor_index(self, window, monitors):
+        """Determine on which monitor the majority of the window is visible."""
+        max_overlap_area = 0
+        best_monitor_index = 0
+
+        window_rect = {
+            "left": window.left,
+            "top": window.top,
+            "right": window.left + window.width,
+            "bottom": window.top + window.height
+        }
+
+        for index, monitor in enumerate(monitors):
+            monitor_rect = {
+                "left": monitor['x'],
+                "top": monitor['y'],
+                "right": monitor['x'] + monitor['width'],
+                "bottom": monitor['y'] + monitor['height']
+            }
+
+            # Calculate the overlapping area
+            overlap_left = max(window_rect['left'], monitor_rect['left'])
+            overlap_top = max(window_rect['top'], monitor_rect['top'])
+            overlap_right = min(window_rect['right'], monitor_rect['right'])
+            overlap_bottom = min(window_rect['bottom'], monitor_rect['bottom'])
+
+            overlap_width = max(0, overlap_right - overlap_left)
+            overlap_height = max(0, overlap_bottom - overlap_top)
+            overlap_area = overlap_width * overlap_height
+
+            if overlap_area > max_overlap_area:
+                max_overlap_area = overlap_area
+                best_monitor_index = index
+
+        return best_monitor_index if max_overlap_area > 0 else 0
+
+    def check_window_title(self, target_title, monitor_details):
+        """Monitor for a specific window title on any monitor."""
+        while self.monitoring_active:
+            windows = gw.getAllTitles()
+            for win in windows:
+                if target_title in win:
+                    window = gw.getWindowsWithTitle(win)[0]
+                    monitor_index = self.get_monitor_index(window, monitor_details)
+
+                    window_info = {
+                        "left": window.left,
+                        "top": window.top,
+                        "width": window.width,
+                        "height": window.height
+                    }
+
+                    return window, monitor_index, window_info
+            time.sleep(1)
+        return None, None, None
+
+    def track_location(self, location_tuple, monitor_index, monitor_details, window_info):
+        """Locate a specific location based on the active monitor and window size."""
+        x_ratio, y_ratio = location_tuple
+        x = window_info["left"] + int(window_info["width"] * x_ratio)
+        y = window_info["top"] + int(window_info["height"] * y_ratio)
+        return (x, y), datetime.now()
+
+    def capture_data(self, location, start_time, monitor_details, monitor_index, window_info):
+        """Capture summary data and save to JSON."""
+        x, y = location
+        curr_x, curr_y = pyautogui.position()
+        pyperclip.copy('')
+
+        dynamic_offset = (20, 20)
+        pyautogui.rightClick(x, y)
+        pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+        pyautogui.click()
+        summary_text = pyperclip.paste()
+        
+        if not summary_text:
+            pyautogui.rightClick(x, y)
+            pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+            pyautogui.click()
+            summary_text = pyperclip.paste()
+        
+        pyautogui.moveTo(curr_x, curr_y)
+        
+        # Reset state change detection
+        self.data_dict["state_change_detected"] = False
+
+        # Parse summary text
+        summary_dict = {}
+        case_id = "dummy"
+        lines = summary_text.split('\n')
+        for line in lines:
+            if line.strip():
+                parts = line.split('\t')
+                key = parts[0].strip() if len(parts) > 0 else ""
+                value = parts[1].strip() if len(parts) > 1 else ""
+                summary_dict[key] = value
+                if key == "Id":
+                    case_id = value
+
+        # Update data dictionary
+        self.data_dict.update(summary_dict)
+        self.data_dict['start_id_time'] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        self.save_to_json(self.data_dict, case_id, False)
+        
+        self.json_created = True
+        print("JSON created with Summary data.")
+
+    def save_to_json(self, data, file_name, end):
+        """Save data to a JSON file with advanced logic."""
+        file_path = os.path.join(process_folder, f"{file_name}.json")
+
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as file:
+                existing_data = json.load(file)
+                
+                if not end and existing_data.get("state_change_detected", False):
+                    print(f"File '{file_name}.json' already has 'state_change_detected' as True. Skipping update.")
+                    return
+                
+                if end and not existing_data.get("state_change_detected", False):
+                    print(f"Updating final state for '{file_name}.json'.")
+                
+        with open(file_path, 'w') as file:
+            json.dump(data, file, indent=4)
+        print(f"Data saved to '{file_name}.json'.")
+
+    def capture_entire_data(self, location, start_time, monitor_details, monitor_index, window_info):
+        """Capture complete log data."""
+        x, y = location
+        curr_x, curr_y = pyautogui.position()
+        pyperclip.copy('')
+
+        dynamic_offset = (20, 50)
+        pyautogui.rightClick(x, y)
+        pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+        pyautogui.click()
+        summary_text = pyperclip.paste()
+        pyautogui.moveTo(curr_x, curr_y)
+
+        # Parse log text
+        summary_dict = {}
+        lines = summary_text.split('\n')
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+
+            if "Action by" in line:
+                date_time = self.extract_date_time(line)
+                summary_dict["Action By Date/Time"] = date_time
+
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if "transition" in next_line:
+                        transition_text = self.extract_transition(next_line)
+                        summary_dict["Transition"] = transition_text
+                        break
+
+        summary_dict['start_id_time'] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check action time against state change time
+        if "Action By Date/Time" in summary_dict:
+            action_by_time = datetime.strptime(summary_dict["Action By Date/Time"], "%Y-%m-%d %H:%M:%S")
+            state_change_time = datetime.strptime(self.data_dict.get("start_activity", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+            state_change_time = state_change_time.replace(second=0, microsecond=0)
+
+            if action_by_time >= state_change_time:
+                self.data_dict["state_change_detected"] = True
+                self.data_dict["End_activity_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.json_created = False
+
+        self.data_dict.update(summary_dict)
+        self.save_to_json(self.data_dict, self.data_dict.get("Id"), True)
+        print("JSON created with Log data.")
+
+    @staticmethod
+    def extract_date_time(line):
+        """Extract and convert date/time from log line."""
+        date_time_pattern = r'(\d{1,2}/\d{1,2}/\d{2}) (\d{1,2}:\d{2}) (AM|PM)'
+        match = re.search(date_time_pattern, line)
+
+        if match:
+            try:
+                date_time_obj = datetime.strptime(f"{match.group(1)} {match.group(2)} {match.group(3)}", "%m/%d/%y %I:%M %p")
+                return date_time_obj.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError as e:
+                print(f"Error parsing date and time: {e}")
+                return "Invalid Date/Time"
+        
+        return "No valid date/time found"
+
+    @staticmethod
+    def extract_transition(line):
+        """Extract transition text from a line."""
+        if "transition" in line:
+            parts = line.split("transition")
+            return parts[1].strip() if len(parts) > 1 else "Unknown Transition"
+        return "Unknown Transition"
+
+    def monitor_ows_process(self):
+        """Main monitoring process for OWS workflow."""
+        while self.monitoring_active:
+            monitor_details = self.get_active_monitors()
+            
+            # Check for Case Management window
+            window_result = self.check_window_title(self.target_window_title, monitor_details)
+            if not window_result[0]:
+                continue
+
+            window, monitor_index, window_info = window_result
+            
+            if window.isActive:
+                start_time = datetime.now()
+                self.data_dict["start_activity"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
+                self.data_dict["window_info"] = window_info
+                self.data_dict["monitor_index"] = monitor_index + 1
+
+                # Capture summary data
+                location, _ = self.track_location(summary_location, monitor_index, monitor_details, window_info)
+                self.capture_data(location, start_time, monitor_details, monitor_index, window_info)
+
+                # If JSON created, monitor for Change State window
+                while self.json_created:
+                    change_state_found = False
+                    change_state_window = None
+
+                    # Wait for Change State window
+                    while not change_state_found and self.monitoring_active:
+                        windows = gw.getAllTitles()
+                        for win in windows:
+                            if "Change State" in win:
+                                change_state_window = gw.getWindowsWithTitle(win)[0]
+                                change_state_found = True
+                                self.data_dict["state_change_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                break
+                        time.sleep(1)
+
+                    # Wait for Change State window to close
+                    while change_state_found and self.monitoring_active:
+                        windows = gw.getAllTitles()
+                        if "Change State" not in windows:
+                            change_state_found = False
+                            
+                            # Capture entire data
+                            location, _ = self.track_location(end_location, monitor_index, monitor_details, window_info)
+                            self.capture_entire_data(location, start_time, monitor_details, monitor_index, window_info)
+                            break
+                        time.sleep(1)
+
+                    # Check if original windows are still active
+                    windows = gw.getAllTitles()
+                    if self.target_window_title not in windows:
+                        break
+
+            time.sleep(2)
+
+def main():
+    target_window_title = "Case Management -"
+    monitor = OWSProcessMonitor(target_window_title)
+    
+    try:
+        monitor_thread = threading.Thread(target=monitor.monitor_ows_process)
+        monitor_thread.start()
+        monitor_thread.join()
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user. Exiting gracefully.")
+        monitor.monitoring_active = False
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+--------------------
 def save_to_json(data, file_name):
     """Save data to a JSON file."""
     file_path = os.path.join(process_folder, f"{file_name}.json")
