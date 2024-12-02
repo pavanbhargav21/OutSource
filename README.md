@@ -1,4 +1,47 @@
 
+import re
+from datetime import datetime
+
+def extract_date_time(line):
+    """
+    Dynamically identifies and extracts date and time in the format 'MM/DD/YY HH:MM AM/PM' 
+    from the given line, then converts it to 'YYYY-MM-DD HH:MM:SS'.
+    
+    Example input:
+    - "Action by John Doe on 11/28/24 5:54 PM"
+    - "Completed on 12/29/23 11:23 AM"
+
+    Returns:
+    - Converted datetime string in 'YYYY-MM-DD HH:MM:SS' format.
+    """
+    # Regular expression to match the date in MM/DD/YY format
+    date_time_pattern = r'(\d{1,2}/\d{1,2}/\d{2}) (\d{1,2}:\d{2}) (AM|PM)'
+    match = re.search(date_time_pattern, line)
+
+    if match:
+        date_part = match.group(1)  # Extract date (MM/DD/YY)
+        time_part = match.group(2)  # Extract time (HH:MM)
+        am_pm_part = match.group(3)  # Extract AM/PM
+
+        # Combine extracted components into a single datetime string
+        date_time_str = f"{date_part} {time_part} {am_pm_part}"
+        
+        # Convert to datetime object and format as 'YYYY-MM-DD HH:MM:SS'
+        try:
+            date_time_obj = datetime.strptime(date_time_str, "%m/%d/%y %I:%M %p")
+            return date_time_obj.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            print(f"Error parsing date and time: {e}")
+            return "Invalid Date/Time"
+    
+    # If no match is found, return a placeholder
+    return "No valid date/time found"
+
+
+
+
+
+------------+++-----+-+
 import cv2
 import pyautogui
 
