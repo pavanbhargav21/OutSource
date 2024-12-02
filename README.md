@@ -1,4 +1,80 @@
 
+def save_to_json(data, file_name):
+    """Save data to a JSON file."""
+    file_path = os.path.join(process_folder, f"{file_name}.json")
+
+    # Check if file exists
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            existing_data = json.load(file)
+            # Check the state_change_detected key
+            if existing_data.get("state_change_detected", False):
+                print(f"File '{file_name}.json' already exists and has 'state_change_detected' as True. Overwriting...")
+            else:
+                print(f"File '{file_name}.json' exists but 'state_change_detected' is False. Skipping update.")
+                return
+
+    # Save updated or new data
+    with open(file_path, 'w') as file:
+        json.dump(data, file, indent=4)
+    print(f"Data saved to '{file_name}.json'.")
+
+
+def capture_entire_data(location, start_id_time, monitor_details, monitor_index, window_info):
+    """Capture data and save it to JSON with dynamic offset."""
+    x, y = location
+    curr_x, curr_y = pyautogui.position()
+    pyperclip.copy('')
+
+    # Perform actions with the adjusted offset
+    dynamic_offset = (20, 20)
+    pyautogui.rightClick(x, y)
+    pyautogui.moveTo(x + dynamic_offset[0], y + dynamic_offset[1])
+    pyautogui.click()
+    summary_text = pyperclip.paste()
+    pyautogui.moveTo(curr_x, curr_y)
+    print("Log Text copied:", summary_text)
+
+    summary_dict = {}
+    lines = summary_text.split('\n')
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        if "Action by" in line:
+            date_time = extract_date_time(line)
+            summary_dict["Action By Date/Time"] = date_time
+
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if "transition" in next_line:
+                    transition_text = extract_transition(next_line)
+                    summary_dict["Transition"] = transition_text
+                    break
+
+    summary_dict['start_id_time'] = start_id_time.strftime("%Y-%m-%d %H:%M:%S")
+    print("Log Dict", summary_dict)
+
+    # Compare "Action By Date/Time" with "state_change_time"
+    if "Action By Date/Time" in summary_dict:
+        action_by_time = datetime.strptime(summary_dict["Action By Date/Time"], "%Y-%m-%d %H:%M:%S")
+        state_change_time = datetime.strptime(data_dict.get("state_change_time", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+
+        if action_by_time > state_change_time:
+            data_dict["state_changed_true"] = True
+            data_dict["End_activity_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print("State change detected. Marked as true.")
+
+    data_dict.update(summary_dict)
+    save_to_json(data_dict, summary_dict.get("Transition", "dummy"))
+    print("JSON created with Log data.")
+
+
+
+
+
+
 import re
 from datetime import datetime
 
