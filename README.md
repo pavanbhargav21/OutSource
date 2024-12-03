@@ -1,4 +1,7 @@
 
+git for-each-ref --sort=-committerdate refs/remotes/ --format='%(committerdate:iso8601) %(refname:short)'
+
+
 
 To decide whether to store your data in separate JSON files or in a single JSON file with keys representing file names, let’s analyze the pros and cons of each approach with respect to your specific requirements:
 
