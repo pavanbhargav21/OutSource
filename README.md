@@ -1,3 +1,230 @@
+
+
+To decide whether to store your data in separate JSON files or in a single JSON file with keys representing file names, let’s analyze the pros and cons of each approach with respect to your specific requirements:
+
+
+---
+
+1. Storing Data in Separate JSON Files
+
+Advantages
+
+1. Simpler File Management:
+
+Each file corresponds directly to a unique KSID (KSID_<number>.json), making it easy to locate, edit, and manage.
+
+
+
+2. Efficient Data Replacement:
+
+To replace data, you can directly find the file by its name and overwrite the content without parsing a large file.
+
+
+
+3. Failure Isolation:
+
+Corruption of one file does not affect others.
+
+
+
+4. Scalable for Large Data:
+
+If your data grows significantly, this method prevents a single JSON file from becoming too large to handle efficiently.
+
+
+
+5. Parallel Processing:
+
+Multiple files can be processed independently by threads or workers.
+
+
+
+
+Disadvantages
+
+1. Disk Space Overhead:
+
+Storing metadata (e.g., file headers) for each file adds overhead.
+
+
+
+2. File System Dependency:
+
+If you have thousands of files, the file system’s performance may degrade due to excessive file reads/writes.
+
+
+
+3. State Checking:
+
+You have to iterate over multiple files every 15 seconds to check the state_change_detected field.
+
+
+
+
+
+---
+
+2. Storing Data in a Single JSON File
+
+Advantages
+
+1. Compact Structure:
+
+All data is stored in one place, reducing the overhead of managing multiple files.
+
+
+
+2. Simpler Checking:
+
+You can load the entire JSON file into memory and iterate through the keys to check for state_change_detected, avoiding file I/O for each check.
+
+
+
+3. Easier Backup:
+
+One file is easier to copy or move to another location for backup or transfer.
+
+
+
+
+Disadvantages
+
+1. Data Replacement Overhead:
+
+To update a single KSID entry, you need to load the entire JSON file, modify the required key, and save the whole file back. This can be inefficient if the file grows large.
+
+
+
+2. Risk of Corruption:
+
+If the file gets corrupted, all data is lost.
+
+
+
+3. Memory Usage:
+
+For large datasets, loading the entire JSON file into memory could be inefficient or impractical.
+
+
+
+4. Concurrency Issues:
+
+Concurrent updates to the file might lead to race conditions or conflicts unless managed carefully.
+
+
+
+
+
+---
+
+Recommendation Based on Your Use Case
+
+End Goal:
+
+Check for state_change_detected every 15 seconds and move relevant data to another database.
+
+Replace data dynamically as needed when hovering on a KSID.
+
+
+Optimal Approach:
+
+Use separate JSON files. Here’s why:
+
+1. State Checking: Since you're checking periodically for a specific value (state_change_detected), iterating over separate files is straightforward and avoids loading unnecessary data.
+
+
+2. Dynamic Updates: When updating data for a specific KSID, directly locating and modifying a file by its name (KSID_<number>.json) is faster and more efficient than searching for a key in a large JSON file.
+
+
+3. Scalability: As your data grows, managing thousands of smaller files will perform better than handling a single massive file.
+
+
+4. Error Isolation: If one file is corrupted, it doesn’t impact others.
+
+
+
+
+
+---
+
+Implementation Strategy
+
+1. Folder Structure
+
+Create a process folder for storing KSID files:
+
+process/
+  KSID_123.json
+  KSID_456.json
+  KSID_789.json
+
+
+2. State Checking Script
+
+Every 15 seconds, iterate over the files to check state_change_detected:
+
+import os
+import json
+from time import sleep
+
+process_folder = "process"
+
+def check_state_changes():
+    for file_name in os.listdir(process_folder):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(process_folder, file_name)
+            with open(file_path, "r") as file:
+                data = json.load(file)
+                if data.get("state_change_detected"):
+                    # Move to Event Hub or database
+                    move_to_event_hub(file_path, data)
+
+def move_to_event_hub(file_path, data):
+    # Implement your Event Hub logic here
+    print(f"Moving {file_path} to Event Hub: {data}")
+    # Optionally delete the file after processing
+    os.remove(file_path)
+
+# Periodically check for state changes
+while True:
+    check_state_changes()
+    sleep(15)
+
+
+3. Dynamic Updates
+
+To update data dynamically for a KSID:
+
+def update_ksid_data(ksid, new_data):
+    file_path = os.path.join(process_folder, f"KSID_{ksid}.json")
+    with open(file_path, "w") as file:
+        json.dump(new_data, file)
+
+
+
+---
+
+When to Use a Single JSON File?
+
+If your dataset is relatively small and unlikely to grow beyond a few MB.
+
+If you prioritize simplicity and don't expect high update frequency.
+
+If you can tolerate the risks of corruption and loading overhead.
+
+
+However, for your case (frequent updates, scalable solution, and periodic checks), separate JSON files are better.
+
+
+
+
+
+
+
+
+
+-----------------
+
 def monitor_ows_process(target_titles, monitor_details):
     """Monitor the OWS process for Change State or Case Management windows."""
     global json_created
