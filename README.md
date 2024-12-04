@@ -1,4 +1,76 @@
 
+import os
+import json
+import shutil
+
+def process_json(file_name, source_folder, target_folder, key_list, padding_details, key_to_split):
+    # Construct full file path
+    file_path = os.path.join(source_folder, file_name)
+    
+    # Check if the file exists
+    if not os.path.exists(file_path):
+        print(f"File '{file_name}' does not exist in {source_folder}.")
+        return
+    
+    # Read the JSON file
+    try:
+        with open(file_path, 'r') as json_file:
+            data = json.load(json_file)
+    except json.JSONDecodeError as e:
+        print(f"Error reading JSON file: {e}")
+        return
+
+    # Process only the keys in the key_list
+    processed_data = {}
+    for key in key_list:
+        if key in data:
+            # Check for the specific key to split
+            if key == key_to_split:
+                value = data[key]
+                if isinstance(value, str) and ':' in value:
+                    # Split by colon and extract the desired part
+                    parts = value.split(':')
+                    if len(parts) > 2:
+                        country = parts[1].strip()  # Extract between the first and second colon
+                        processed_data['country'] = country
+            # Add the original key-value to processed data
+            processed_data[key] = data[key]
+
+    # Add the padding details
+    processed_data.update(padding_details)
+    
+    # Write the updated JSON to the target folder
+    target_path = os.path.join(target_folder, file_name)
+    try:
+        with open(target_path, 'w') as output_file:
+            json.dump(processed_data, output_file, indent=4)
+        print(f"Processed file moved to {target_folder}")
+    except Exception as e:
+        print(f"Error writing to file: {e}")
+        return
+    
+    # Move the original file to the target folder
+    try:
+        shutil.move(file_path, target_path)
+    except Exception as e:
+        print(f"Error moving file: {e}")
+
+# Example usage
+file_name = "example.json"
+source_folder = "source"
+target_folder = "processed"
+key_list = ["key1", "key2", "key3", "key_to_split"]
+padding_details = {"added_detail1": "value1", "added_detail2": "value2"}
+key_to_split = "key_to_split"  # The key whose value needs to be split
+
+process_json(file_name, source_folder, target_folder, key_list, padding_details, key_to_split)
+
+
+
+
+
+
+
 git for-each-ref --sort=-committerdate refs/remotes/ --format='%(committerdate:iso8601) %(refname:short)'
 
 
