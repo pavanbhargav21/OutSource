@@ -1,4 +1,26 @@
 
+
+import pandas as pd
+import sqlite3
+from datetime import datetime
+
+def insert_with_to_sql(df, db_path, table_name):
+    # Connect to SQLite database
+    con = sqlite3.connect(db_path)
+    try:
+        # Insert DataFrame into the SQLite table
+        df.to_sql(table_name, con, if_exists='append', index=False)
+        print("Data inserted successfully using to_sql.")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        con.close()
+
+
+
+
+
+
 import os
 import json
 from datetime import datetime
