@@ -1,6 +1,69 @@
 
 import os
 import json
+from datetime import datetime
+import pandas as pd
+from sqlalchemy import create_engine
+
+def process_json_files(folder_path, emp_id, db_connection_string):
+    # Prepare the output DataFrame
+    dataframes = []
+    
+    # Get current date and time
+    cal_date = datetime.now().strftime("%m/%d/%Y")
+    created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Iterate through each file in the folder
+    for file_name in os.listdir(folder_path):
+        if file_name.endswith('.json'):  # Process only JSON files
+            file_path = os.path.join(folder_path, file_name)
+            
+            with open(file_path, 'r') as file:
+                json_data = json.load(file)
+            
+            # Prepare the activity_info field
+            activity_info = [{
+                'w_id': 1089,
+                'w_name': 'ows',
+                'activity_pairs': json_data,
+                'capture_method': 'copy'
+            }]
+            
+            # Create a DataFrame for the current file
+            df = pd.DataFrame([{
+                'Cal_date': cal_date,
+                'emp_id': emp_id,
+                'file_name': file_name,
+                'Activity_info': json.dumps(activity_info),  # Convert to JSON string
+                'volume_info': json.dumps([]),  # Empty list as JSON string
+                'created_date': created_date
+            }])
+            
+            dataframes.append(df)
+    
+    # Combine all DataFrames
+    final_df = pd.concat(dataframes, ignore_index=True)
+    
+    # Insert into the local database
+    engine = create_engine(db_connection_string)
+    final_df.to_sql('your_table_name', con=engine, if_exists='append', index=False)
+    
+    print("Data successfully inserted into the database.")
+
+# Usage Example
+folder_path = "path_to_your_folder"
+emp_id = "EMP123"
+db_connection_string = "sqlite:///local_database.db"  # Replace with your database connection string
+process_json_files(folder_path, emp_id, db_connection_string)
+
+
+
+-----------
+
+
+
+import os
+import json
 import shutil
 
 def process_json(file_name, source_folder, target_folder, key_list, padding_details, key_to_split):
