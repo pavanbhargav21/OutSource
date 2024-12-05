@@ -1,4 +1,29 @@
 
+import json
+
+def get_active_keys(json_file, expected_workflow_name):
+    # Load the JSON data
+    with open(json_file, 'r') as file:
+        data = json.load(file)  # Parse the JSON file into a list of dictionaries
+    
+    # Filter dictionaries based on workflow name and isActive
+    filtered_keys = [
+        entry["activity_key_name"]
+        for entry in data
+        if entry.get("workflow_name") == expected_workflow_name and entry.get("isActive") is True
+    ]
+    
+    # Return the list of matching keys
+    return filtered_keys
+
+# Example usage
+json_file_path = 'path_to_your_json_file.json'
+workflow_name = "Workflow A"
+result = get_active_keys(json_file_path, workflow_name)
+print(f"Active keys for workflow '{workflow_name}': {result}")
+
+
+
 
 import pandas as pd
 import sqlite3
