@@ -1,3 +1,33 @@
+from pywinauto import Application
+from pywinauto import mouse
+from pywinauto.keyboard import send_keys
+
+# Connect to the active application
+app = Application(backend="uia").connect(title_re=".*")  # Connect to the active window
+window = app.active_window()
+
+# Locate the toolbar control
+toolbar = window.child_window(control_type="ToolBar")  # Adjust control_type or title if necessary
+
+# Locate the left button in the toolbar
+left_button = toolbar.child_window(title="Left", control_type="Button")  # Use the actual title of the button
+
+# Click the left button to expand the section
+left_button.click_input()
+
+# Optionally, drag or resize the section (if necessary)
+# Assuming you need to drag to expand
+mouse.drag_mouse((100, 200), (300, 400))  # Replace with actual coordinates for dragging
+
+# Take a screenshot of the window after expanding
+window.capture_as_image().save("screenshot.png")
+
+print("Section expanded and screenshot saved!")
+
+
+
+
+
 
 import json
 
