@@ -1,3 +1,54 @@
+
+import os
+import json
+import threading
+from datetime import datetime, timedelta
+
+# Function to process files with state__change__detected = True
+def process_file(file_name):
+    print(f"Processing file: {file_name}")
+
+# Function to check for `.json` files and process them based on conditions
+def check_json_files(directory):
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(directory, file_name)
+            
+            # Check the content of the JSON file
+            try:
+                with open(file_path, 'r') as file:
+                    data = json.load(file)
+                    if data.get("state__change__detected", False):  # If key is True
+                        thread = threading.Thread(target=process_file, args=(file_name,))
+                        thread.start()
+            except Exception as e:
+                print(f"Error reading {file_name}: {e}")
+
+# Function to check if the file's modified date is older than 2 days
+def check_file_age(directory, days=2):
+    cutoff_time = datetime.now() - timedelta(days=days)
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(directory, file_name)
+            modified_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+            
+            if modified_time < cutoff_time:
+                print(f"{file_name} was modified more than {days} days ago.")
+
+# Example usage
+if __name__ == "__main__":
+    directory_path = "path_to_your_directory"
+
+    # Check JSON files for state__change__detected
+    check_json_files(directory_path)
+
+    # Check JSON files for modified date older than 2 days
+    check_file_age(directory_path, days=2)
+
+----++++++++--------
+
+
+
 from pywinauto import Application
 from pywinauto import mouse
 from pywinauto.keyboard import send_keys
