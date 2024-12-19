@@ -3,6 +3,82 @@ import os
 import json
 import threading
 from datetime import datetime, timedelta
+import schedule
+import time
+
+# Function to process files with state__change__detected = True
+def process_file(file_name):
+    print(f"Processing file: {file_name}")
+
+# Function to check for `.json` files and process them based on conditions
+def check_json_files(directory):
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(directory, file_name)
+            
+            # Check the content of the JSON file
+            try:
+                with open(file_path, 'r') as file:
+                    data = json.load(file)
+                    if data.get("state__change__detected", False):  # If key is True
+                        thread = threading.Thread(target=process_file, args=(file_name,))
+                        thread.start()
+            except Exception as e:
+                print(f"Error reading {file_name}: {e}")
+
+# Function to delete files older than a certain number of days
+def delete_old_files(directory, days=2):
+    cutoff_time = datetime.now() - timedelta(days=days)
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(directory, file_name)
+            modified_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+            
+            if modified_time < cutoff_time:
+                try:
+                    os.remove(file_path)
+                    print(f"Deleted: {file_name}")
+                except Exception as e:
+                    print(f"Error deleting {file_name}: {e}")
+
+# Combined function to execute tasks
+def run_scheduled_tasks(directory):
+    print(f"Running tasks at {datetime.now()}")
+    check_json_files(directory)
+    delete_old_files(directory, days=2)
+
+# Function to run the scheduler in a separate thread
+def start_scheduler(directory):
+    def scheduler_thread():
+        schedule.every(1).hours.do(run_scheduled_tasks, directory=directory)
+        print("Scheduler thread started. Press Ctrl+C to stop.")
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+
+    thread = threading.Thread(target=scheduler_thread, daemon=True)
+    thread.start()
+    return thread
+
+# Main execution
+if __name__ == "__main__":
+    directory_path = "path_to_your_directory"
+
+    # Start the scheduler as a thread
+    start_scheduler(directory_path)
+
+    # Keep the main thread alive to prevent the script from exiting
+    while True:
+        time.sleep(1)
+
+
+
+
+
+import os
+import json
+import threading
+from datetime import datetime, timedelta
 
 # Function to process files with state__change__detected = True
 def process_file(file_name):
