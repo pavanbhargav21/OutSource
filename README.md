@@ -1,4 +1,46 @@
 
+import time
+import gw  # Assuming gw is the library to get window titles
+
+def start_window_monitoring(self):
+    try:
+        while True:
+            # Get the active window title
+            active_window = gw.getActiveWindowTitle()  # Replace with the correct method to get the active window title
+
+            if active_window:
+                # Check if the active window matches any of the monitored titles
+                for win in self.all_window_titles:
+                    if win in active_window:
+                        # log_print(f"Active window {win} is running on User's system")
+                        active_matched_title = win
+
+                        # Get workflow details
+                        workflow_details = f.whitelist.GET_WORKFLOW_DETAILS_FROM_TITLE(active_matched_title)
+                        target_window_titles = workflow_details.get("window_titles", "").split(",")
+                        target_workflow_name = workflow_details.get("workflow_name", "")
+                        target_workflow_id = workflow_details.get("workflow_id", "")
+
+                        if target_workflow_name.lower() == "ows":
+                            # log_print("OWS Application Monitoring Started")
+                            self.start_ows_monitoring(target_window_titles, target_workflow_name, target_workflow_id)
+
+                        # Break after processing the matched window
+                        break
+
+            # Introduce a sleep interval to reduce CPU usage
+            time.sleep(1)  # Adjust the interval as needed (e.g., 0.5 or 2 seconds)
+    except Exception as e:
+        # Handle exceptions
+        # log_print(f"An error occurred: {e}")
+        pass
+
+
+
+
+
+
+
 import os
 import json
 import threading
