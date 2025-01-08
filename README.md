@@ -1,5 +1,63 @@
 
 import time
+
+def start_window_monitoring(self):
+    try:
+        background_check_interval = 300  # 5 minutes in seconds
+        last_background_check = time.time()
+
+        while True:
+            # Check the active window
+            active_window = gw.getActiveWindowTitle()
+
+            if active_window:
+                for win in self.all_window_titles:
+                    if win in active_window:
+                        # Start monitoring for the matched active window
+                        active_matched_title = win
+                        workflow_details = f.whitelist.GET_WORKFLOW_DETAILS_FROM_TITLE(active_matched_title)
+                        target_window_titles = workflow_details.get("window_titles", "").split(",")
+                        target_workflow_name = workflow_details.get("workflow_name", "")
+                        target_workflow_id = workflow_details.get("workflow_id", "")
+
+                        if target_workflow_name.lower() == "ows":
+                            self.start_ows_monitoring(target_window_titles, target_workflow_name, target_workflow_id)
+                        break
+
+            # Perform a background check every 5 minutes
+            if time.time() - last_background_check >= background_check_interval:
+                current_titles = set(gw.getAllTitles())
+                for title in current_titles:
+                    for win in self.all_window_titles:
+                        if win in title:
+                            # Start monitoring for the matched background window
+                            active_matched_title = win
+                            workflow_details = f.whitelist.GET_WORKFLOW_DETAILS_FROM_TITLE(active_matched_title)
+                            target_window_titles = workflow_details.get("window_titles", "").split(",")
+                            target_workflow_name = workflow_details.get("workflow_name", "")
+                            target_workflow_id = workflow_details.get("workflow_id", "")
+
+                            if target_workflow_name.lower() == "ows":
+                                self.start_ows_monitoring(target_window_titles, target_workflow_name, target_workflow_id)
+                            break
+                last_background_check = time.time()  # Update the last background check time
+
+            # Sleep to reduce CPU usage
+            time.sleep(1)
+    except Exception as e:
+        # Handle exceptions as needed
+        # log_print(f"An error occurred: {e}")
+        pass
+
+
+
+
+----------
+
+
+
+
+import time
 import gw  # Assuming gw is the library to get window titles
 
 def start_window_monitoring(self):
