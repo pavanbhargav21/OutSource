@@ -1,3 +1,33 @@
+def check_existing_entries(existing_volume_entry, existing_config_entry):
+    """
+    Checks for existing entries and returns an appropriate response.
+
+    Parameters:
+    - existing_volume_entry: Result of the volume entry query
+    - existing_config_entry: Result of the config entry query
+
+    Returns:
+    - Tuple (response, status_code) if an entry exists, otherwise None
+    """
+    if existing_volume_entry or existing_config_entry:
+        message = (
+            "Volume Entry Already Exists in Volume Store"
+            if existing_volume_entry
+            else f"Entry already exists with Request ID: {existing_config_entry.request_id}"
+        )
+        return {"message": message}, 400
+    return None
+
+# Usage
+response = check_existing_entries(existing_volume_entry, existing_config_entry)
+if response:
+    return response
+
+
+-----------------
+
+
+
 
 import time
 
