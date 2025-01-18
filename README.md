@@ -1,3 +1,20 @@
+# Subquery to fetch relevant employee IDs
+subquery = session.query(EmployeeShiftInfo.emp_id).filter(
+    EmployeeShiftInfo.emp_id.in_(emp_ids)
+).subquery()
+
+# Main query using the subquery
+employees_shifts = (
+    session.query(EmployeeShiftInfo)
+    .filter(
+        EmployeeShiftInfo.emp_id.in_(subquery),
+        EmployeeShiftInfo.shift_date.between(from_date, to_date)
+    )
+    .all()
+)
+
+
+
 
 class EmployeeShiftTimeDetails(Resource):
     @jwt_required()
