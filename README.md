@@ -1,3 +1,74 @@
+
+class EmployeeShiftTimeDetails(Resource):
+    @jwt_required()
+    def get(self):
+        """
+        This is a get method for fetching reporting employees' shift details
+        within a specified date range.
+        """
+        mng_id = request.args.get('emp_id')
+        from_date = request.args.get('from_date')  # Expected format: MM-DD-YYYY
+        to_date = request.args.get('to_date')      # Expected format: MM-DD-YYYY
+
+        if not mng_id or not from_date or not to_date:
+            return {"error": "Missing emp_id, from_date, or to_date in request parameters."}, 400
+
+        try:
+            # Convert dates to a standard format
+            from_date = datetime.strptime(from_date, "%m-%d-%Y")
+            to_date = datetime.strptime(to_date, "%m-%d-%Y")
+        except ValueError:
+            return {"error": "Invalid date format. Use MM-DD-YYYY."}, 400
+
+        with session_scope('DESIGNER') as session:
+            # Get employee IDs for the given manager
+            employees = session.query(EmployeeInfo).filter_by(func_mgr_id=mng_id).all()
+            employee_ids = [emp.emp_id for emp in employees]
+
+            # Fetch shifts for employees within the date range
+            employees_shifts = (
+                session.query(EmployeeShiftInfo)
+                .filter(
+                    EmployeeShiftInfo.emp_id.in_(employee_ids),
+                    EmployeeShiftInfo.shift_date.between(from_date, to_date)
+                )
+                .all()
+            )
+
+            if employees_shifts:
+                reporting_employee_shifts = [
+                    {
+                        "emp_id": emp.emp_id,
+                        "day_id": emp.day_id,
+                        "is_week_off": emp.is_week_off,
+                        "start_time": str(emp.start_time),
+                        "end_time": str(emp.end_time),
+                        "contracted_hours": emp.emp_contracted_hours,
+                        "shift_date": str(emp.shift_date),
+                    }
+                    for emp in employees_shifts
+                ]
+            else:
+                reporting_employee_shifts = []
+
+            # Fallback to reporting employee names if no shifts are found
+            reporting_employees = [
+                {"emp_id": emp.emp_id, "emp_name": emp.name} for emp in employees
+            ]
+
+            # Prepare response data
+            data = {
+                "reporting_employee_shifts": reporting_employee_shifts,
+                "reporting_employees": reporting_employees,
+            }
+
+        return jsonify(data)
+
+
+
+
+
+
 <template>
   <v-container>
     <!-- East Monday Date Picker -->
