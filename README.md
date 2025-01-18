@@ -1,3 +1,52 @@
+<template>
+  <v-container>
+    <!-- East Monday Date Picker -->
+    <v-date-picker
+      v-model="startDate"
+      :allowed-dates="isMonday"
+      label="Select East Monday"
+    ></v-date-picker>
+    <v-spacer />
+    <!-- East Sunday Date Picker -->
+    <v-date-picker
+      v-model="endDate"
+      :allowed-dates="isSundayAfterStart"
+      label="Select East Sunday"
+      :disabled="!startDate"
+    ></v-date-picker>
+  </v-container>
+</template>
+
+<script>
+export default {
+  data() {
+    return {
+      startDate: null, // Selected East Monday
+      endDate: null, // Selected East Sunday
+    };
+  },
+  methods: {
+    // Allow only Mondays
+    isMonday(date) {
+      const day = new Date(date).getDay();
+      return day === 1; // 1 = Monday
+    },
+    // Allow only Sundays after the selected start date
+    isSundayAfterStart(date) {
+      const day = new Date(date).getDay();
+      if (day !== 0) return false; // 0 = Sunday
+      if (!this.startDate) return true; // If no start date is selected, allow all Sundays
+      const startDateObj = new Date(this.startDate);
+      const currentDateObj = new Date(date);
+      return currentDateObj > startDateObj; // Allow only Sundays after the start date
+    },
+  },
+};
+</script>
+
+
+
+
 
 <template>
   <v-container>
