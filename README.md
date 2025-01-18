@@ -1,3 +1,36 @@
+
+<template>
+  <v-container>
+    <v-date-picker 
+      v-model="startDate" 
+      :allowed-dates="isMonday" 
+      label="Select Start Date (Mondays Only)"
+    ></v-date-picker>
+  </v-container>
+</template>
+
+<script>
+export default {
+  data() {
+    return {
+      startDate: null, // Bind your date value here
+    };
+  },
+  methods: {
+    isMonday(date) {
+      const day = new Date(date).getDay();
+      return day === 1; // 1 represents Monday
+    },
+  },
+};
+</script>
+
+
+
+
+
+
+
 def check_existing_entries(existing_volume_entry, existing_config_entry):
     """
     Checks for existing entries and returns an appropriate response.
