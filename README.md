@@ -1,3 +1,81 @@
+
+class EmployeeShiftDetails(Resource):
+    def get(self):
+        try:
+            mng_id = request.args.get('emp_id')
+            if not mng_id:
+                return {
+                    "error": "Manager ID (emp_id) is missing in the request parameters."
+                }, 400
+
+            # Start processing
+            with session_scope('DESIGNER') as session:
+                # Query for employees under this manager
+                employees = session.query(EmployeeInfo).filter_by(func_mgr_id=mng_id).all()
+                if not employees:
+                    return {
+                        "error": f"No employees found for the given Manager ID: {mng_id}",
+                        "reporting_employee_shifts": [],
+                        "reporting_employees": []
+                    }, 404
+
+                # Extract employee IDs
+                employee_ids = [emp.emplid for emp in employees]
+                if not employee_ids:
+                    return {
+                        "error": f"No employee IDs found for the given Manager ID: {mng_id}.",
+                        "reporting_employee_shifts": [],
+                        "reporting_employees": []
+                    }, 404
+
+                # Query for employee shifts
+                employee_shifts = session.query(EmployeeShiftInfo).filter(
+                    EmployeeShiftInfo.emp_id.in_(employee_ids)
+                ).all()
+
+                # Prepare shift data
+                if employee_shifts:
+                    reporting_employee_shifts = [
+                        {
+                            'emp_id': emp.emp_id,
+                            'day_id': emp.day_id,
+                            'is_week_off': emp.is_week_off,
+                            'start_time': str(emp.start_time),
+                            'end_time': str(emp.end_time),
+                            'contracted_hours': emp.emp_contracted_hours,
+                            'shift_date': str(emp.shift_date)
+                        }
+                        for emp in employee_shifts
+                    ]
+                else:
+                    reporting_employee_shifts = []
+
+                # Prepare employee data
+                reporting_employees = [
+                    {'emp_id': emp.emplid, 'emp_name': emp.name} for emp in employees
+                ]
+
+                # Prepare final response
+                data = {
+                    "reporting_employee_shifts": reporting_employee_shifts,
+                    "reporting_employees": reporting_employees
+                }
+                return jsonify(data), 200
+
+        except Exception as e:
+            # Include error details in the response
+            return {
+                "error": "An unexpected error occurred.",
+                "details": str(e)
+            }, 500
+
+
+
+
+
+
+
+
 # Subquery to fetch relevant employee IDs
 subquery = session.query(EmployeeShiftInfo.emp_id).filter(
     EmployeeShiftInfo.emp_id.in_(emp_ids)
