@@ -4,6 +4,55 @@ from sqlalchemy import or_
 
 @jwt_required()
 def get(self):
+    # Extract query parameters from the request
+    mng_id = request.args.get("EMPID")
+    department_names = request.args.get("department_name")  # Comma-separated string
+
+    # Validate the presence of EMPID
+    if not mng_id:
+        return jsonify({"error": "Manager ID (EMPID) is required"}), 400
+    
+    if not department_names:
+        return jsonify({"error": "Department name is required"}), 400
+
+    # Split department_names into a list if it's a comma-separated string
+    department_list = department_names.split(",") if "," in department_names else [department_names]
+
+    with session_scope('DESIGNER') as session:
+        try:
+            # Query employees with matching manager ID and department name(s)
+            employees = (
+                session.query(EmployeeInfo)
+                .filter(EmployeeInfo.func_mgr_id == mng_id)
+                .filter(EmployeeInfo.dept_name.in_(department_list))
+                .filter(EmployeeInfo.term_date.is_(None))  # Termination date should be NULL
+                .all()
+            )
+
+            # If no employees are found, return an empty list
+            if not employees:
+                return jsonify({"employees": []}), 200
+
+            # Prepare the response
+            employee_list = [
+                {"emp_id": emp.emplid, "emp_name": emp.name} for emp in employees
+            ]
+
+            return jsonify({"employees": employee_list}), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+
+
+
+
+from flask import request, jsonify
+from sqlalchemy import or_
+
+@jwt_required()
+def get(self):
     # Parse payload from the request
     payload = request.get_json()
     
