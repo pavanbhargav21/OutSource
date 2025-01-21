@@ -1,4 +1,58 @@
 
+from flask import request, jsonify
+from sqlalchemy import or_
+
+@jwt_required()
+def get(self):
+    # Parse payload from the request
+    payload = request.get_json()
+    
+    if not payload:
+        return jsonify({"error": "Payload is required"}), 400
+
+    # Extract EMPID and Department Name from the payload
+    mng_id = payload.get("EMPID")
+    department_names = payload.get("department_name")  # This can be a single string or a list
+
+    # Validate the presence of EMPID
+    if not mng_id:
+        return jsonify({"error": "Manager ID (EMPID) is required"}), 400
+    
+    if not department_names:
+        return jsonify({"error": "Department name is required"}), 400
+
+    # Ensure department_names is a list for consistency
+    if isinstance(department_names, str):
+        department_names = [department_names]
+
+    with session_scope('DESIGNER') as session:
+        try:
+            # Query employees with matching manager ID and department name(s)
+            employees = (
+                session.query(EmployeeInfo)
+                .filter(EmployeeInfo.func_mgr_id == mng_id)
+                .filter(EmployeeInfo.dept_name.in_(department_names))
+                .filter(EmployeeInfo.term_date.is_(None))  # Termination date should be NULL
+                .all()
+            )
+
+            # If no employees are found, return an empty list
+            if not employees:
+                return jsonify({"employees": []}), 200
+
+            # Prepare the response
+            employee_list = [
+                {"emp_id": emp.emplid, "emp_name": emp.name} for emp in employees
+            ]
+
+            return jsonify({"employees": employee_list}), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+
+
 import requests  # Assuming you're using the requests library
 
 def send_request(client, method, endpoint, data=None):
