@@ -1,4 +1,40 @@
 
+import requests  # Assuming you're using the requests library
+
+def send_request(client, method, endpoint, data=None):
+    """
+    Generic function to handle client requests.
+
+    Args:
+        client: The client instance (e.g., a session object or API client).
+        method: HTTP method as a string ('GET', 'POST', 'PUT', 'DELETE').
+        endpoint: The API endpoint.
+        data: The data to send with the request (optional).
+
+    Returns:
+        Response object from the client.
+    """
+    method = method.upper()
+    if method == 'GET':
+        response = client.get(endpoint)
+    elif method == 'POST':
+        response = client.post(endpoint, json=data)
+    elif method == 'PUT':
+        response = client.put(endpoint, json=data)
+    elif method == 'DELETE':
+        response = client.delete(endpoint, json=data)
+    else:
+        raise ValueError(f"Unsupported HTTP method: {method}")
+    
+    return response
+
+
+
+
+
+
+
+
 class EmployeeShiftDetails(Resource):
     def get(self):
         try:
