@@ -1,4 +1,58 @@
 
+Objective
+
+The Employee Shift Screen is a web application that allows managers to assign, view, and update weekly shift timings for their employees. It provides a streamlined way to manage and adjust employee schedules effectively.
+
+Key Features
+
+1. View and Edit Shift Timings:
+
+Managers can view and edit the entire week's shift timings for an employee or update timings for individual days as needed.
+
+This flexibility ensures that shift schedules can be modified to accommodate changes.
+
+
+
+2. Filter Options:
+
+By default, the application displays all employees under the manager.
+
+Managers can apply filters, such as department name, to narrow down the list of employees.
+
+These filters make it easier to manage and edit shifts for specific groups of employees.
+
+
+
+3. User-Friendly Interface:
+
+The application provides a clear and organized interface for managers to update shift timings quickly and efficiently.
+
+
+
+4. Data Storage:
+
+All shift data entered or updated is securely stored in an Azure database, ensuring data safety and accessibility for future reference.
+
+
+
+5. Improved Workforce Management:
+
+By providing the ability to manage shifts by department or employee, the tool helps ensure proper planning and allocation of resources.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from flask import request, jsonify
 from sqlalchemy import or_
 
