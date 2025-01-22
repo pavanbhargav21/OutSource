@@ -1,4 +1,60 @@
 
+Department-Level Filters
+
+1. Filter by Department:
+
+Managers can use department-level filters to manage employees more efficiently.
+
+They can filter the employee list by selecting a single department or multiple departments.
+
+
+
+2. Common Shift Assignment within Departments:
+
+After applying the department filter, managers can assign common shift timings (start time and end time) to all employees under the selected department(s).
+
+This allows for bulk assignment of shifts without handling individual schedules initially.
+
+
+
+3. Individual Shift Modifications:
+
+Once the common shift is assigned, managers can still modify shift timings for individual employees or specific days within the filtered department(s).
+
+This ensures flexibility to accommodate specific employee requirements or special cases.
+
+
+
+4. Save Shift Timings:
+
+Managers can save the assigned or modified shift timings for the employees under the selected department(s).
+
+If no further changes are needed, they can directly save the common shifts without additional modifications.
+
+
+
+5. Efficient Workflow Management:
+
+The department filter streamlines the process by allowing managers to focus on a subset of employees based on organizational hierarchy.
+
+This approach improves the accuracy and efficiency of shift assignments and modifications.
+
+
+
+6. Adaptable Process:
+
+Whether assigning common shifts or customizing individual schedules, the system provides the flexibility to manage shifts in bulk or at a granular level.
+
+This adaptability ensures that the shift management process aligns with the dynamic needs of the team or department.
+
+
+
+
+This feature ensures a seamless workflow, giving managers complete control over shift scheduling, whether managing all employees or focusing on specific departments.
+
+
+
+
 
 
 Objective
