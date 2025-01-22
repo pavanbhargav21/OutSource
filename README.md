@@ -1,4 +1,236 @@
 
+Button Workflow:
+
+Default Screen Workflow:
+
+1. From Date and To Date Selection:
+
+The manager selects the start date (From Date) and end date (To Date) for assigning shift timings.
+
+
+
+2. Common Shift Button:
+
+Once the dates are selected, the manager clicks Common Shift to assign uniform start and end timings for all employees under the manager or based on department filters (if applied).
+
+
+
+3. Save Button:
+
+After assigning the common shift, the manager clicks Save to store the shift details for the selected date range and employees in the database.
+
+
+
+4. Reset Button:
+
+If the manager wants to clear the selected dates, departments, or any assigned shifts, they can click Reset to start over.
+
+
+
+
+
+---
+
+Edit Screen Workflow:
+
+1. From Date and To Date Selection:
+
+The manager selects a From Date and To Date to fetch previously submitted shift details for editing.
+
+
+
+2. Get Shift Details Button:
+
+After selecting the date range and applying department filters (if needed), the manager clicks Get Shift Details.
+
+This retrieves the submitted shift details for the selected employees and date range.
+
+
+
+3. Editing Shift Details:
+
+Managers can modify the shift timings for multiple employees, individual employees, or specific days.
+
+
+
+4. Update Button:
+
+After making changes, the manager clicks Update to save the modified shift timings in the database.
+
+
+
+5. Reset Button:
+
+The manager can click Reset to clear the selected filters, dates, or edits and start fresh.
+
+
+
+
+
+---
+
+View Screen Workflow:
+
+1. Default View:
+
+By default, all employees under the manager are displayed unless department filters are applied.
+
+
+
+2. Filter by Department:
+
+Managers can use the department filter to view employees from specific departments.
+
+
+
+3. Edit (Pencil Icon):
+
+To modify shift details, the manager clicks the Edit (Pencil Icon) for an individual employee.
+
+This allows day-wise or week-wise shift modifications for that employee.
+
+
+
+4. Save Changes:
+
+After making edits, the manager clicks Save Changes to update the shift details for the selected employee.
+
+
+
+5. Get Shift Details (if applied):
+
+For specific departments or multiple employees, Get Shift Details can be used to fetch the current shift details.
+
+This ensures the latest information is displayed before any edits are made.
+
+
+
+
+
+---
+
+Summary:
+
+Default Screen: Focuses on assigning new shifts using Common Shift and Save without retrieving existing data.
+
+Edit Screen: Allows retrieving and editing previously submitted shifts with Get Shift Details and Update.
+
+View Screen: Primarily used for viewing current shifts and making individual modifications with the Edit (Pencil Icon) and Save Changes.
+
+
+
+
+
+
+
+
+
+
+Definitions for Buttons and Filters
+
+1. Default Manager Details:
+
+Purpose: Displays the manager's information by default when the screen is loaded.
+
+Description: Ensures that only the employees reporting to the logged-in manager are shown in the view.
+
+
+
+2. Department Filter (Multi-Select):
+
+Purpose: Allows the manager to filter employees based on departments.
+
+Description:
+
+Displays a list of all departments where employees reporting to the manager are assigned.
+
+Managers can select one or multiple departments to narrow down the list of employees for shift management.
+
+
+
+
+3. From Date and To Date:
+
+From Date:
+
+Purpose: Allows the manager to select the start date of the week for which shifts need to be managed.
+
+Description: Ensures that only relevant data starting from the selected week is displayed.
+
+
+To Date:
+
+Purpose: Allows the manager to select the end date of the week for managing shifts.
+
+Description: Ensures that the data displayed corresponds to the selected date range.
+
+
+
+
+4. Get Shift Details Button:
+
+Purpose: Fetches the shift details for the selected employees or departments.
+
+Availability:
+
+Only available on the EditView Screen.
+
+Used to retrieve the shift details that were previously submitted for a selected date range or department filter.
+
+
+Description:
+
+Displays all shift details for the selected employees, departments, and date range.
+
+Managers can edit the retrieved shift timings as needed.
+
+
+
+
+5. Common Shift Button:
+
+Purpose: Allows the manager to assign the same shift timings (start and end time) for all employees or selected employees for the entire week.
+
+Description:
+
+Managers can input a common start time and end time.
+
+This common timing is applied to all days of the week.
+
+After applying a common shift, managers can still modify timings for individual employees or specific days if needed.
+
+
+Flexibility: Enables quick bulk assignment of shifts while retaining the ability to make individual adjustments later.
+
+
+
+
+Button Workflow:
+
+Step 1: Use the Department Filter to select the desired departments or keep it default to view all employees.
+
+Step 2: Use the From Date and To Date fields to define the time range for shift details.
+
+Step 3:
+
+On the EditView Screen, click Get Shift Details to retrieve and edit previously submitted shifts.
+
+On the Shift Assignment Screen, click Common Shift to assign uniform timings across employees.
+
+
+Step 4: Save changes to update the shift schedules in the database.
+
+
+
+
+
+
+
+
+
+
+
+
 EditView Screen Functionality
 
 1. Overview:
