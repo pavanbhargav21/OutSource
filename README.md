@@ -1,4 +1,77 @@
 
+
+View Screen Functionality
+
+1. Default View:
+
+By default, the view screen displays all employees under the logged-in manager.
+
+If no department filter is applied, all employees are shown in the list.
+
+
+
+2. Department-Level Filters:
+
+Managers can filter employees based on department(s).
+
+If a department filter is applied, only employees belonging to the selected department(s) will be displayed.
+
+
+
+3. Employee Selection:
+
+The view screen allows managers to select an employee or multiple employees from the displayed list.
+
+Managers can focus on specific employees to review their shift details.
+
+
+
+4. Shift Details:
+
+For the selected employee(s), the system displays their submitted shift details for the week.
+
+Shift timings for each day are shown, providing an overview of the assigned schedule.
+
+
+
+5. Individual Shift Modifications:
+
+Managers can modify shift timings for individual employees or specific days directly from the view screen.
+
+Day-wise adjustments can be made to address specific requirements for an employee.
+
+
+
+6. Dynamic Updates:
+
+Any changes made by the manager are saved, ensuring that the shift schedule reflects the latest updates.
+
+Managers can reassign or modify shifts as needed, even after submission.
+
+
+
+7. Flexible Management:
+
+The view screen provides a convenient way to monitor and manage shift timings for all employees or those filtered by department.
+
+It ensures managers can make informed decisions and adjust schedules in real time.
+
+
+
+
+This feature enables managers to have a comprehensive and customizable view of employee schedules, offering both high-level and detailed insights to optimize shift management.
+
+
+
+
+
+
+
+
+
+
+
+
 Department-Level Filters
 
 1. Filter by Department:
