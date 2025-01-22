@@ -1,4 +1,65 @@
 
+
+
+Objective
+
+The Employee Shift Screen is a web application designed to simplify shift management for managers. It enables managers to assign, view, and modify shift timings for employees under their supervision, ensuring efficient workforce management for a week.
+
+Features
+
+1. View Active Employees:
+
+Upon login, managers can see a list of all active employees working under them for the current week.
+
+
+
+2. Common Shift Assignment:
+
+A "Common Shift" option allows managers to assign a uniform start and end time for all employees for the entire week.
+
+Managers can quickly update shift timings for all employees without handling individual schedules initially.
+
+
+
+3. Individual Day and Employee Modifications:
+
+Managers can later select any individual employee or specific day to modify the start and end times as needed.
+
+This ensures flexibility to accommodate individual requirements.
+
+
+
+4. Save Shift Timings:
+
+Once the manager is satisfied with the schedule, they can save the shift timings for the selected week.
+
+
+
+5. Department-Level Filters:
+
+Managers can apply filters to manage shifts by department.
+
+They can choose to filter by a single department or multiple departments to view and assign shifts efficiently.
+
+
+
+6. Customizable and Adaptable:
+
+The system supports individual adjustments even after assigning common shifts, ensuring accuracy and alignment with specific employee or department needs.
+
+
+
+
+Data Management
+
+All shift timings entered or modified are securely saved to an Azure database, ensuring data safety, integrity, and accessibility for future reference or audit. This setup facilitates centralized management and enhances overall efficiency.
+
+
+
+
+
+
+
 Objective
 
 The Employee Shift Screen is a web application that allows managers to assign, view, and update weekly shift timings for their employees. It provides a streamlined way to manage and adjust employee schedules effectively.
