@@ -1,4 +1,77 @@
 
+EditView Screen Functionality
+
+1. Overview:
+
+The EditView screen allows managers to edit already submitted shift timings for one or multiple employees.
+
+It provides flexibility to modify shift schedules based on department-level or employee-level filters.
+
+
+
+2. Default View:
+
+By default, all employees under the logged-in manager are displayed.
+
+If no filters are applied, the system shows all employees with their shift details for the entire week.
+
+
+
+3. Filters and Selection:
+
+Managers can apply department filters to focus on specific departments, selecting a single department or multiple departments.
+
+They can also specify a "From Date" and "To Date" to view and edit shift details within a specific time period.
+
+
+
+4. Get Shift Details:
+
+After applying filters and selecting a date range, managers click the "Get Shift Details" button to retrieve previously submitted shift timings.
+
+The retrieved data includes shift timings for all days of the week for the selected employees or department(s).
+
+
+
+5. Editing Capabilities:
+
+Managers can edit shift timings for:
+
+Individual employees.
+
+Multiple employees simultaneously.
+
+The entire week or specific days.
+
+
+This ensures comprehensive and precise updates for all scenarios.
+
+
+
+6. Save Updates:
+
+Once edits are completed, managers can save the changes.
+
+The updated schedules are stored in the system, ensuring accurate and up-to-date shift records.
+
+
+
+
+Benefits of EditView:
+
+Enables efficient shift management for the entire week.
+
+Allows flexible filtering by department or employees, streamlining the process.
+
+Provides granular editing options to manage individual or multiple employees’ schedules effectively.
+
+
+
+
+
+
+
+
 
 View Screen Functionality
 
