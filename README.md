@@ -1,3 +1,34 @@
+import os
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+# Key Vault and Secret Configuration
+KEY_VAULT_NAME = "your-key-vault-name"  # Replace with your Key Vault name
+SECRET_NAME = "your-secret-name"  # Replace with your secret name
+
+# Build the Key Vault URL
+KEY_VAULT_URL = f"https://{KEY_VAULT_NAME}.vault.azure.net/"
+
+# Use DefaultAzureCredential to authenticate
+credential = DefaultAzureCredential()
+
+# Connect to Key Vault
+client = SecretClient(vault_url=KEY_VAULT_URL, credential=credential)
+
+# Fetch the secret
+try:
+    secret = client.get_secret(SECRET_NAME)
+    client_secret = secret.value
+    print("Client secret retrieved successfully.")
+except Exception as e:
+    print(f"Error retrieving secret: {e}")
+
+# Use client_secret in your code
+print(f"Client Secret: {client_secret}")
+
+
+
+
 
 Button Workflow:
 
