@@ -10,12 +10,10 @@ WM_KEYUP = 0x0101
 
 VK_TAB = 0x09
 VK_MENU = 0x12  # ALT key
-VK_LWIN = 0x5B  # Left Windows key
-VK_RWIN = 0x5C  # Right Windows key
-VK_DELETE = 0x2E
-VK_ESCAPE = 0x1B
 VK_CONTROL = 0x11
 VK_SHIFT = 0x10
+VK_ESCAPE = 0x1B
+VK_DELETE = 0x2E
 
 # Track key states
 alt_pressed = False
@@ -24,11 +22,13 @@ shift_pressed = False
 
 # Structure to extract vkCode
 class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [("vkCode", wintypes.DWORD),
-                ("scanCode", wintypes.DWORD),
-                ("flags", wintypes.DWORD),
-                ("time", wintypes.DWORD),
-                ("dwExtraInfo", wintypes.POINTER(wintypes.ULONG))]
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))  # Correctly define dwExtraInfo pointer
+    ]
 
 # Low-level keyboard hook procedure
 def low_level_keyboard_proc(nCode, wParam, lParam):
@@ -75,7 +75,7 @@ def set_keyboard_hook():
     
     print("✅ Keyboard hook started. Press ALT + TAB, WIN + TAB, or CTRL + ALT + DEL to test.")
 
-    # Message loop
+    # Message loop to listen for keyboard events
     msg = wintypes.MSG()
     while ctypes.windll.user32.GetMessageA(ctypes.byref(msg), 0, 0, 0) != 0:
         ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
@@ -84,11 +84,6 @@ def set_keyboard_hook():
 # Run the hook
 if __name__ == "__main__":
     set_keyboard_hook()
-
-
-
-
-
 
 import ctypes
 import win32con
