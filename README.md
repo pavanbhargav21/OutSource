@@ -27,6 +27,99 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", wintypes.DWORD),
         ("flags", wintypes.DWORD),
         ("time", wintypes.DWORD),
+        ("dwExtraInfo", wintypes.ULONG)
+    ]
+
+# Low-level keyboard hook procedure
+def low_level_keyboard_proc(nCode, wParam, lParam):
+    global alt_pressed, ctrl_pressed, shift_pressed
+
+    if nCode >= 0:
+        # Fix: Properly cast lParam to prevent integer overflow
+        kbd_struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+        vk_code = kbd_struct.vkCode  # Extract virtual key code
+
+        if wParam == WM_KEYDOWN:
+            if vk_code == VK_MENU:  # ALT key
+                alt_pressed = True
+            elif vk_code == VK_CONTROL:
+                ctrl_pressed = True
+            elif vk_code == VK_SHIFT:
+                shift_pressed = True
+            elif vk_code == VK_TAB and alt_pressed:
+                print("🔹 ALT + TAB detected!")
+            elif vk_code == VK_DELETE and ctrl_pressed and alt_pressed:
+                print("🔹 CTRL + ALT + DEL detected!")
+            elif vk_code == VK_ESCAPE and ctrl_pressed and shift_pressed:
+                print("🔹 CTRL + SHIFT + ESC detected!")
+
+        elif wParam == WM_KEYUP:
+            if vk_code == VK_MENU:
+                alt_pressed = False
+            elif vk_code == VK_CONTROL:
+                ctrl_pressed = False
+            elif vk_code == VK_SHIFT:
+                shift_pressed = False
+
+    # Fix: Use the correct types in CallNextHookEx
+    return ctypes.windll.user32.CallNextHookEx(0, nCode, wParam, ctypes.byref(kbd_struct))
+
+# Set Windows keyboard hook
+def set_keyboard_hook():
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    keyboard_hook = HOOKPROC(low_level_keyboard_proc)
+
+    hHook = ctypes.windll.user32.SetWindowsHookExA(WH_KEYBOARD_LL, keyboard_hook, None, 0)
+
+    if not hHook:
+        print("❌ Failed to set hook")
+        return
+    
+    print("✅ Keyboard hook started. Press ALT + TAB, WIN + TAB, or CTRL + ALT + DEL to test.")
+
+    # Message loop to listen for keyboard events
+    msg = wintypes.MSG()
+    while ctypes.windll.user32.GetMessageA(ctypes.byref(msg), 0, 0, 0) != 0:
+        ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+        ctypes.windll.user32.DispatchMessageA(ctypes.byref(msg))
+
+# Run the hook
+if __name__ == "__main__":
+    set_keyboard_hook()
+
+
+
+
+
+
+import ctypes
+import win32con
+from ctypes import wintypes
+
+# Constants
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+
+VK_TAB = 0x09
+VK_MENU = 0x12  # ALT key
+VK_CONTROL = 0x11
+VK_SHIFT = 0x10
+VK_ESCAPE = 0x1B
+VK_DELETE = 0x2E
+
+# Track key states
+alt_pressed = False
+ctrl_pressed = False
+shift_pressed = False
+
+# Structure to extract vkCode
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))  # Correctly define dwExtraInfo pointer
     ]
 
