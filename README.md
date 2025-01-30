@@ -1,3 +1,39 @@
+from azure.eventhub import EventHubProducerClient, EventData
+import json
+import asyncio
+
+# Use the primary connection string
+connection_str = 'Endpoint=sb://your-eventhub-namespace.servicebus.windows.net/;SharedAccessKeyName=EventSender;SharedAccessKey=your-primary-key;EntityPath=your-eventhub-name'
+
+eventhub_name = "your-eventhub-name"
+
+async def send_event_to_eventhub(event_data):
+    try:
+        # Debug statement: Before sending the event
+        print(f"Preparing to send event data: {event_data}")
+
+        # Using async with for the producer client
+        async with EventHubProducerClient.from_connection_string(connection_str, eventhub_name=eventhub_name) as producer:
+
+            # Create EventData from the JSON event data
+            event = EventData(event_data)
+
+            # Send the event to the Event Hub with partition key "login data"
+            await producer.send_event(event, partition_key="login data")
+
+            # Debug statement: After successfully sending the event
+            print(f"Successfully sent event to Event Hub: {event_data}")
+
+    except Exception as e:
+        # Debug statement: On failure
+        print(f"Failed to send event: {str(e)}")
+
+# Example: Sending some JSON data
+login_data = {"emp_id": 1234, "timestamp": "2025-01-30T12:00:00"}
+asyncio.run(send_event_to_eventhub(json.dumps(login_data)))
+
+
+
 
 import ctypes
 import ctypes.wintypes as wintypes
