@@ -1,3 +1,89 @@
+
+import ctypes
+import win32con
+import win32api
+from ctypes import wintypes
+
+# Constants for Windows Hook
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+
+# Virtual Key Codes
+VK_TAB = 0x09
+VK_MENU = 0x12  # ALT key
+VK_LWIN = 0x5B  # Left Windows key
+VK_RWIN = 0x5C  # Right Windows key
+VK_ESCAPE = 0x1B
+VK_DELETE = 0x2E
+
+# Track key states
+alt_pressed = False
+win_pressed = False
+ctrl_pressed = False
+
+# Hook procedure
+def low_level_keyboard_proc(nCode, wParam, lParam):
+    global alt_pressed, win_pressed, ctrl_pressed
+
+    if nCode == 0:  # Process only valid key events
+        vk_code = lParam[0]  # Get virtual key code
+
+        if wParam == WM_KEYDOWN:
+            if vk_code == VK_MENU:  # ALT key
+                alt_pressed = True
+            elif vk_code == VK_TAB and alt_pressed:
+                print("🔹 ALT + TAB detected!")
+            elif vk_code in [VK_LWIN, VK_RWIN]:  # Windows key
+                win_pressed = True
+            elif vk_code == VK_LWIN and vk_code == VK_TAB:
+                print("🔹 WIN + TAB detected!")
+            elif vk_code == VK_DELETE and ctrl_pressed and alt_pressed:
+                print("🔹 CTRL + ALT + DEL detected!")
+            elif vk_code == VK_ESCAPE and ctrl_pressed and shift_pressed:
+                print("🔹 CTRL + SHIFT + ESC detected!")
+
+        elif wParam == WM_KEYUP:
+            if vk_code == VK_MENU:
+                alt_pressed = False
+            elif vk_code in [VK_LWIN, VK_RWIN]:
+                win_pressed = False
+            elif vk_code == VK_TAB:
+                alt_pressed = False  # Reset ALT state after releasing TAB
+
+    return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+# Set up Windows hook
+def set_keyboard_hook():
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    keyboard_hook = HOOKPROC(low_level_keyboard_proc)
+
+    hHook = ctypes.windll.user32.SetWindowsHookExA(WH_KEYBOARD_LL, keyboard_hook, None, 0)
+
+    if not hHook:
+        print("❌ Failed to set hook")
+        return
+    
+    print("✅ Keyboard hook started. Press ALT + TAB, WIN + TAB, or CTRL + ALT + DEL to test.")
+
+    # Message loop to keep the hook running
+    msg = wintypes.MSG()
+    while ctypes.windll.user32.GetMessageA(ctypes.byref(msg), 0, 0, 0) != 0:
+        ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+        ctypes.windll.user32.DispatchMessageA(ctypes.byref(msg))
+
+# Run the hook
+if __name__ == "__main__":
+    set_keyboard_hook()
+
+
+
+
+
+
+
+
+
 import os
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
