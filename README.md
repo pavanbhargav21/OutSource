@@ -1,4 +1,48 @@
 
+from azure.identity import ClientSecretCredential
+from azure.eventhub import EventHubProducerClient, EventData
+import json
+
+# Define your Azure AD application credentials (Service Principal)
+tenant_id = 'your-tenant-id'
+client_id = 'your-client-id'
+client_secret = 'your-client-secret'
+eventhub_namespace = 'your-eventhub-namespace'
+eventhub_name = 'your-eventhub-name'
+
+# Create a credential object to authenticate using Service Principal
+credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+
+# Create the EventHubProducerClient using the credential (OAuth2 token-based authentication)
+producer = EventHubProducerClient(
+    fully_qualified_namespace=f'{eventhub_namespace}.servicebus.windows.net',
+    eventhub_name=eventhub_name,
+    credential=credential
+)
+
+async def send_event_to_eventhub(event_data):
+    try:
+        # Create EventData
+        event = EventData(event_data)
+
+        # Send event
+        async with producer:
+            await producer.send_event(event, partition_key="login data")
+        print(f"Successfully sent event: {event_data}")
+    except Exception as e:
+        print(f"Failed to send event: {str(e)}")
+
+# Example of data to be sent
+login_data = {"emp_id": 1234, "timestamp": "2025-01-30T12:00:00"}
+send_event_to_eventhub(json.dumps(login_data))
+
+
+
+
+
+
+
+
 from azure.eventhub import EventHubProducerClient, EventData
 import json
 import asyncio
