@@ -1,3 +1,45 @@
+
+from azure.eventhub import EventHubProducerClient, EventData
+import json
+import asyncio
+
+# SAS token and connection details
+fully_qualified_namespace = 'your-eventhub-namespace.servicebus.windows.net'
+eventhub_name = 'your-eventhub-name'
+sas_token = 'your-SAS-token'  # This is your SAS token
+
+async def send_event_to_eventhub(event_data):
+    try:
+        print(f"Preparing to send event data: {event_data}")
+
+        # Create producer client with SAS Token
+        async with EventHubProducerClient(
+            fully_qualified_namespace=fully_qualified_namespace,
+            eventhub_name=eventhub_name,
+            credential=sas_token  # Use the SAS token for authentication
+        ) as producer:
+            
+            # Create EventData
+            event = EventData(event_data)
+
+            # Send event
+            await producer.send_event(event, partition_key="login data")
+
+            print(f"Successfully sent event to Event Hub: {event_data}")
+
+    except Exception as e:
+        # Capture more specific error information
+        print(f"Failed to send event. Error: {str(e)}")
+
+# Example event data
+login_data = {"emp_id": 1234, "timestamp": "2025-01-30T12:00:00"}
+asyncio.run(send_event_to_eventhub(json.dumps(login_data)))
+
+
+
+
+
+
 from azure.eventhub import EventHubProducerClient, EventData
 import json
 import asyncio
