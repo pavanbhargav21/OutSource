@@ -1,5 +1,101 @@
 
 import ctypes
+import ctypes.wintypes as wintypes
+import signal
+import sys
+
+# Define Windows Constants
+WH_KEYBOARD_LL = 13  # Low-level keyboard hook ID
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+VK_TAB = 0x09
+VK_ALT = 0x12
+
+# Global variables
+hHook = None  # Hook handle
+alt_pressed = False
+
+# Define Hook Procedure
+def low_level_keyboard_proc(nCode, wParam, lParam):
+    """ Callback function for keyboard hook. Detects key combinations. """
+    global alt_pressed
+
+    if nCode >= 0:
+        vk_code = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents.vkCode
+        print(f"[HOOK TRIGGERED] Key Code: {vk_code}, Event Type: {wParam}")
+
+        if wParam == WM_KEYDOWN:
+            if vk_code == VK_ALT:
+                alt_pressed = True
+                print("[INFO] ALT Pressed")
+            elif vk_code == VK_TAB and alt_pressed:
+                print("[DETECTED] ALT + TAB Pressed!")
+
+        elif wParam == WM_KEYUP:
+            if vk_code == VK_ALT:
+                alt_pressed = False
+                print("[INFO] ALT Released")
+
+    return ctypes.windll.user32.CallNextHookEx(hHook, nCode, wParam, lParam)
+
+# Define Hook Struct
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wintypes.DWORD),
+                ("scanCode", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", wintypes.ULONG_PTR)]
+
+def set_keyboard_hook():
+    """ Sets a global keyboard hook """
+    global hHook
+
+    # Define Hook Procedure Type
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    
+    # Convert Python function to Windows hook function
+    keyboard_hook = HOOKPROC(low_level_keyboard_proc)
+
+    # Install Hook
+    hHook = ctypes.windll.user32.SetWindowsHookExA(WH_KEYBOARD_LL, keyboard_hook, None, 0)
+    
+    if not hHook:
+        print("❌ [ERROR] Failed to set keyboard hook.")
+        sys.exit(1)
+
+    print("✅ [SUCCESS] Keyboard Hook Installed.")
+
+    # Message Loop to Keep Hook Active
+    msg = wintypes.MSG()
+    while ctypes.windll.user32.GetMessageA(ctypes.byref(msg), 0, 0, 0) != 0:
+        ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+        ctypes.windll.user32.DispatchMessageA(ctypes.byref(msg))
+
+# Handle CTRL+C for Graceful Exit
+def handle_exit(signum, frame):
+    """ Handles CTRL+C to properly unhook and exit """
+    global hHook
+    print("\n[EXIT] CTRL+C Detected. Unhooking keyboard and exiting...")
+    
+    if hHook:
+        ctypes.windll.user32.UnhookWindowsHookEx(hHook)  # Unhook before exiting
+    
+    sys.exit(0)
+
+# Register Signal Handler for CTRL+C
+signal.signal(signal.SIGINT, handle_exit)
+
+# Run the Hook
+if __name__ == "__main__":
+    print("🔄 [INFO] Running Keyboard Hook. Press CTRL+C to exit.")
+    set_keyboard_hook()
+
+
+
+
+
+
+import ctypes
 import win32con
 from ctypes import wintypes
 
