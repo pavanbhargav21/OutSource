@@ -3,6 +3,67 @@ import win32gui
 import win32con
 import win32api
 import win32ts
+import ctypes
+import time
+
+# Define window procedure
+def window_proc(hwnd, msg, wparam, lparam):
+    try:
+        if msg == win32con.WM_WTSSESSION_CHANGE:  # Correct event type
+            if wparam == win32ts.WTS_SESSION_LOCK:
+                print("🔒 System Locked!")
+            elif wparam == win32ts.WTS_SESSION_UNLOCK:
+                print("🔓 System Unlocked!")
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+    except Exception as e:
+        print(f"Error in WNDPROC handler: {e}")
+        return 0  # Always return an integer (prevents crashes)
+
+class WindowsSessionMonitor:
+    def __init__(self):
+        """Creates a hidden window to listen for lock/unlock events"""
+        self.hinst = win32api.GetModuleHandle(None)
+        self.class_name = "SessionMonitorWindow"
+
+        # Define window class
+        self.wc = win32gui.WNDCLASS()
+        self.wc.lpfnWndProc = window_proc
+        self.wc.hInstance = self.hinst
+        self.wc.lpszClassName = self.class_name
+        self.class_atom = win32gui.RegisterClass(self.wc)
+
+        # Create the hidden window
+        self.hwnd = win32gui.CreateWindow(self.class_atom, "Session Monitor", 0, 0, 0, 0, 0, 0, 0, 0, self.hinst, None)
+
+        # Register for session notifications
+        ctypes.windll.wtsapi32.WTSRegisterSessionNotification(self.hwnd, win32ts.NOTIFY_FOR_ALL_SESSIONS)
+
+    def run(self):
+        """Starts the event listener"""
+        print("Listening for Windows lock/unlock events...")
+        try:
+            while True:
+                win32gui.PumpMessages()  # Correct message loop
+        except KeyboardInterrupt:
+            print("Stopping monitoring...")
+            ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(self.hwnd)
+            win32gui.DestroyWindow(self.hwnd)
+
+if __name__ == "__main__":
+    monitor = WindowsSessionMonitor()
+    monitor.run()
+
+
+
+
+
+
+
+
+import win32gui
+import win32con
+import win32api
+import win32ts
 import time
 
 def window_proc(hwnd, msg, wparam, lparam):
