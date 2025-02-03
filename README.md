@@ -1,3 +1,27 @@
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+# Define log file path
+log_file = "app.log"
+
+# Setup RotatingFileHandler
+handler = RotatingFileHandler(
+    log_file, mode='a', maxBytes=50 * 1024, backupCount=5, encoding=None, delay=False
+)
+
+# Configure logger
+logger = logging.getLogger("app_logger")
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
+
+# Test logging (generates large logs to test rotation)
+for i in range(10000):
+    logger.info(f"This is log entry number {i}")
+
+
+
+
 
 import os
 import time
