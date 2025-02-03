@@ -1,3 +1,53 @@
+
+import win32gui
+import win32con
+import win32api
+import win32ts
+import time
+
+def window_proc(hwnd, msg, wparam, lparam):
+    if msg == win32con.WM_WTSSESSION_CHANGE:
+        if wparam == win32con.WTS_SESSION_LOCK:
+            print("System Locked!")  # Trigger when the system locks
+        elif wparam == win32con.WTS_SESSION_UNLOCK:
+            print("System Unlocked!")  # Trigger when the system unlocks
+    return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+class WindowsSessionMonitor:
+    def __init__(self):
+        self.hinst = win32api.GetModuleHandle(None)
+        self.class_name = "SessionMonitorWindow"
+        self.wc = win32gui.WNDCLASS()
+        self.wc.lpfnWndProc = window_proc
+        self.wc.hInstance = self.hinst
+        self.wc.lpszClassName = self.class_name
+        self.class_atom = win32gui.RegisterClass(self.wc)
+        self.hwnd = win32gui.CreateWindow(self.class_atom, "Session Monitor", 0, 0, 0, 0, 0, 0, 0, self.hinst, None)
+        win32ts.WTSRegisterSessionNotification(self.hwnd, win32ts.NOTIFY_FOR_ALL_SESSIONS)
+
+    def run(self):
+        """Starts the event listener"""
+        print("Listening for session changes...")
+        try:
+            while True:
+                win32gui.PumpWaitingMessages()
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("Stopping monitoring...")
+            win32ts.WTSUnRegisterSessionNotification(self.hwnd)
+            win32gui.DestroyWindow(self.hwnd)
+
+if __name__ == "__main__":
+    monitor = WindowsSessionMonitor()
+    monitor.run()
+
+
+
+
+
+
+
+
 import logging
 from logging.handlers import RotatingFileHandler
 import os
