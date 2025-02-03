@@ -1,5 +1,61 @@
+
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Define log file path
+log_file = "app.log"
+
+# Setup RotatingFileHandler
+handler = RotatingFileHandler(
+    log_file, mode='a', maxBytes=50 * 1024, backupCount=5, encoding=None, delay=False
+)
+
+# Define log format: Time (including milliseconds), Level, and Message
+formatter = logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+handler.setFormatter(formatter)
+
+# Configure logger
+logger = logging.getLogger("app_logger")
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
+
+# Test logging (generates large logs to test rotation)
+for i in range(10000):
+    logger.info(f"This is log entry number {i}")
+
+
+
+
+
+
+
+
 import ctypes
-import time
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Define log file path
+log_file = "app.log"
+
+# Setup RotatingFileHandler
+handler = RotatingFileHandler(
+    log_file, mode='a', maxBytes=50 * 1024, backupCount=5, encoding=None, delay=False
+)
+
+# Define log format: Time (including milliseconds), Level, and Message
+formatter = logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+handler.setFormatter(formatter)
+
+# Configure logger
+logger = logging.getLogger("app_logger")
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
+
+# Test logging (generates large logs to test rotation)
+for i in range(10000):
+    logger.info(f"This is log entry number {i}")import time
 import win32api
 import win32con
 import win32gui
@@ -201,6 +257,9 @@ logger.addHandler(handler)
 # Test logging (generates large logs to test rotation)
 for i in range(10000):
     logger.info(f"This is log entry number {i}")
+
+
+
 
 
 
