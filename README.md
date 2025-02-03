@@ -1,3 +1,75 @@
+import ctypes
+import time
+import win32api
+import win32con
+import win32gui
+import win32process
+import win32security
+import datetime
+from ctypes import wintypes
+
+# Constants for Session Status
+WTS_SESSION_LOCK = 0x07
+WTS_SESSION_UNLOCK = 0x08
+WTS_SESSION_LOGON = 0x01
+WTS_SESSION_LOGOFF = 0x02
+
+# Store timestamps for lock and unlock
+lock_time = None
+unlock_time = None
+
+# Function to handle system session events (lock/unlock)
+def handle_wts_event(wparam, lparam):
+    global lock_time, unlock_time
+    
+    if wparam == WTS_SESSION_LOCK:
+        # System is locked
+        lock_time = datetime.datetime.now()
+        print(f"System locked at: {lock_time}")
+        
+    elif wparam == WTS_SESSION_UNLOCK:
+        # System is unlocked
+        unlock_time = datetime.datetime.now()
+        print(f"System unlocked at: {unlock_time}")
+        
+        if lock_time:
+            # Calculate the duration between lock and unlock
+            duration = unlock_time - lock_time
+            print(f"Duration locked: {duration}")
+        
+        # Reset lock_time after unlock
+        lock_time = None
+        
+    elif wparam == WTS_SESSION_LOGON:
+        print(f"User logged on at: {datetime.datetime.now()}")
+        
+    elif wparam == WTS_SESSION_LOGOFF:
+        print(f"User logged off at: {datetime.datetime.now()}")
+
+# Register for session notifications
+def register_session_notifications(hwnd):
+    ctypes.windll.wtsapi32.WTSRegisterSessionNotification(hwnd, 1)
+
+# Create a simple window to handle messages
+def create_window():
+    wc = win32gui.WNDCLASS()
+    wc.lpfnWndProc = handle_wts_event  # Set the handler for the window messages
+    wc.lpszClassName = "SessionMonitorClass"
+    wc.hInstance = win32api.GetModuleHandle(None)
+
+    class_atom = win32gui.RegisterClass(wc)
+    hwnd = win32gui.CreateWindow(class_atom, "Session Monitor Window", 0, 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
+
+    register_session_notifications(hwnd)  # Register for session notifications
+    win32gui.PumpMessages()  # Start the message loop
+
+# Main function
+if __name__ == "__main__":
+    print("Monitoring system lock/unlock events...")
+    create_window()
+
+
+
 
 import win32gui
 import win32con
