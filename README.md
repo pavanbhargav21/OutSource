@@ -1,4 +1,84 @@
 
+import os
+import requests
+from azure.identity import ClientSecretCredential
+from azure.eventhub import EventHubProducerClient, EventDataBatch
+from requests_ntlm import HttpNtlmAuth
+import socket
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+
+# Step 1: Set proxy environment variables
+proxy_url = "http://us-proxy-01.systems.us.ongc:80"
+
+# Set proxy for HTTP and HTTPS in environment variables
+os.environ['HTTP_PROXY'] = proxy_url
+os.environ['HTTPS_PROXY'] = proxy_url
+
+# Step 2: Create a session to handle NTLM authentication for the proxy
+session = requests.Session()
+
+# Define a custom adapter that uses the current Windows user's credentials (no manual username/password required)
+class NTLMAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['proxy_urls'] = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+        return super().init_poolmanager(*args, **kwargs)
+
+# Attach the NTLM adapter
+session.mount('http://', NTLMAdapter())
+session.mount('https://', NTLMAdapter())
+
+# Optionally, you can verify if the proxy works by making a request
+try:
+    # Try accessing a URL that goes through the proxy to see if NTLM authentication works
+    response = session.get('http://your-eventhub-url-or-api')  # Replace with a valid URL
+    print(response.status_code)
+except Exception as e:
+    print(f"Error connecting to proxy: {e}")
+
+# Step 3: Use ClientSecretCredential to authenticate with Azure
+tenant_id = "your-tenant-id"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+eventhub_namespace = "your-eventhub-namespace"
+eventhub_name = "your-eventhub-name"
+
+# Initialize ClientSecretCredential for Azure Event Hub authentication
+credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+
+# Step 4: Create EventHubProducerClient using the credential
+producer_client = EventHubProducerClient(
+    fully_qualified_namespace=f"{eventhub_namespace}.servicebus.windows.net",
+    eventhub_name=eventhub_name,
+    credential=credential
+)
+
+# Step 5: Create a batch, add event data, and send the batch
+event_data_batch = producer_client.create_batch()
+
+# Add some event data to the batch
+event_data = "Your event data goes here"
+event_data_batch.add(event_data)
+
+# Send the batch of events
+try:
+    producer_client.send_batch(event_data_batch)
+    print("Batch sent successfully!")
+except Exception as e:
+    print(f"Failed to send batch: {e}")
+
+# Close the producer client after sending
+finally:
+    producer_client.close()
+
+
+
+
+
+
 import logging
 from logging.handlers import RotatingFileHandler
 
