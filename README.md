@@ -1,4 +1,74 @@
 
+
+import os
+import requests
+import keyring
+from azure.identity import ClientSecretCredential
+from azure.eventhub import EventHubProducerClient, EventDataBatch
+
+# Retrieve the stored password
+username = "your_username"
+proxy_url = "http://us-proxy-01.systems.us.ongc:80"
+
+# Get password from Windows Credential Manager
+password = keyring.get_password("Windows Stored Credentials", username)
+
+if not password:
+    raise Exception("Proxy password not found in Windows Credential Manager!")
+
+# Set environment variables with authentication
+auth_proxy = f"http://{username}:{password}@us-proxy-01.systems.us.ongc:80"
+os.environ['HTTP_PROXY'] = auth_proxy
+os.environ['HTTPS_PROXY'] = auth_proxy
+
+# Create a session
+session = requests.Session()
+session.proxies = {'http': auth_proxy, 'https': auth_proxy}
+
+# Test proxy authentication
+try:
+    response = session.get("http://your-eventhub-url-or-api")
+    print(f"Proxy authentication successful! Status Code: {response.status_code}")
+except Exception as e:
+    print(f"Failed to authenticate with proxy: {e}")
+
+# Azure Event Hub authentication
+tenant_id = "your-tenant-id"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+eventhub_namespace = "your-eventhub-namespace"
+eventhub_name = "your-eventhub-name"
+
+# Initialize ClientSecretCredential
+credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+
+# Create EventHubProducerClient
+producer_client = EventHubProducerClient(
+    fully_qualified_namespace=f"{eventhub_namespace}.servicebus.windows.net",
+    eventhub_name=eventhub_name,
+    credential=credential
+)
+
+# Create a batch, add event data, and send the batch
+event_data_batch = producer_client.create_batch()
+event_data = "Your event data goes here"
+event_data_batch.add(event_data)
+
+# Send the batch of events
+try:
+    producer_client.send_batch(event_data_batch)
+    print("Batch sent successfully!")
+except Exception as e:
+    print(f"Failed to send batch: {e}")
+finally:
+    producer_client.close()
+
+
+
+
+
+
+
 import os
 import requests
 from azure.identity import ClientSecretCredential
