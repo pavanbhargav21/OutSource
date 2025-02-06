@@ -1,3 +1,61 @@
+import requests
+from datetime import datetime, timedelta
+import urllib
+import base64
+import hmac
+import hashlib
+
+# Event Hub details
+namespace = "your-eventhub-namespace"
+eventhub_name = "your-eventhub-name"
+sas_key_name = "your-sas-key-name"  # Shared Access Policy name
+sas_key = "your-sas-key"  # Shared Access Key
+eventhub_url = f"https://{namespace}.servicebus.windows.net/{eventhub_name}/messages"
+
+# Generate SAS Token
+expiry = int((datetime.utcnow() + timedelta(hours=1)).timestamp())
+uri = urllib.parse.quote_plus(f"{namespace}.servicebus.windows.net/{eventhub_name}/messages")
+string_to_sign = f"{uri}\n{expiry}"
+signature = base64.b64encode(hmac.new(base64.b64decode(sas_key), string_to_sign.encode('utf-8'), hashlib.sha256).digest())
+sas_token = f"SharedAccessSignature sr={uri}&sig={urllib.parse.quote_plus(signature)}&se={expiry}&skn={sas_key_name}"
+
+# Event data (Batch of events)
+event_data = """
+<entry xmlns="http://www.w3.org/2005/Atom">
+    <content type="application/xml">
+        <EventData>
+            <Message>Your Event Data here</Message>
+        </EventData>
+    </content>
+</entry>
+"""
+
+# Send HTTP request to Event Hub with PAC Proxy settings
+headers = {
+    'Authorization': sas_token,
+    'Content-Type': 'application/atom+xml;type=entry;charset=utf-8',
+    'Host': f'{namespace}.servicebus.windows.net'
+}
+
+# Set up the session to respect proxy (if you're using PAC)
+session = requests.Session()
+
+# Proxy settings (if required by your environment)
+session.proxies = {
+    'http': 'http://proxyserver:port',
+    'https': 'https://proxyserver:port'
+}
+
+# Send the event batch to Event Hub
+response = session.post(eventhub_url, headers=headers, data=event_data)
+
+# Check response status
+if response.status_code == 201:
+    print("Event sent successfully!")
+else:
+    print(f"Failed to send event. Status Code: {response.status_code}, Response: {response.text}")
+
+
 
 
 import os
