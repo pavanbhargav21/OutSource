@@ -1,3 +1,42 @@
+import win32api
+import win32security
+import win32con
+
+def impersonate_current_user():
+    try:
+        # Get the current process token
+        h_token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(),
+            win32con.TOKEN_DUPLICATE | win32con.TOKEN_QUERY
+        )
+
+        # Duplicate the token for impersonation
+        dup_token = win32security.DuplicateTokenEx(
+            h_token,
+            win32con.MAXIMUM_ALLOWED,
+            None,
+            win32security.SecurityImpersonation,
+            win32security.TokenPrimary
+        )
+
+        # Impersonate the user
+        win32security.ImpersonateLoggedOnUser(dup_token)
+        print(f"Impersonating User: {win32api.GetUserName()}")
+
+        # Revert to the original user
+        win32security.RevertToSelf()
+        print("Reverted to original user.")
+
+    except Exception as e:
+        print(f"Impersonation failed: {e}")
+
+# Run the function
+impersonate_current_user()
+
+
+
+
+
 
 import win32security
 import win32api
