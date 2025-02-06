@@ -1,3 +1,31 @@
+
+import win32security
+import win32api
+import win32con
+
+def impersonate_user(username, domain, password):
+    # Get a handle to the user token
+    token = win32security.LogonUser(
+        username, domain, password,
+        win32con.LOGON32_LOGON_INTERACTIVE,
+        win32con.LOGON32_PROVIDER_DEFAULT
+    )
+
+    # Impersonate the user
+    win32security.ImpersonateLoggedOnUser(token)
+    
+    # Now any code you run here executes as the impersonated user
+
+    # Revert back to original user
+    win32security.RevertToSelf()
+    token.Close()
+
+# Example usage (You must have the user’s password)
+impersonate_user("USERNAME", "DOMAIN", "PASSWORD")
+
+
+
+
 import requests
 from datetime import datetime, timedelta
 import urllib
