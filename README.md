@@ -1,3 +1,181 @@
+
+If none of the above worked, let's explore alternative ways to impersonate the currently logged-in user.
+
+Alternative 1: Use LogonUser Instead of DuplicateTokenEx
+
+Since DuplicateTokenEx is causing issues with token attributes, try using LogonUser, which directly returns a usable token:
+
+import win32api
+import win32security
+import win32con
+
+def impersonate_self():
+    try:
+        username = win32api.GetUserNameEx(win32con.NameSamCompatible)
+        domain = username.split("\\")[0]  # Extract domain (if exists)
+        user = username.split("\\")[-1]  # Extract username
+
+        print(f"Trying to impersonate: {username}")
+
+        # You need the current user's password; since you're logged in, try an empty string
+        hToken = win32security.LogonUser(
+            user,
+            domain,
+            "",  # Empty password may work in enterprise SSO
+            win32con.LOGON32_LOGON_INTERACTIVE,
+            win32con.LOGON32_PROVIDER_DEFAULT
+        )
+
+        # Impersonate user
+        win32security.ImpersonateLoggedOnUser(hToken)
+        print(f"Impersonating User: {win32api.GetUserName()}")
+
+        # Revert to self
+        win32security.RevertToSelf()
+        print("Reverted to original user.")
+
+    except Exception as e:
+        print(f"Impersonation failed: {e}")
+
+# Run function
+impersonate_self()
+
+✅ Why this might work?
+
+LogonUser gets a new token without needing DuplicateTokenEx.
+
+If your organization supports Single Sign-On (SSO), an empty password ("") may work.
+
+
+
+---
+
+Alternative 2: Use CreateProcessWithTokenW to Launch as Impersonated User
+
+If direct impersonation fails, try running a new process under the impersonated user:
+
+import win32api
+import win32security
+import win32con
+import subprocess
+
+def run_as_current_user():
+    try:
+        hToken = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(),
+            win32con.TOKEN_DUPLICATE | win32con.TOKEN_QUERY
+        )
+
+        dupToken = win32security.DuplicateTokenEx(
+            hToken,
+            win32con.MAXIMUM_ALLOWED,
+            None,
+            win32security.SecurityImpersonation,
+            win32security.TokenPrimary
+        )
+
+        print("Launching new process as impersonated user...")
+
+        subprocess.run("cmd.exe", creationflags=subprocess.CREATE_NEW_CONSOLE, stdin=dupToken)
+
+    except Exception as e:
+        print(f"Failed to launch as impersonated user: {e}")
+
+# Run function
+run_as_current_user()
+
+✅ Why this might work?
+
+Instead of impersonating inside the same process, we start a new process under the impersonated user.
+
+
+
+---
+
+Alternative 3: Use NtSetInformationThread (Low-Level API)
+
+If all else fails, a low-level system call can be used:
+
+import ctypes
+import win32api
+import win32security
+import win32con
+
+def low_level_impersonation():
+    try:
+        hToken = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(),
+            win32con.TOKEN_DUPLICATE | win32con.TOKEN_QUERY
+        )
+
+        dupToken = win32security.DuplicateTokenEx(
+            hToken,
+            win32con.MAXIMUM_ALLOWED,
+            None,
+            win32security.SecurityImpersonation,
+            win32security.TokenImpersonation
+        )
+
+        # Load NtSetInformationThread from NTDLL
+        ntdll = ctypes.WinDLL("ntdll")
+        NtSetInformationThread = ntdll.NtSetInformationThread
+        NtSetInformationThread.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+        NtSetInformationThread.restype = ctypes.c_long
+
+        # Apply impersonation
+        thread = ctypes.windll.kernel32.GetCurrentThread()
+        status = NtSetInformationThread(thread, 0x11, ctypes.byref(dupToken), ctypes.sizeof(dupToken))
+
+        if status == 0:
+            print(f"Successfully impersonated as {win32api.GetUserName()}")
+        else:
+            print(f"Failed with error code: {status}")
+
+    except Exception as e:
+        print(f"Impersonation failed: {e}")
+
+# Run function
+low_level_impersonation()
+
+✅ Why this might work?
+
+Uses Windows NTDLL system calls, bypassing standard API restrictions.
+
+This method is used by some security tools and malware (so use responsibly).
+
+
+
+---
+
+Final Considerations
+
+1. Check if your script has Admin privileges.
+
+Run PowerShell as Administrator and try whoami /groups to verify.
+
+
+
+2. Enterprise policies might block impersonation.
+
+Check secpol.msc → Local Policies → User Rights Assignment → "Impersonate a client after authentication".
+
+
+
+3. Try LogonUser first, since it doesn't require DuplicateTokenEx.
+
+
+
+
+---
+
+Let me know which one works for you!
+
+
+
+
+
+
+
 import win32api
 import win32security
 import win32con
