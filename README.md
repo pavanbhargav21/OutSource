@@ -1,3 +1,120 @@
+Fixing DuplicateTokenEx Third Argument Issue in Windows Impersonation
+
+I understand your requirement:
+
+You are already logged in using Windows credentials.
+
+You want to impersonate yourself (i.e., the same logged-in user).
+
+You need to correctly pass the third argument (TokenAttributes) to DuplicateTokenEx.
+
+You are getting "argument must be int" or "object is not a PySecurityAttributes object" errors.
+
+
+
+---
+
+Why Is This Happening?
+
+The issue occurs because the third argument (TokenAttributes) in DuplicateTokenEx must be either None or a valid SECURITY_ATTRIBUTES object. However, the pywin32 library does not always accept pywintypes.SECURITY_ATTRIBUTES() as a valid structure.
+
+Solution
+
+1. Use None for TokenAttributes (Recommended)
+
+Instead of trying to create a pywintypes.SECURITY_ATTRIBUTES(), just pass None. This should work:
+
+import win32api
+import win32security
+import win32con
+
+def impersonate_user():
+    try:
+        # Get current process token
+        hToken = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(),
+            win32con.TOKEN_DUPLICATE | win32con.TOKEN_QUERY
+        )
+
+        # Duplicate the token correctly (Use None for TokenAttributes)
+        dupToken = win32security.DuplicateTokenEx(
+            hToken,
+            win32con.MAXIMUM_ALLOWED,
+            None,  # Security Attributes (MUST BE None)
+            win32security.SecurityImpersonation,
+            win32security.TokenImpersonation
+        )
+
+        # Impersonate the user
+        win32security.ImpersonateLoggedOnUser(dupToken)
+        print(f"Now impersonating as: {win32api.GetUserName()}")
+
+        # Revert back
+        win32security.RevertToSelf()
+        print("Reverted to original user.")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+# Run the function
+impersonate_user()
+
+✅ This should work in an enterprise environment where the user is already logged in.
+
+
+---
+
+2. If None Doesn’t Work, Try with a Valid Handle
+
+If passing None still throws an error, try using hToken as the third argument instead:
+
+dupToken = win32security.DuplicateTokenEx(
+    hToken,
+    win32con.MAXIMUM_ALLOWED,
+    hToken,  # Pass the existing token handle
+    win32security.SecurityImpersonation,
+    win32security.TokenImpersonation
+)
+
+Why?
+
+Some enterprise environments require a handle instead of None for token attributes.
+
+
+
+---
+
+3. If You Must Use SECURITY_ATTRIBUTES, Do It Correctly
+
+If your organization requires explicit security attributes, use this:
+
+import pywintypes
+
+security_attributes = pywintypes.SECURITY_ATTRIBUTES()
+security_attributes.bInheritHandle = True
+
+dupToken = win32security.DuplicateTokenEx(
+    hToken,
+    win32con.MAXIMUM_ALLOWED,
+    None,  # Keep None here if SEC_ATTR doesn't work
+    win32security.SecurityImpersonation,
+    win32security.TokenImpersonation
+)
+
+⚠ Even though pywintypes.SECURITY_ATTRIBUTES() exists, DuplicateTokenEx doesn’t always require it. Passing None is preferred.
+
+
+---
+
+Key Fixes Summary
+
+Let me know if this works for your case!
+
+
+
+
+
+
 
 If none of the above worked, let's explore alternative ways to impersonate the currently logged-in user.
 
