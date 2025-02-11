@@ -1,3 +1,25 @@
+
+import winreg
+
+def get_windows_proxy():
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            proxy_enabled = winreg.QueryValueEx(key, "ProxyEnable")[0]
+            proxy_server = winreg.QueryValueEx(key, "ProxyServer")[0] if proxy_enabled else None
+            return proxy_server
+    except Exception as e:
+        return f"Error: {e}"
+
+print(f"System Proxy: {get_windows_proxy()}")
+
+
+
+
+
+
+
+
 Fixing DuplicateTokenEx Third Argument Issue in Windows Impersonation
 
 I understand your requirement:
