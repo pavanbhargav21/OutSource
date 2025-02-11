@@ -1,4 +1,25 @@
 
+import urllib.request
+import os
+
+# Get system proxy
+proxy = urllib.request.getproxies()
+
+# Use system credentials for proxy authentication
+proxy_handler = urllib.request.ProxyHandler(proxy)
+auth_handler = urllib.request.HTTPBasicAuthHandler()
+
+# Create an opener using proxy and authentication handlers
+opener = urllib.request.build_opener(proxy_handler, auth_handler)
+urllib.request.install_opener(opener)
+
+# Verify proxy settings
+print(f"System Proxy: {proxy}")
+
+
+
+
+
 import winreg
 
 def get_windows_proxy():
