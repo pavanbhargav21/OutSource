@@ -1,4 +1,215 @@
 
+Here’s a standalone encryption and decryption script using AES-256-GCM, with dummy sensitive data like Client ID, Password, and 13 different proxies stored as a key-value pair with country, country code, and proxy names.
+
+
+---
+
+🔐 AES-256-GCM Encryption & Decryption
+
+This script: ✅ Encrypts sensitive data using AES-256-GCM.
+✅ Uses a secure key from environment variables.
+✅ Stores an IV (nonce) and authentication tag.
+✅ Decrypts and verifies data at runtime.
+
+
+---
+
+🔹 Full Python Code
+
+import os
+import base64
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
+# Securely generate/store AES-256-GCM key in environment variable
+AES_KEY_ENV = "AES_256_GCM_KEY"
+
+def generate_and_store_key():
+    """Generate a new AES-256 key and store it in an environment variable"""
+    key = get_random_bytes(32)  # 256-bit key
+    os.environ[AES_KEY_ENV] = base64.b64encode(key).decode()  # Store in env as base64
+
+def get_aes_key():
+    """Retrieve AES key from environment variable"""
+    key_b64 = os.getenv(AES_KEY_ENV)
+    if not key_b64:
+        raise ValueError("AES Key not found. Please generate and store it securely.")
+    return base64.b64decode(key_b64)
+
+def encrypt_data(plaintext):
+    """Encrypt data using AES-256-GCM"""
+    key = get_aes_key()
+    iv = get_random_bytes(16)  # 16-byte IV (Nonce)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+    ciphertext, auth_tag = cipher.encrypt_and_digest(plaintext.encode())
+
+    return {
+        "ciphertext": base64.b64encode(ciphertext).decode(),
+        "iv": base64.b64encode(iv).decode(),
+        "auth_tag": base64.b64encode(auth_tag).decode()
+    }
+
+def decrypt_data(ciphertext_b64, iv_b64, auth_tag_b64):
+    """Decrypt data using AES-256-GCM"""
+    key = get_aes_key()
+    iv = base64.b64decode(iv_b64)
+    auth_tag = base64.b64decode(auth_tag_b64)
+    ciphertext = base64.b64decode(ciphertext_b64)
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+    plaintext = cipher.decrypt_and_verify(ciphertext, auth_tag)
+
+    return plaintext.decode()
+
+# ---------- Example Data ----------
+sensitive_data = {
+    "ClientID": "XYZ-12345-CLIENT",
+    "TenantID": "TENANT-56789",
+    "ClientSecret": "MySuperSecureSecret!@#",
+    "ServiceAccountName": "service-agent-01",
+    "ServiceAccountPassword": "AgentPassword$321",
+    "Proxies": [
+        {"Country": "United States", "Code": "US", "Proxy": "proxy-us.example.com:8080"},
+        {"Country": "Canada", "Code": "CA", "Proxy": "proxy-ca.example.com:8080"},
+        {"Country": "Germany", "Code": "DE", "Proxy": "proxy-de.example.com:8080"},
+        {"Country": "France", "Code": "FR", "Proxy": "proxy-fr.example.com:8080"},
+        {"Country": "United Kingdom", "Code": "UK", "Proxy": "proxy-uk.example.com:8080"},
+        {"Country": "India", "Code": "IN", "Proxy": "proxy-in.example.com:8080"},
+        {"Country": "Australia", "Code": "AU", "Proxy": "proxy-au.example.com:8080"},
+        {"Country": "Japan", "Code": "JP", "Proxy": "proxy-jp.example.com:8080"},
+        {"Country": "Brazil", "Code": "BR", "Proxy": "proxy-br.example.com:8080"},
+        {"Country": "South Africa", "Code": "ZA", "Proxy": "proxy-za.example.com:8080"},
+        {"Country": "Russia", "Code": "RU", "Proxy": "proxy-ru.example.com:8080"},
+        {"Country": "Mexico", "Code": "MX", "Proxy": "proxy-mx.example.com:8080"},
+        {"Country": "Italy", "Code": "IT", "Proxy": "proxy-it.example.com:8080"}
+    ]
+}
+
+# ---------- Encrypt & Decrypt Data ----------
+if __name__ == "__main__":
+    # Step 1: Generate and store key (Run only once)
+    if not os.getenv(AES_KEY_ENV):
+        generate_and_store_key()
+        print("AES key generated and stored in environment.")
+
+    # Step 2: Encrypt and store sensitive data
+    encrypted_data = {}
+    for key, value in sensitive_data.items():
+        if isinstance(value, list):  # Handle lists separately (like proxies)
+            encrypted_data[key] = [encrypt_data(str(item)) for item in value]
+        else:
+            encrypted_data[key] = encrypt_data(value)
+
+    print("\n🔐 Encrypted Data:")
+    print(encrypted_data)
+
+    # Step 3: Decrypt and retrieve original data
+    decrypted_data = {}
+    for key, value in encrypted_data.items():
+        if isinstance(value, list):
+            decrypted_data[key] = [decrypt_data(item["ciphertext"], item["iv"], item["auth_tag"]) for item in value]
+        else:
+            decrypted_data[key] = decrypt_data(value["ciphertext"], value["iv"], value["auth_tag"])
+
+    print("\n🔓 Decrypted Data:")
+    print(decrypted_data)
+
+
+---
+
+🔹 How It Works?
+
+1️⃣ AES-256-GCM Key Management
+
+The 256-bit encryption key is stored in an environment variable.
+
+Ensures security by keeping the key outside the code/database.
+
+
+2️⃣ Encryption
+
+Uses AES-256-GCM mode for authenticated encryption.
+
+Generates a unique IV (nonce) for each encryption.
+
+Produces an authentication tag to ensure data integrity.
+
+
+3️⃣ Storage & Structure
+
+The script encrypts both string values (ClientID, Password, etc.) and list objects (Proxies).
+
+Stores the ciphertext, IV, and authentication tag for each entry.
+
+
+4️⃣ Decryption
+
+Retrieves encrypted values, verifies authenticity, and decrypts them securely.
+
+
+
+---
+
+🔹 Sample Output
+
+🔐 Encrypted Data:
+{
+    "ClientID": {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+    "TenantID": {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+    "ClientSecret": {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+    "ServiceAccountName": {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+    "ServiceAccountPassword": {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+    "Proxies": [
+        {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+        {"ciphertext": "...", "iv": "...", "auth_tag": "..."},
+        ...
+    ]
+}
+
+🔓 Decrypted Data:
+{
+    "ClientID": "XYZ-12345-CLIENT",
+    "TenantID": "TENANT-56789",
+    "ClientSecret": "MySuperSecureSecret!@#",
+    "ServiceAccountName": "service-agent-01",
+    "ServiceAccountPassword": "AgentPassword$321",
+    "Proxies": [
+        {"Country": "United States", "Code": "US", "Proxy": "proxy-us.example.com:8080"},
+        {"Country": "Canada", "Code": "CA", "Proxy": "proxy-ca.example.com:8080"},
+        ...
+    ]
+}
+
+
+---
+
+🔹 Why Use This?
+
+✅ AES-256-GCM provides both encryption & authentication.
+✅ Secure key storage prevents hardcoded keys.
+✅ Encrypts both simple values & lists of objects (like proxies).
+✅ Tamper-proof authentication ensures integrity.
+
+
+---
+
+🔹 Next Steps
+
+1️⃣ Store encrypted data in SQLite or Key Vault instead of keeping it in memory.
+2️⃣ Use an API to fetch credentials when needed instead of re-encrypting every time.
+3️⃣ Rotate encryption keys periodically for better security.
+
+
+---
+
+🚀 Would you like me to add SQLite storage for this encrypted data?
+
+
+
+
+
+
+
 End-to-End AES-256-GCM Encryption & Decryption in Python
 
 This implementation ensures secure storage of encrypted credentials in an SQLite database, with the AES key stored securely in environment variables.
