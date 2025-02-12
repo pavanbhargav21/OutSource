@@ -1,4 +1,43 @@
 
+AES-256-GCM (Advanced Encryption Standard - Galois/Counter Mode)
+
+AES-256-GCM is a highly secure encryption method that provides both confidentiality and integrity by using a combination of AES encryption and Galois Message Authentication Code (GMAC).
+
+
+---
+
+🔹 Key Features of AES-256-GCM
+
+1. Strong Security: Uses a 256-bit key, making it resistant to brute-force attacks.
+
+
+2. Authenticated Encryption: Uses an authentication tag (typically 16 bytes) to ensure data integrity and prevent tampering.
+
+
+3. No Padding Required: Unlike CBC mode, GCM does not require padding.
+
+
+4. Fast Performance: GCM mode allows parallel processing, making encryption/decryption faster than CBC mode.
+
+
+5. IV/Nonce Requirement: Requires a unique IV (Initialization Vector) for each encryption operation (typically 12 or 16 bytes).
+
+
+
+
+---
+
+🔹 What to Store for AES-256-GCM?
+
+Since AES-GCM is authenticated encryption, you need to store three things for decryption:
+
+**❌ Do NOT reuse the same IV for multiple encryptions, as it weakens security
+
+
+
+
+
+
 Here’s a structured documentation outline based on your architecture:
 
 
