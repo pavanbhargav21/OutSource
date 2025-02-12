@@ -1,4 +1,274 @@
 
+Here’s a structured documentation outline based on your architecture:
+
+
+---
+
+🔹 Secure Storage and Retrieval of Credentials for Event Hub Agent
+
+1. Credentials to Securely Store
+
+The following credentials need to be securely stored and retrieved:
+
+Client ID
+
+Tenant ID
+
+Client Secret
+
+Service Account Name
+
+Service Account Password
+
+
+
+---
+
+2. Encryption and Secure Storage Process
+
+🔹 Step 1: Generate Encryption Key
+
+1. Use AES Encryption (Fernet) to securely encrypt the credentials.
+
+
+2. Generate an encryption key that will be used for both encryption & decryption.
+
+
+3. Store this key securely, ensuring it’s not hardcoded in the application.
+
+Store in environment variables, a secure key file, or Azure Key Vault.
+
+
+
+
+Key Generation Code:
+
+from cryptography.fernet import Fernet
+
+# Generate a secure encryption key
+key = Fernet.generate_key()
+print(f"Store this securely: {key.decode()}")
+
+# Save key to a secure file (DO NOT store in source code)
+with open("encryption_key.bin", "wb") as f:
+    f.write(key)
+
+
+---
+
+🔹 Step 2: Encrypt Credentials (Manually for First Time)
+
+1. Encrypt credentials using the generated encryption key.
+
+
+2. Store the encrypted values in Azure SQL Database.
+
+
+
+Encryption Code:
+
+import base64
+from cryptography.fernet import Fernet
+
+# Load encryption key
+with open("encryption_key.bin", "rb") as f:
+    key = f.read()
+
+cipher = Fernet(key)  # Initialize cipher for encryption
+
+# Function to encrypt a value
+def encrypt_value(value):
+    encrypted_value = cipher.encrypt(value.encode())
+    return base64.b64encode(encrypted_value).decode()  # Convert to string
+
+# Encrypt and store credentials
+client_id_enc = encrypt_value("your-client-id")
+client_secret_enc = encrypt_value("your-client-secret")
+tenant_id_enc = encrypt_value("your-tenant-id")
+service_account_name_enc = encrypt_value("your-service-account")
+service_account_password_enc = encrypt_value("your-password")
+
+print("Encrypted Credentials:")
+print(client_id_enc, client_secret_enc, tenant_id_enc, service_account_name_enc, service_account_password_enc)
+
+✅ The encrypted values will be stored manually in Azure SQL Database.
+
+
+---
+
+🔹 Step 3: API Call to Fetch Credentials from Azure SQL Database
+
+1. When the agent runs on the local machine, it will make an API call to fetch the encrypted credentials stored in Azure SQL Database.
+
+
+2. After retrieving, it will store them in a local SQLite database.
+
+
+
+API Flow:
+✅ Agent makes a REST API request to fetch credentials
+✅ API responds with encrypted credentials
+✅ Agent stores these encrypted credentials in a local SQLite database
+
+Example API Request (Python requests):
+
+import requests
+
+API_URL = "https://your-api.com/get-credentials"
+response = requests.get(API_URL)
+
+if response.status_code == 200:
+    credentials = response.json()
+    print("Fetched Encrypted Credentials:", credentials)
+else:
+    print("Error fetching credentials")
+
+
+---
+
+🔹 Step 4: Store Encrypted Credentials in Local SQLite
+
+1. After fetching the credentials via API, the agent stores them locally in an SQLite database.
+
+
+2. This avoids frequent API calls, improving performance.
+
+
+
+Store in SQLite:
+
+import sqlite3
+
+# Connect to local SQLite
+conn = sqlite3.connect("secure_storage.db")
+cursor = conn.cursor()
+
+# Create table for encrypted credentials
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS credentials (
+    key_name TEXT PRIMARY KEY,
+    encrypted_value BLOB
+)
+""")
+conn.commit()
+
+# Function to store credentials
+def store_credential(key_name, encrypted_value):
+    cursor.execute("INSERT OR REPLACE INTO credentials (key_name, encrypted_value) VALUES (?, ?)", (key_name, encrypted_value))
+    conn.commit()
+
+# Store encrypted credentials in SQLite
+store_credential("client_id", client_id_enc)
+store_credential("client_secret", client_secret_enc)
+store_credential("tenant_id", tenant_id_enc)
+store_credential("service_account_name", service_account_name_enc)
+store_credential("service_account_password", service_account_password_enc)
+
+print("Stored encrypted credentials in local SQLite")
+conn.close()
+
+
+---
+
+🔹 Step 5: Decrypt Credentials at Runtime
+
+1. When the agent needs credentials, it retrieves the encrypted values from SQLite and decrypts them.
+
+
+2. The decryption key is securely loaded at runtime.
+
+
+
+Decryption Code:
+
+import base64
+
+# Function to decrypt values
+def decrypt_value(encrypted_value):
+    decrypted_value = cipher.decrypt(base64.b64decode(encrypted_value)).decode()
+    return decrypted_value
+
+# Retrieve encrypted credentials from SQLite
+def get_credential(key_name):
+    cursor.execute("SELECT encrypted_value FROM credentials WHERE key_name = ?", (key_name,))
+    result = cursor.fetchone()
+    return decrypt_value(result[0]) if result else None
+
+# Decrypt credentials at runtime
+client_id = get_credential("client_id")
+client_secret = get_credential("client_secret")
+tenant_id = get_credential("tenant_id")
+service_account_name = get_credential("service_account_name")
+service_account_password = get_credential("service_account_password")
+
+print("Decrypted Client ID:", client_id)  # Use only for debugging
+
+
+---
+
+3. Handling Credential Updates & Connectivity Issues
+
+To ensure credentials remain valid, the agent should periodically check for updates and handle connectivity failures.
+
+🔹 Step 6: Periodic API Calls for Credential Updates
+
+✅ Every day, the agent will make an API call to check if credentials have changed.
+✅ If there are updates (e.g., client secret change), the agent fetches the new credentials and updates the local SQLite database.
+
+API Call for Credential Check:
+
+import time
+
+def check_for_credential_updates():
+    response = requests.get(API_URL)
+    if response.status_code == 200:
+        new_credentials = response.json()
+
+        # Compare with stored values
+        if new_credentials["client_secret"] != get_credential("client_secret"):
+            print("Updating credentials...")
+            store_credential("client_secret", new_credentials["client_secret"])
+        
+        print("Credentials are up-to-date")
+    else:
+        print("Error checking credential updates")
+
+# Run daily check
+while True:
+    check_for_credential_updates()
+    time.sleep(86400)  # Wait 24 hours before next check
+
+
+---
+
+4. Summary of Secure Credential Management Workflow
+
+
+---
+
+5. Security Best Practices
+
+✅ Never hardcode the encryption key
+✅ Use a secure storage for the encryption key (environment variables, TPM, or Key Vault)
+✅ Restrict file access to SQLite DB (chmod 600 or Windows ACLs)
+✅ Limit API calls to avoid unnecessary exposure of credentials
+✅ Use secure network protocols (HTTPS) for all API calls
+
+
+---
+
+✅ Does this documentation cover everything you need? Let me know if you need any refinements!
+
+
+
+
+
+
+
+
+
+
+
 Securely Storing and Retrieving Service Account Credentials Using AES Encryption
 
 Since you want a secure way to store your service principal credentials (client ID, secret, tenant ID, service account, password) in SQLite, I'll guide you through:
