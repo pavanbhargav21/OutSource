@@ -1,4 +1,236 @@
 
+End-to-End AES-256-GCM Encryption & Decryption in Python
+
+This implementation ensures secure storage of encrypted credentials in an SQLite database, with the AES key stored securely in environment variables.
+
+
+---
+
+🔹 Steps
+
+1. Generate a secure AES-256-GCM key (stored in an environment variable).
+
+
+2. Encrypt sensitive data (ClientID, ClientSecret, etc.).
+
+
+3. Store encrypted data, IV (nonce), and authentication tag in SQLite.
+
+
+4. Retrieve and decrypt the data securely at runtime.
+
+
+
+
+---
+
+🔐 Full Python Code
+
+import os
+import sqlite3
+import base64
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
+# Securely generate or load the AES-256 key
+AES_KEY_ENV = "AES_256_GCM_KEY"
+
+def generate_and_store_key():
+    """Generate a new AES-256 key and store it in an environment variable"""
+    key = get_random_bytes(32)  # 256-bit key
+    os.environ[AES_KEY_ENV] = base64.b64encode(key).decode()  # Store in env as base64
+
+def get_aes_key():
+    """Retrieve AES key from environment variable"""
+    key_b64 = os.getenv(AES_KEY_ENV)
+    if not key_b64:
+        raise ValueError("AES Key not found. Please generate and store it securely.")
+    return base64.b64decode(key_b64)
+
+def encrypt_data(plaintext):
+    """Encrypt data using AES-256-GCM"""
+    key = get_aes_key()  # Load AES key
+    iv = get_random_bytes(16)  # 16-byte IV (Nonce)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+    ciphertext, auth_tag = cipher.encrypt_and_digest(plaintext.encode())
+
+    return {
+        "ciphertext": base64.b64encode(ciphertext).decode(),
+        "iv": base64.b64encode(iv).decode(),
+        "auth_tag": base64.b64encode(auth_tag).decode()
+    }
+
+def decrypt_data(ciphertext_b64, iv_b64, auth_tag_b64):
+    """Decrypt data using AES-256-GCM"""
+    key = get_aes_key()
+    iv = base64.b64decode(iv_b64)
+    auth_tag = base64.b64decode(auth_tag_b64)
+    ciphertext = base64.b64decode(ciphertext_b64)
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+    plaintext = cipher.decrypt_and_verify(ciphertext, auth_tag)
+
+    return plaintext.decode()
+
+# ---------- SQLite Storage ----------
+DB_FILE = "secure_storage.db"
+
+def init_db():
+    """Initialize SQLite database with a table for storing encrypted credentials"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_name TEXT UNIQUE NOT NULL,
+            ciphertext TEXT NOT NULL,
+            iv TEXT NOT NULL,
+            auth_tag TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def store_encrypted_data(key_name, encrypted_data):
+    """Store encrypted credentials in the SQLite database"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO credentials (key_name, ciphertext, iv, auth_tag)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key_name) DO UPDATE SET 
+        ciphertext=excluded.ciphertext, iv=excluded.iv, auth_tag=excluded.auth_tag
+    """, (key_name, encrypted_data["ciphertext"], encrypted_data["iv"], encrypted_data["auth_tag"]))
+    conn.commit()
+    conn.close()
+
+def retrieve_encrypted_data(key_name):
+    """Retrieve encrypted credentials from the database"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ciphertext, iv, auth_tag FROM credentials WHERE key_name=?", (key_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {"ciphertext": row[0], "iv": row[1], "auth_tag": row[2]}
+    return None
+
+# ---------- Example Usage ----------
+
+if __name__ == "__main__":
+    # Step 1: Generate and store key (Run only once)
+    if not os.getenv(AES_KEY_ENV):
+        generate_and_store_key()
+        print("AES key generated and stored in environment.")
+
+    # Step 2: Initialize database
+    init_db()
+
+    # Step 3: Encrypt and store sensitive data
+    credentials = {
+        "ClientID": "my-client-id",
+        "TenantID": "my-tenant-id",
+        "ClientSecret": "my-very-secure-client-secret",
+        "ServiceAccountName": "my-service-account",
+        "ServiceAccountPassword": "my-secure-password"
+    }
+
+    for key_name, value in credentials.items():
+        encrypted_data = encrypt_data(value)
+        store_encrypted_data(key_name, encrypted_data)
+        print(f"Stored encrypted {key_name} in database.")
+
+    # Step 4: Retrieve and decrypt data
+    for key_name in credentials.keys():
+        encrypted_data = retrieve_encrypted_data(key_name)
+        if encrypted_data:
+            decrypted_value = decrypt_data(
+                encrypted_data["ciphertext"],
+                encrypted_data["iv"],
+                encrypted_data["auth_tag"]
+            )
+            print(f"Decrypted {key_name}: {decrypted_value}")
+
+
+---
+
+🔹 How It Works?
+
+1️⃣ Key Management
+
+Generates a 256-bit AES key and stores it securely in an environment variable.
+
+The key is retrieved at runtime to perform encryption/decryption.
+
+
+2️⃣ Secure Encryption with AES-256-GCM
+
+Encrypts sensitive data using a securely generated IV (nonce).
+
+Generates an authentication tag to ensure integrity.
+
+
+3️⃣ SQLite Storage
+
+Stores encrypted credentials, IV, and auth tag securely in an SQLite database.
+
+Uses UPSERT (ON CONFLICT) to update credentials if needed.
+
+
+4️⃣ Secure Decryption
+
+Retrieves IV, auth tag, and ciphertext from the database.
+
+Decrypts and verifies data, ensuring no tampering occurred.
+
+
+
+---
+
+🔹 Why Is This Secure?
+
+✅ AES-256-GCM is strong – It provides both encryption and authentication.
+✅ Key is never stored in the database – It is kept only in memory (environment variable).
+✅ IV (Nonce) ensures uniqueness – Prevents reuse attacks.
+✅ Authentication Tag verifies integrity – Prevents modifications or tampering.
+✅ SQLite database is local – No need for external services for runtime storage.
+
+
+---
+
+🔹 What Needs to Be Stored?
+
+
+---
+
+🔹 When to Re-fetch Data from API?
+
+🔸 Every 24 hours, check for credential changes by making an API call.
+🔸 If event hub connection fails multiple times, re-fetch credentials.
+🔸 If API call detects a change, update SQLite database with new encrypted values.
+
+
+---
+
+🚀 Ready to Use!
+
+🔹 Use this implementation in your agent (EXE) running on user machines.
+🔹 Only at runtime, the AES key is retrieved from the environment for decryption.
+🔹 Ensures maximum security for ClientID, ClientSecret, and other credentials.
+
+
+---
+
+🔹 Next Steps?
+
+Would you like a cross-platform version using secure hardware-based key storage?
+
+
+
+
+
+
 Summary of AES-256-GCM
 
 AES-256-GCM (Advanced Encryption Standard with 256-bit key in Galois/Counter Mode) is a secure and efficient encryption algorithm. It provides both confidentiality and integrity through authentication, making it stronger than AES-CBC.
