@@ -1,4 +1,100 @@
 
+Summary of AES-256-GCM
+
+AES-256-GCM (Advanced Encryption Standard with 256-bit key in Galois/Counter Mode) is a secure and efficient encryption algorithm. It provides both confidentiality and integrity through authentication, making it stronger than AES-CBC.
+
+
+---
+
+🔹 Why Use AES-256-GCM?
+
+✅ Strong Security – Uses a 256-bit key, making it resistant to brute-force attacks.
+✅ Authentication (Integrity Protection) – Includes a 16-byte authentication tag to detect tampering.
+✅ No Padding Needed – Unlike AES-CBC, it doesn't require padding, reducing overhead.
+✅ Faster Decryption – More efficient than AES-CBC because it operates in counter mode.
+
+
+---
+
+🔹 What Needs to Be Stored?
+
+To decrypt data, you need to store:
+
+
+---
+
+🔹 How It Works?
+
+1️⃣ Generate a 256-bit key (store it securely).
+2️⃣ Encrypt data using AES-256-GCM with a random IV (nonce).
+3️⃣ Store the encrypted data, IV, and auth tag in the local database.
+4️⃣ For decryption, retrieve the IV & auth tag, then decrypt using the AES key.
+
+
+---
+
+🔹 Example Code Using PyCryptodome
+
+🔐 Encryption
+
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import base64
+
+# Generate a 256-bit (32-byte) AES key (store this securely)
+key = get_random_bytes(32)
+
+# Generate a random IV (Nonce)
+iv = get_random_bytes(16)
+
+# Create AES-GCM cipher
+cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+
+# Encrypt data
+plaintext = b"Sensitive Data"
+ciphertext, auth_tag = cipher.encrypt_and_digest(plaintext)
+
+# Store (ciphertext, IV, and auth tag)
+print("Ciphertext:", base64.b64encode(ciphertext).decode())
+print("IV:", base64.b64encode(iv).decode())
+print("Auth Tag:", base64.b64encode(auth_tag).decode())
+
+🔓 Decryption
+
+# Load key, IV, auth tag, and ciphertext from storage
+cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+decrypted_data = cipher.decrypt_and_verify(ciphertext, auth_tag)
+
+print("Decrypted Data:", decrypted_data.decode())
+
+
+---
+
+🔹 Pros & Cons
+
+
+---
+
+🔹 When to Use AES-256-GCM?
+
+✅ If you need both encryption & authentication (integrity check)
+✅ If high security is required (storing sensitive data)
+✅ If performance is a concern (faster than CBC)
+
+
+---
+
+Final Thoughts
+
+AES-256-GCM is one of the most secure and recommended encryption methods. You must store the AES key securely (in an environment variable) and store the IV + auth tag with the encrypted data for proper decryption.
+
+Would you like a complete implementation with secure storage in SQLite?
+
+
+
+
+
+
 AES-256-GCM (Advanced Encryption Standard - Galois/Counter Mode)
 
 AES-256-GCM is a highly secure encryption method that provides both confidentiality and integrity by using a combination of AES encryption and Galois Message Authentication Code (GMAC).
