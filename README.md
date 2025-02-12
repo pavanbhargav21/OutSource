@@ -1,4 +1,168 @@
 
+Securely Storing and Retrieving Service Account Credentials Using AES Encryption
+
+Since you want a secure way to store your service principal credentials (client ID, secret, tenant ID, service account, password) in SQLite, I'll guide you through:
+✅ AES encryption for strong security
+✅ Key storage best practices
+✅ Storing encrypted data in SQLite
+✅ Securely retrieving and decrypting credentials at runtime
+
+
+---
+
+🔹 1. AES Encryption Using Fernet (Symmetric Key)
+
+We'll use AES encryption with cryptography.fernet. This ensures your credentials are unreadable without the correct decryption key.
+
+Generate a Secure Encryption Key
+
+🔹 Store this key securely! Never hardcode it in your script. Instead, load it from environment variables, a separate secured file, or a TPM module.
+
+from cryptography.fernet import Fernet
+
+# Generate a key
+key = Fernet.generate_key()
+print(f"Your AES encryption key (store securely!): {key.decode()}")
+
+# Save to a secure location (DO NOT store in your source code)
+with open("encryption_key.bin", "wb") as f:
+    f.write(key)
+
+
+---
+
+🔹 2. Store Encrypted Credentials in SQLite
+
+Here’s how you store encrypted credentials securely in SQLite.
+
+import sqlite3
+from cryptography.fernet import Fernet
+
+# Load the encryption key
+with open("encryption_key.bin", "rb") as f:
+    key = f.read()
+
+cipher = Fernet(key)
+
+# Connect to SQLite database
+conn = sqlite3.connect("secure_storage.db")
+cursor = conn.cursor()
+
+# Create a table to store encrypted credentials
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_name TEXT,
+    encrypted_value BLOB
+)
+""")
+conn.commit()
+
+# Function to encrypt and store a credential
+def store_credential(key_name, value):
+    encrypted_value = cipher.encrypt(value.encode())
+    cursor.execute("INSERT INTO credentials (key_name, encrypted_value) VALUES (?, ?)", (key_name, encrypted_value))
+    conn.commit()
+
+# Storing credentials
+store_credential("client_id", "your-client-id")
+store_credential("client_secret", "your-client-secret")
+store_credential("tenant_id", "your-tenant-id")
+store_credential("service_account_name", "your-service-account")
+store_credential("service_account_password", "your-password")
+
+print("Credentials stored securely.")
+conn.close()
+
+
+---
+
+🔹 3. Retrieve & Decrypt Credentials at Runtime
+
+At runtime, your application will load the encrypted credentials from SQLite and decrypt them.
+
+# Function to retrieve and decrypt a credential
+def get_credential(key_name):
+    cursor.execute("SELECT encrypted_value FROM credentials WHERE key_name = ?", (key_name,))
+    result = cursor.fetchone()
+    if result:
+        return cipher.decrypt(result[0]).decode()
+    return None
+
+# Fetch credentials securely at runtime
+client_id = get_credential("client_id")
+client_secret = get_credential("client_secret")
+tenant_id = get_credential("tenant_id")
+service_account_name = get_credential("service_account_name")
+service_account_password = get_credential("service_account_password")
+
+print(f"Decrypted Client ID: {client_id}")  # Use only in testing
+
+
+---
+
+🔹 4. Security Best Practices
+
+1. 🔑 Never Hardcode the Encryption Key
+
+Store the key in a secure file, environment variable, or Windows Credential Manager.
+
+Example: Load from environment variable in production:
+
+import os
+key = os.getenv("ENCRYPTION_KEY").encode()
+
+
+
+2. 🛡️ Restrict Access to SQLite File
+
+Windows: Store in %APPDATA% and restrict file access:
+
+icacls secure_storage.db /inheritance:r /grant:r %USERNAME%:F
+
+Linux/macOS:
+
+chmod 600 secure_storage.db
+
+
+
+3. 🛠️ Store Credentials in an Encrypted Storage Like Azure Key Vault
+
+If feasible, fetch credentials directly from Azure Key Vault instead of storing them locally.
+
+
+
+
+
+---
+
+✅ Summary
+
+1. Encrypt credentials with AES (Fernet)
+
+
+2. Store them securely in SQLite
+
+
+3. Load them only at runtime and decrypt
+
+
+4. Secure encryption keys (never hardcode!)
+
+
+5. Restrict file access to SQLite DB
+
+
+
+Would this approach work for you? Let me know if you need any modifications!
+
+
+
+
+
+
+
+
 import urllib.request
 import os
 
