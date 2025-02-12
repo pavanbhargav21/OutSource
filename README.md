@@ -1,4 +1,32 @@
 
+import base64
+import win32crypt
+
+def store_encryption_key(encryption_key):
+    """Encrypt and store the AES decryption key securely using DPAPI"""
+    encrypted_key = win32crypt.CryptProtectData(encryption_key.encode(), None, None, None, None, 0)
+    with open("encrypted_key.bin", "wb") as f:
+        f.write(base64.b64encode(encrypted_key))
+
+def retrieve_encryption_key():
+    """Retrieve and decrypt the AES decryption key securely using DPAPI"""
+    with open("encrypted_key.bin", "rb") as f:
+        encrypted_key = base64.b64decode(f.read())
+    decrypted_key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, None, 0)
+    return decrypted_key[1].decode()
+
+# Example Usage
+aes_key = "SuperSecureAESKey123"  # This is your actual decryption key
+store_encryption_key(aes_key)  # Store securely
+retrieved_key = retrieve_encryption_key()  # Retrieve securely
+print(f"Decryption Key: {retrieved_key}")
+
+
+
+
+
+
+
 Here’s a standalone encryption and decryption script using AES-256-GCM, with dummy sensitive data like Client ID, Password, and 13 different proxies stored as a key-value pair with country, country code, and proxy names.
 
 
