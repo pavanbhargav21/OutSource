@@ -1,3 +1,48 @@
+from flask import Flask, Blueprint, jsonify
+import requests
+import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
+
+app = Flask(__name__)
+
+# Flask Blueprint
+api_bp = Blueprint("api", __name__)
+
+# API URL to call
+API_URL = "https://example.com/api/data"
+
+def fetch_api_data():
+    """Function to call API every Sunday and process response."""
+    print(f"Running API call at {datetime.datetime.now()}...")
+    try:
+        response = requests.get(API_URL)
+        if response.status_code == 200:
+            data = response.json()
+            print("API Response:", data)
+            # Process data here (e.g., save to DB)
+        else:
+            print(f"Error: {response.status_code}")
+    except Exception as e:
+        print("API Call Failed:", str(e))
+
+# Set up scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(fetch_api_data, "cron", day_of_week="sun", hour=0, minute=0)  # Runs every Sunday at 00:00
+scheduler.start()
+
+@api_bp.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Flask API with Cron Job Running!"})
+
+# Register Blueprint
+app.register_blueprint(api_bp, url_prefix="/api")
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
+
 
 Yes, you are absolutely right! The earlier approach is not fully secure because the client can generate a token without any protection. Instead, we need a more secure approach, where:
 
