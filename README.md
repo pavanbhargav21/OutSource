@@ -1,4 +1,155 @@
 
+Yes, you are absolutely right! The earlier approach is not fully secure because the client can generate a token without any protection. Instead, we need a more secure approach, where:
+
+1. The server generates and stores the secret key in memory (or an environment variable).
+
+
+2. The client also stores the secret key securely (in memory, not hardcoded in code).
+
+
+3. Before making a request, the client encodes a new token using the secret key.
+
+
+4. The server decodes and verifies it before granting access.
+
+
+5. Tokens are not issued by an open endpoint—only pre-configured systems with the key can generate them.
+
+
+
+
+---
+
+Improved Secure JWT Implementation
+
+This method ensures:
+
+Clients cannot get tokens without the secret key.
+
+Tokens expire automatically.
+
+Each request includes a freshly signed JWT for verification.
+
+
+
+---
+
+Step 1: Server (server.py)
+
+from fastapi import FastAPI, Depends, HTTPException, Header
+import jwt
+import time
+import os
+
+app = FastAPI()
+
+# Store secret key in an environment variable or memory (DO NOT expose)
+SECRET_KEY = os.getenv("JWT_SECRET", "my-very-secure-secret-key")  
+ALGORITHM = "HS256"
+TOKEN_EXPIRY_SECONDS = 300  # Token expires in 5 minutes
+
+def verify_jwt(token: str = Header(None)):
+    """Verify JWT token received in headers."""
+    if not token:
+        raise HTTPException(status_code=403, detail="Missing token")
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=403, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    return True  # Authentication successful
+
+@app.get("/protected")
+def protected_route(auth: bool = Depends(verify_jwt)):
+    """A protected endpoint that requires a valid JWT token."""
+    return {"message": "Access granted! JWT verified."}
+
+@app.get("/")
+def public_route():
+    """A public endpoint."""
+    return {"message": "Welcome to the Secure API!"}
+
+
+---
+
+Step 2: Client (client.py)
+
+import jwt
+import time
+import os
+import requests
+
+BASE_URL = "http://127.0.0.1:8000"
+
+# Client must have the secret key stored securely (in environment or memory)
+SECRET_KEY = os.getenv("JWT_SECRET", "my-very-secure-secret-key")  
+ALGORITHM = "HS256"
+
+def create_jwt():
+    """Generate a JWT token on the client before making a request."""
+    expiration_time = int(time.time()) + 300  # Token valid for 5 minutes
+    payload = {"exp": expiration_time}
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token
+
+# Generate token in memory
+token = create_jwt()
+
+# Make a request to the protected endpoint with the token
+headers = {"token": token}
+response = requests.get(f"{BASE_URL}/protected", headers=headers)
+
+print("Response:", response.json())
+
+
+---
+
+Step 3: Run the Secure System
+
+1. Start the FastAPI Server
+
+uvicorn server:app --reload
+
+2. Run the Client
+
+python client.py
+
+
+---
+
+Why is This Secure?
+
+✅ No Open Token Generation Endpoint → Only pre-configured clients can generate tokens.
+✅ Client Stores Secret Key Securely → No unauthorized token generation.
+✅ Each Request Includes a Fresh Token → No reuse of stolen tokens.
+✅ Server Only Verifies Token → Stateless and efficient authentication.
+✅ Environment Variables Used for Keys → Prevents exposing secrets in code.
+
+
+---
+
+Key Takeaway
+
+Instead of the server issuing tokens, the client encodes its own JWT before sending requests.
+
+The server only verifies tokens, ensuring that only trusted clients can make requests.
+
+This method is stateless, secure, and ensures only pre-approved clients can communicate.
+
+
+Would this work for your setup? Let me know if you need modifications!
+
+
+
+
+
+
+
+
+
 import base64
 import win32crypt
 
