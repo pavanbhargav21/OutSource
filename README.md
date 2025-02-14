@@ -1,4 +1,22 @@
+def decrypt_value(encrypted_obj, key_b64, nonce_b64):
+    """Decrypt a single value using AES-256-GCM"""
+    key = base64.b64decode(key_b64)
+    nonce = base64.b64decode(nonce_b64)
 
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    decrypted_text = cipher.decrypt_and_verify(
+        base64.b64decode(encrypted_obj["ciphertext"]),
+        base64.b64decode(encrypted_obj["auth_tag"])
+    )
+
+    return decrypted_text.decode()
+
+# Decrypt all values using the encrypted_store dictionary
+decrypted_data = {key: decrypt_value(value, aes_key, aes_nonce) for key, value in encrypted_store.items()}
+
+# Print decrypted values
+print("\n🔓 Decrypted Data Dictionary:")
+print(json.dumps(decrypted_data, indent=4))
 
 Got it! You want to:
 
