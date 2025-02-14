@@ -1,3 +1,226 @@
+
+
+Got it! You want to:
+
+1. Encrypt each of the 5 values (ClientID, TenantID, ClientSecret, ServiceName, ServicePassword) individually using AES-256-GCM with a single key and nonce.
+
+
+2. Store the encrypted values in Azure Key Vault instead of plain text.
+
+
+3. Later, retrieve and decrypt each value individually using the same key and nonce in an API call.
+
+
+
+🔹 Steps to Achieve This:
+
+1. Generate AES-256 Key & Nonce → This key and nonce should be stored securely (not in Key Vault).
+
+
+2. Encrypt each value separately and store the encrypted version in Azure Key Vault.
+
+
+3. Retrieve & Decrypt each value in your API using the same key and nonce.
+
+
+
+
+---
+
+🔐 Step 1: Generate AES-256 Key & Nonce
+
+import os
+import base64
+from Crypto.Random import get_random_bytes
+
+def generate_aes_key_nonce():
+    """Generate a 256-bit AES key and a nonce, then print/store them securely"""
+    key = get_random_bytes(32)  # AES-256 requires a 32-byte key
+    nonce = get_random_bytes(16)  # Nonce for AES-GCM (must be unique per encryption)
+
+    print("AES Key (Base64):", base64.b64encode(key).decode())  
+    print("Nonce (Base64):", base64.b64encode(nonce).decode())
+
+    # Store these values securely (Environment Variables, Secure Storage, etc.)
+    return key, nonce
+
+if __name__ == "__main__":
+    generate_aes_key_nonce()
+
+🔹 Output Example (Save These Securely)
+
+AES Key (Base64): dGhpc2lzYXRlc3RrZXkzM0JZVEU=
+Nonce (Base64): c29tZWZha2Vub25jZVRlc3Q=
+
+✅ Store these in a secure place (not in Key Vault but in a secure config or environment variable).
+✅ The same key and nonce will be used for all five values.
+
+
+---
+
+🔐 Step 2: Encrypt Individual Values
+
+import base64
+import json
+from Crypto.Cipher import AES
+
+# Store the generated Key & Nonce here (from Step 1)
+AES_KEY_BASE64 = "dGhpc2lzYXRlc3RrZXkzM0JZVEU="  # Replace with actual key
+NONCE_BASE64 = "c29tZWZha2Vub25jZVRlc3Q="  # Replace with actual nonce
+
+def encrypt_value(plain_text):
+    """Encrypt a single value using AES-256-GCM"""
+    key = base64.b64decode(AES_KEY_BASE64)
+    nonce = base64.b64decode(NONCE_BASE64)
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, auth_tag = cipher.encrypt_and_digest(plain_text.encode())
+
+    return {
+        "ciphertext": base64.b64encode(ciphertext).decode(),
+        "auth_tag": base64.b64encode(auth_tag).decode()
+    }
+
+# Example: Encrypting the five sensitive values
+sensitive_data = {
+    "ClientID": "12345-xyz-client",
+    "TenantID": "67890-abc-tenant",
+    "ClientSecret": "MySuperSecureSecret",
+    "ServiceName": "SecureAPIService",
+    "ServicePassword": "UltraSafePassword"
+}
+
+encrypted_data = {key: encrypt_value(value) for key, value in sensitive_data.items()}
+
+# Print Encrypted Values (Store these in Key Vault)
+print("\n🔐 Encrypted Data (Store in Key Vault):")
+print(json.dumps(encrypted_data, indent=4))
+
+
+---
+
+🔹 Step 3: Store in Azure Key Vault
+
+Once the values are encrypted, store them in Azure Key Vault using the Azure CLI or SDK.
+
+az keyvault secret set --vault-name "MyKeyVault" --name "EncryptedClientID" --value "CIPHERTEXT_FROM_SCRIPT"
+az keyvault secret set --vault-name "MyKeyVault" --name "EncryptedTenantID" --value "CIPHERTEXT_FROM_SCRIPT"
+az keyvault secret set --vault-name "MyKeyVault" --name "EncryptedClientSecret" --value "CIPHERTEXT_FROM_SCRIPT"
+az keyvault secret set --vault-name "MyKeyVault" --name "EncryptedServiceName" --value "CIPHERTEXT_FROM_SCRIPT"
+az keyvault secret set --vault-name "MyKeyVault" --name "EncryptedServicePassword" --value "CIPHERTEXT_FROM_SCRIPT"
+
+
+---
+
+🔓 Step 4: Decrypt Individual Values in API
+
+When retrieving values from Key Vault, use this decryption function:
+
+import base64
+from Crypto.Cipher import AES
+
+# Load AES Key & Nonce (same as before)
+AES_KEY_BASE64 = "dGhpc2lzYXRlc3RrZXkzM0JZVEU="  # Use same stored key
+NONCE_BASE64 = "c29tZWZha2Vub25jZVRlc3Q="  # Use same stored nonce
+
+def decrypt_value(ciphertext, auth_tag):
+    """Decrypt a single value using AES-256-GCM"""
+    key = base64.b64decode(AES_KEY_BASE64)
+    nonce = base64.b64decode(NONCE_BASE64)
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    decrypted_text = cipher.decrypt_and_verify(base64.b64decode(ciphertext), base64.b64decode(auth_tag))
+
+    return decrypted_text.decode()
+
+# Example: Decrypting one retrieved value (replace with values from Key Vault)
+encrypted_client_id = {
+    "ciphertext": "CIPHERTEXT_FROM_KEY_VAULT",
+    "auth_tag": "AUTHTAG_FROM_KEY_VAULT"
+}
+
+decrypted_client_id = decrypt_value(encrypted_client_id["ciphertext"], encrypted_client_id["auth_tag"])
+
+print("\n🔓 Decrypted Client ID:", decrypted_client_id)
+
+
+---
+
+🔹 How It Works
+
+✅ Encryption:
+
+Each value is encrypted individually using the same key and nonce.
+
+The ciphertext and auth tag are stored in Azure Key Vault.
+
+
+✅ Decryption (API):
+
+Retrieve ciphertext and auth tag from Key Vault.
+
+Use same AES key and nonce to decrypt the values.
+
+
+
+---
+
+🔹 Example API Call Flow
+
+Your API will:
+
+1. Fetch Encrypted Data from Azure Key Vault.
+
+
+2. Decrypt using decrypt_value().
+
+
+3. Return Decrypted Values in API Response.
+
+
+
+Example API Call:
+
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route("/get-secrets", methods=["GET"])
+def get_secrets():
+    """Fetch encrypted values from Key Vault & decrypt them"""
+    decrypted_values = {
+        "ClientID": decrypt_value("CIPHERTEXT_FROM_KEY_VAULT", "AUTHTAG_FROM_KEY_VAULT"),
+        "TenantID": decrypt_value("CIPHERTEXT_FROM_KEY_VAULT", "AUTHTAG_FROM_KEY_VAULT"),
+        "ClientSecret": decrypt_value("CIPHERTEXT_FROM_KEY_VAULT", "AUTHTAG_FROM_KEY_VAULT"),
+        "ServiceName": decrypt_value("CIPHERTEXT_FROM_KEY_VAULT", "AUTHTAG_FROM_KEY_VAULT"),
+        "ServicePassword": decrypt_value("CIPHERTEXT_FROM_KEY_VAULT", "AUTHTAG_FROM_KEY_VAULT")
+    }
+    return jsonify(decrypted_values)
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+---
+
+🔹 Summary
+
+✔ AES-256-GCM encryption with a single key & nonce
+✔ Stores encrypted values in Azure Key Vault
+✔ Decryption in API using the same key & nonce
+✔ Individually encrypts & decrypts each value
+
+This ensures strong encryption while keeping secrets safe in Azure Key Vault. Let me know if you need changes! 🚀
+
+
+
+
+
+
+
+
+
+
 from flask import Flask, Blueprint, jsonify
 import requests
 import datetime
