@@ -1,3 +1,101 @@
+
+from flask import Flask
+from apscheduler.schedulers.background import BackgroundScheduler
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from datetime import datetime, timezone
+from Crypto.Cipher import AES
+import base64
+
+app = Flask(__name__)
+
+# Azure Key Vault Configuration
+KEY_VAULT_URL = "https://your-keyvault-name.vault.azure.net"
+SECRET_NAME = "client-secret-name"
+ENCRYPTED_SECRET_NAME = "encrypted-client-secret"
+LAST_ENCRYPTION_TIMESTAMP = "last-encryption-timestamp"  # Store last encryption time
+
+# Initialize Key Vault Client
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=KEY_VAULT_URL, credential=credential)
+
+def check_and_encrypt_secret():
+    """
+    Function to check secret expiry and re-encrypt if necessary.
+    """
+    try:
+        # Fetch secret properties
+        secret = client.get_secret(SECRET_NAME)
+        expires_on = secret.properties.expires_on
+
+        # Check if expiry is within 20 days
+        if expires_on:
+            days_remaining = (expires_on - datetime.now(timezone.utc)).days
+            if days_remaining <= 20:
+                print(f"Secret expires in {days_remaining} days. Checking re-encryption status...")
+
+                # Fetch last encryption timestamp (if exists)
+                try:
+                    last_encryption_time = client.get_secret(LAST_ENCRYPTION_TIMESTAMP).value
+                    last_encryption_time = datetime.fromisoformat(last_encryption_time).replace(tzinfo=timezone.utc)
+                except:
+                    last_encryption_time = None  # No timestamp exists
+
+                # Encrypt only if it hasn't been done already within this 20-day window
+                if last_encryption_time and last_encryption_time >= expires_on - timedelta(days=20):
+                    print("Secret has already been encrypted within this window. Skipping.")
+                    return
+
+                # Fetch the actual secret value
+                secret_value = secret.value
+
+                # Fetch encryption key & nonce from Key Vault
+                encryption_key = base64.b64decode(client.get_secret("encryption-key").value)
+                nonce = base64.b64decode(client.get_secret("encryption-nonce").value)
+
+                # Encrypt secret using AES-256-GCM
+                cipher = AES.new(encryption_key, AES.MODE_GCM, nonce=nonce)
+                encrypted_bytes, tag = cipher.encrypt_and_digest(secret_value.encode())
+
+                # Convert to Base64 for storage
+                encrypted_value = base64.b64encode(encrypted_bytes).decode()
+
+                # Store encrypted secret back in Key Vault
+                client.set_secret(ENCRYPTED_SECRET_NAME, encrypted_value)
+
+                # Store the last encryption timestamp
+                client.set_secret(LAST_ENCRYPTION_TIMESTAMP, datetime.now(timezone.utc).isoformat())
+
+                print(f"Updated encrypted value stored in {ENCRYPTED_SECRET_NAME}. Encryption timestamp updated.")
+            else:
+                print("Secret expiry is not within 20 days. No action taken.")
+        else:
+            print("Secret does not have an expiration date.")
+    except Exception as e:
+        print(f"Error during secret check: {e}")
+
+# Scheduler setup
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_and_encrypt_secret, "interval", hours=24)  # Run every 24 hours
+scheduler.start()
+
+@app.route("/")
+def home():
+    return "Flask API with Scheduler Running..."
+
+if __name__ == "__main__":
+    try:
+        app.run(debug=True, use_reloader=False)  # Use reloader=False to prevent duplicate scheduler execution
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+
+
+
+
+
+
+
+
 def decrypt_value(encrypted_obj, key_b64, nonce_b64):
     """Decrypt a single value using AES-256-GCM"""
     key = base64.b64decode(key_b64)
