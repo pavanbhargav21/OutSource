@@ -1,4 +1,103 @@
 
+from selenium import webdriver
+
+from selenium.webdriver.common.by import By
+
+from selenium.webdriver.common.keys import Keys
+
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
+
+import logging
+
+logging.basicConfig(level-logging. INFO, format="%(asctime)s - %(levelname)s - %(message)s')
+
+#Configure logging
+
+def validateUnsupportedMediaSize():
+
+This method verifies that an unsupported media size cannot be assigned to a dedicated tray.
+
+# Test Data
+
+url "http://example.com" Replace with the actual URL
+
+trayLocator "tray-selector" Replace with the actual locator for the tray dropdown
+
+unsupportedMediaSize "Unsupported Size" Replace with the actual unsupported size
+
+errorMessageLocator "error-message" Replace with the actual locator for the error message expectedErrorMessage "Unsupported media size cannot be assigned to this tray." # Replace with the actual expected error message
+
+#Initialize WebDriver
+
+driver None
+
+try:
+
+logging.info("Launching the browser...")
+
+driver webdriver.Chrome() # Ensure the correct WebDriver is installed and configured
+
+driver.maximize_window()
+
+logging.info(f"Navigating to the URL: {url}")
+
+driver.get(url)
+
+logging.info("Locating the tray dropdown...")
+trayDropdown driver.find_element(By. ID, trayLocator)
+
+logging.info("Locating the tray dropdown...")
+
+logging.info(f"Selecting the unsupported media size: (unsupportedMediaSize)")
+
+trayDropdown.send_keys (unsupportedMediaSize)
+
+trayDropdown.send_keys (Keys.RETURN)
+
+logging.info("Verifying the error message...")
+
+errorMessageElement driver.find_element(By. ID, errorMessageLocator)
+
+actual ErrorMessage errorMessageElement.text
+
+assert actualErrorMessage expectedErrorMessage, (
+
+f"Test Failed: Expected error message '(expectedErrorMessage)', but got (actual ErrorMessage)"
+
+logging.info("Test Passed: The correct error message is displayed for unsupported media size.")
+
+except NoSuchElementException as e:
+
+logging.error(f"Test Failed: Element not found (e)")
+
+except AssertionError as e:
+
+logging.error(e)
+
+except WebDriverException as e:
+
+logging.error(f"Test Failed: WebDriver exception occurred - {e}")
+
+except Exception as e:
+
+logging.error(f"Test Failed: An unexpected exception occurred (e)")
+
+finally:
+
+if driver:
+
+logging.info("Closing the browser...")
+
+driver.quit()
+
+#Execute the test
+
+validateUnsupportedMediaSize()
+
+
+
+
+
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from azure.identity import DefaultAzureCredential
