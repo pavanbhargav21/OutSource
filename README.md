@@ -1,100 +1,72 @@
 
 from selenium import webdriver
-
 from selenium.webdriver.common.by import By
-
 from selenium.webdriver.common.keys import Keys
-
 from selenium.common.exceptions import NoSuchElementException, WebDriverException
-
 import logging
 
-logging.basicConfig(level-logging. INFO, format="%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-#Configure logging
+def validate_unsupported_media_size():
+    """
+    This method verifies that an unsupported media size cannot be assigned to a dedicated tray.
+    """
 
-def validateUnsupportedMediaSize():
+    # Test Data
+    url = "http://example.com"  # Replace with the actual URL
+    tray_locator = "tray-selector"  # Replace with the actual locator for the tray dropdown
+    unsupported_media_size = "Unsupported Size"  # Replace with the actual unsupported size
+    error_message_locator = "error-message"  # Replace with the actual locator for the error message
+    expected_error_message = "Unsupported media size cannot be assigned to this tray."  # Replace with the actual expected error message
 
-This method verifies that an unsupported media size cannot be assigned to a dedicated tray.
+    # Initialize WebDriver
+    driver = None
 
-# Test Data
+    try:
+        logging.info("Launching the browser...")
+        driver = webdriver.Chrome()  # Ensure the correct WebDriver is installed and configured
+        driver.maximize_window()
 
-url "http://example.com" Replace with the actual URL
+        logging.info(f"Navigating to the URL: {url}")
+        driver.get(url)
 
-trayLocator "tray-selector" Replace with the actual locator for the tray dropdown
+        logging.info("Locating the tray dropdown...")
+        tray_dropdown = driver.find_element(By.ID, tray_locator)
 
-unsupportedMediaSize "Unsupported Size" Replace with the actual unsupported size
+        logging.info(f"Selecting the unsupported media size: {unsupported_media_size}")
+        tray_dropdown.send_keys(unsupported_media_size)
+        tray_dropdown.send_keys(Keys.RETURN)
 
-errorMessageLocator "error-message" Replace with the actual locator for the error message expectedErrorMessage "Unsupported media size cannot be assigned to this tray." # Replace with the actual expected error message
+        logging.info("Verifying the error message...")
+        error_message_element = driver.find_element(By.ID, error_message_locator)
+        actual_error_message = error_message_element.text
 
-#Initialize WebDriver
+        assert actual_error_message == expected_error_message, (
+            f"Test Failed: Expected error message '{expected_error_message}', but got '{actual_error_message}'"
+        )
 
-driver None
+        logging.info("Test Passed: The correct error message is displayed for unsupported media size.")
 
-try:
+    except NoSuchElementException as e:
+        logging.error(f"Test Failed: Element not found - {e}")
 
-logging.info("Launching the browser...")
+    except AssertionError as e:
+        logging.error(e)
 
-driver webdriver.Chrome() # Ensure the correct WebDriver is installed and configured
+    except WebDriverException as e:
+        logging.error(f"Test Failed: WebDriver exception occurred - {e}")
 
-driver.maximize_window()
+    except Exception as e:
+        logging.error(f"Test Failed: An unexpected exception occurred - {e}")
 
-logging.info(f"Navigating to the URL: {url}")
+    finally:
+        if driver:
+            logging.info("Closing the browser...")
+            driver.quit()
 
-driver.get(url)
-
-logging.info("Locating the tray dropdown...")
-trayDropdown driver.find_element(By. ID, trayLocator)
-
-logging.info("Locating the tray dropdown...")
-
-logging.info(f"Selecting the unsupported media size: (unsupportedMediaSize)")
-
-trayDropdown.send_keys (unsupportedMediaSize)
-
-trayDropdown.send_keys (Keys.RETURN)
-
-logging.info("Verifying the error message...")
-
-errorMessageElement driver.find_element(By. ID, errorMessageLocator)
-
-actual ErrorMessage errorMessageElement.text
-
-assert actualErrorMessage expectedErrorMessage, (
-
-f"Test Failed: Expected error message '(expectedErrorMessage)', but got (actual ErrorMessage)"
-
-logging.info("Test Passed: The correct error message is displayed for unsupported media size.")
-
-except NoSuchElementException as e:
-
-logging.error(f"Test Failed: Element not found (e)")
-
-except AssertionError as e:
-
-logging.error(e)
-
-except WebDriverException as e:
-
-logging.error(f"Test Failed: WebDriver exception occurred - {e}")
-
-except Exception as e:
-
-logging.error(f"Test Failed: An unexpected exception occurred (e)")
-
-finally:
-
-if driver:
-
-logging.info("Closing the browser...")
-
-driver.quit()
-
-#Execute the test
-
-validateUnsupportedMediaSize()
-
-
+# Execute the test
+validate_unsupported_media_size()
 
 
 
