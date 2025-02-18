@@ -1,4 +1,105 @@
 
+
+from flask import Flask, jsonify
+import os
+import json
+from datetime import datetime, timedelta
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from apscheduler.schedulers.background import BackgroundScheduler
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64
+
+app = Flask(__name__)
+
+# Environment Variables
+KEY_VAULT_NAME_GEN = os.getenv("KEY_VAULT_NAME_GEN")
+KEY_VAULT_NAME_SEC = os.getenv("KEY_VAULT_NAME_SEC")  # Another KeyVault
+SECRET_NAMES = os.getenv("SECRETS_REQUIRED").split(",")
+
+# Azure Key Vault Clients
+credential = DefaultAzureCredential()
+client_gen = SecretClient(vault_url=f"https://{KEY_VAULT_NAME_GEN}.vault.azure.net/", credential=credential)
+client_sec = SecretClient(vault_url=f"https://{KEY_VAULT_NAME_SEC}.vault.azure.net/", credential=credential)
+
+# AES Encryption Settings
+AES_KEY = os.getenv("AES_KEY")  # Use a secure key from env
+AES_NONCE = os.getenv("AES_NONCE")  # Use a secure nonce from env
+
+# Function to Encrypt Data
+def encrypt_data(data, key, nonce):
+    cipher = Cipher(algorithms.AES(key.encode()), modes.GCM(nonce.encode()))
+    encryptor = cipher.encryptor()
+    encrypted_data = encryptor.update(data.encode()) + encryptor.finalize()
+    return base64.b64encode(encrypted_data).decode()
+
+# Scheduler Function
+def check_and_encrypt_client_secret():
+    """ Checks expiry of 'clsscrt' in second KeyVault and encrypts it if within 20 days. """
+    try:
+        secret_properties = client_sec.get_secret("clsscrt").properties
+        expiry_date = secret_properties.expires_on
+
+        if expiry_date is None:
+            print("No expiration date found for 'clsscrt'. Skipping...")
+            return
+
+        days_remaining = (expiry_date - datetime.utcnow()).days
+        print(f"Days remaining for 'clsscrt' expiry: {days_remaining}")
+
+        if days_remaining <= 20:
+            print("Less than 20 days remaining. Updating encrypted secret...")
+            
+            # Get and Encrypt the Secret
+            clsscrt_secret = client_sec.get_secret("clsscrt").value
+            encrypted_secret = encrypt_data(clsscrt_secret, AES_KEY, AES_NONCE)
+
+            # Store Encrypted Secret in First Key Vault
+            client_gen.set_secret("enc_client_secret", encrypted_secret)
+            print("Encrypted secret updated in Key Vault.")
+
+    except Exception as e:
+        print(f"Error in checking/encrypting secret: {str(e)}")
+
+# Schedule the Task (Runs daily at midnight)
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_and_encrypt_client_secret, "cron", hour=0, minute=0)
+scheduler.start()
+
+# API Endpoint to Get Secrets
+@app.get("/get_configs")
+async def get_keyvault_data():
+    """ Fetch secrets from Key Vault and return as JSON. """
+    secret_dict = {}
+    
+    for secret_name in SECRET_NAMES:
+        try:
+            secret = client_gen.get_secret(secret_name.strip())
+            secret_dict[secret_name] = secret.value
+        except Exception as e:
+            secret_dict[secret_name] = f"Error: {str(e)}"
+
+    return jsonify(secret_dict)
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
