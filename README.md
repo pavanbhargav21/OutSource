@@ -1,3 +1,120 @@
+To run the job every Monday at 12:02 AM, you just need to modify the APScheduler job trigger in the start_scheduler() function.
+
+Updated Job Schedule
+
+def start_scheduler():
+    """Starts the APScheduler to run the task every Monday at 12:02 AM"""
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(copy_previous_week_efforts, 'cron', day_of_week='mon', hour=0, minute=2)  # Runs every Monday at 12:02 AM
+    scheduler.start()
+    print("Scheduler started: Running copy_previous_week_efforts every Monday at 12:02 AM")
+
+
+---
+
+Updated Date Calculations
+
+We need to adjust the week calculations so that we copy shifts from last Monday to last Sunday into the new Monday to Sunday.
+
+Updated copy_previous_week_efforts Function
+
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.orm import sessionmaker
+from models import EmployeeShiftInfo, EmployeeInfo
+from database import session_scope
+
+def copy_previous_week_efforts():
+    """Efficiently copies last week's efforts to the current week for all employees"""
+    
+    with session_scope("DESIGNER") as session:
+        today = datetime.today()
+        last_monday = today - timedelta(days=today.weekday() + 7)  # Last Monday
+        last_sunday = last_monday + timedelta(days=6)  # Last Sunday
+        current_monday = last_sunday + timedelta(days=1)  # Current Monday
+        current_sunday = current_monday + timedelta(days=6)  # Current Sunday
+
+        print(f"Copying shifts from {last_monday} - {last_sunday} to {current_monday} - {current_sunday}")
+
+        # Step 1: Fetch all employee IDs in batches
+        employees = session.query(EmployeeInfo.emplid).all()
+        employee_ids = [emp.emplid for emp in employees]
+
+        # Step 2: Fetch all shifts for the last week
+        last_week_shifts = session.query(EmployeeShiftInfo).filter(
+            EmployeeShiftInfo.emp_id.in_(employee_ids),
+            EmployeeShiftInfo.shift_date.between(last_monday, last_sunday)
+        ).all()
+
+        # Step 3: Fetch all shifts for the current week
+        current_week_shifts = session.query(EmployeeShiftInfo).filter(
+            EmployeeShiftInfo.emp_id.in_(employee_ids),
+            EmployeeShiftInfo.shift_date.between(current_monday, current_sunday)
+        ).all()
+
+        # Step 4: Use dictionaries for quick lookups
+        last_week_shift_map = {(shift.emp_id, shift.shift_date): shift for shift in last_week_shifts}
+        current_week_shift_dates = {(shift.emp_id, shift.shift_date) for shift in current_week_shifts}
+
+        batch_insert = []
+        default_start_time = "09:00:00"
+        default_end_time = "17:00:00"
+
+        for emp_id in employee_ids:
+            for i in range(7):  # Loop through 7 days of the current week
+                new_shift_date = current_monday + timedelta(days=i)
+                
+                if (emp_id, new_shift_date) in current_week_shift_dates:
+                    continue  # Skip if shift already exists
+
+                # Copy shift from last week if exists, otherwise assign default
+                prev_shift_date = new_shift_date - timedelta(days=7)
+                prev_shift = last_week_shift_map.get((emp_id, prev_shift_date))
+
+                batch_insert.append(EmployeeShiftInfo(
+                    emp_id=emp_id,
+                    shift_date=new_shift_date,
+                    start_time=prev_shift.start_time if prev_shift else default_start_time,
+                    end_time=prev_shift.end_time if prev_shift else default_end_time,
+                    is_week_off=prev_shift.is_week_off if prev_shift else "N"
+                ))
+
+        # Step 5: Bulk insert only if there are new shifts to add
+        if batch_insert:
+            session.bulk_save_objects(batch_insert)
+            session.commit()
+            print(f"{len(batch_insert)} shift records inserted.")
+
+def start_scheduler():
+    """Starts the APScheduler to run the task every Monday at 12:02 AM"""
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(copy_previous_week_efforts, 'cron', day_of_week='mon', hour=0, minute=2)  # Runs every Monday at 12:02 AM
+    scheduler.start()
+    print("Scheduler started: Running copy_previous_week_efforts every Monday at 12:02 AM")
+
+if __name__ == "__main__":
+    start_scheduler()
+    try:
+        while True:
+            pass
+    except (KeyboardInterrupt, SystemExit):
+        print("Scheduler stopped.")
+
+
+---
+
+Key Changes
+
+✅ Job now runs every Monday at 12:02 AM
+✅ Correctly calculates last Monday–Sunday efforts to copy into the new week
+✅ Efficient batch processing for large employee datasets
+
+This ensures the job copies last week’s efforts into the new week properly without duplication. Let me know if you need any tweaks!
+
+
+
+
+
 
 
 from flask import Flask, jsonify
