@@ -1,3 +1,93 @@
+
+@cross_origin()
+@jwt_required()
+def post(self):
+    """
+    Assign or update shift timings for employees.
+    :return: JSON response indicating success or failure.
+    """
+    try:
+        data = request.get_json()
+        employees = data.get('employees')
+
+        if not employees:
+            return jsonify({"error": "No employee data provided"}), 400
+
+        with session_scope() as session:
+            shift_entries = []
+
+            for emp in employees:
+                emp_id = emp.get("emp_id")
+                from_date = datetime.strptime(emp.get("start_date"), DATE_FORMAT).date()
+                to_date = datetime.strptime(emp.get("end_date"), DATE_FORMAT).date()
+                week_off = emp.get("week_off", [])
+
+                delta = (to_date - from_date).days + 1
+
+                for i in range(delta):
+                    current_date = from_date + timedelta(days=i)
+                    day_id = current_date.weekday()
+
+                    if day_id in week_off:
+                        start_time = "00:00:00"
+                        end_time = "00:00:00"
+                    else:
+                        start_time = emp.get("start_time", {}).get(str(day_id), "00:00:00")
+                        end_time = emp.get("end_time", {}).get(str(day_id), "00:00:00")
+
+                    # Calculate contracted hours
+                    if start_time != "00:00:00" and end_time != "00:00:00":
+                        contracted_hrs = round(
+                            (datetime.strptime(end_time, TIME_FORMAT) - datetime.strptime(start_time, TIME_FORMAT)).total_seconds() / 3600, 2
+                        )
+                    else:
+                        contracted_hrs = 0.0
+
+                    # Check if a shift already exists for this employee and shift date
+                    existing_shift = session.query(EmployeeShiftInfo).filter_by(
+                        emp_id=emp_id,
+                        shift_date=current_date
+                    ).first()
+
+                    if existing_shift:
+                        # Update the existing shift
+                        existing_shift.day_id = day_id
+                        existing_shift.is_week_off = "Y" if day_id in week_off else "N"
+                        existing_shift.start_time = datetime.strptime(start_time, TIME_FORMAT) if start_time != "00:00:00" else None
+                        existing_shift.end_time = datetime.strptime(end_time, TIME_FORMAT) if end_time != "00:00:00" else None
+                        existing_shift.emp_contracted_hours = contracted_hrs
+                    else:
+                        # Insert new shift
+                        shift_entries.append(
+                            EmployeeShiftInfo(
+                                emp_id=emp_id,
+                                day_id=day_id,
+                                is_week_off="Y" if day_id in week_off else "N",
+                                start_time=datetime.strptime(start_time, TIME_FORMAT) if start_time != "00:00:00" else None,
+                                end_time=datetime.strptime(end_time, TIME_FORMAT) if end_time != "00:00:00" else None,
+                                time_zone_id=None,
+                                emp_contracted_hours=contracted_hrs,
+                                shift_date=current_date
+                            )
+                        )
+
+            # Bulk insert new records if any
+            if shift_entries:
+                session.bulk_save_objects(shift_entries)
+
+            session.commit()
+
+            return jsonify({"message": "Shift(s) assigned or updated successfully!", "status": "success"}), 200
+
+    except Exception as e:
+        return jsonify({
+            "error": "An unexpected error occurred.",
+            "details": str(e)
+        }), 500
+
+
+
+
 To run the job every Monday at 12:02 AM, you just need to modify the APScheduler job trigger in the start_scheduler() function.
 
 Updated Job Schedule
