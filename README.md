@@ -1,4 +1,48 @@
 
+
+import com.azure.messaging.eventhubs.*
+import com.azure.identity.ClientSecretCredential
+import com.azure.identity.ClientSecretCredentialBuilder
+
+// Environment Variables (Replace with your actual values)
+String tenantId = "YOUR_TENANT_ID"
+String clientId = "YOUR_CLIENT_ID"
+String clientSecret = "YOUR_CLIENT_SECRET"
+String namespace = "YOUR_EVENT_HUB_NAMESPACE" // e.g., myeventhubnamespace
+String eventHubName = "YOUR_EVENT_HUB_NAME" // e.g., myeventhub
+
+// Authenticate using ClientSecretCredential
+ClientSecretCredential credential = new ClientSecretCredentialBuilder()
+    .tenantId(tenantId)
+    .clientId(clientId)
+    .clientSecret(clientSecret)
+    .build()
+
+// Create EventHubProducerClient
+EventHubProducerClient producer = new EventHubClientBuilder()
+    .fullyQualifiedNamespace(namespace + ".servicebus.windows.net")
+    .eventHubName(eventHubName)
+    .credential(credential)
+    .buildProducerClient()
+
+// Create batch
+EventDataBatch batch = producer.createBatch()
+
+// Add events
+batch.tryAdd(new EventData("Event from JMeter - 1"))
+batch.tryAdd(new EventData("Event from JMeter - 2"))
+batch.tryAdd(new EventData("Event from JMeter - 3"))
+
+// Send batch
+producer.send(batch)
+log.info("Events sent successfully to Azure Event Hub")
+
+// Close the producer
+producer.close()
+
+
+
+
 @cross_origin()
 @jwt_required()
 def post(self):
