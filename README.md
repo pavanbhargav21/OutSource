@@ -1,3 +1,31 @@
+
+
+import win32security
+
+SECRET_KEY = b"MySuperSecretKey123"
+
+# Open TPM-backed key storage provider
+provider = win32security.CryptAcquireContext(
+    None, None, "Microsoft Platform Crypto Provider", win32security.PROV_RSA_AES, 0
+)
+
+# Store secret key in TPM
+win32security.CryptSetProvParam(provider, win32security.PP_SIGNATURE_PIN, SECRET_KEY)
+
+print("Secret key securely stored in TPM!")
+
+
+# Retrieve secret key from TPM
+retrieved_secret = win32security.CryptGetProvParam(provider, win32security.PP_SIGNATURE_PIN)
+
+print("Decrypted Secret:", retrieved_secret)
+
+
+
+
+
+
+
 🔹 Overview of the Authentication Approach
 
 
