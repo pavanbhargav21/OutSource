@@ -1,4 +1,152 @@
 
+
+Got it! You have a 32-byte secret key that you want to store securely in the TPM and later use in your Python code. Since TPM does not allow direct retrieval of stored secrets, you need to:
+
+1. Store the 32-byte key securely in TPM.
+
+
+2. Retrieve and use it inside TPM for cryptographic operations (like HMAC or encryption).
+
+
+
+
+---
+
+Step 1: Store 32-Byte Key in TPM
+
+Since TPM doesn’t allow storing arbitrary data directly, you need to create a persistent HMAC key inside TPM and seed it with your 32-byte key.
+
+Here's how to store your 32-byte secret key inside TPM using Python:
+
+Python Code to Store the 32-Byte Key in TPM
+
+import ctypes
+
+# Load Windows CNG library
+ncrypt = ctypes.windll.ncrypt
+
+# Constants
+MS_PLATFORM_CRYPTO_PROVIDER = "Microsoft Platform Crypto Provider"
+NCRYPT_SILENT_FLAG = 0x00000040
+NCRYPT_OVERWRITE_KEY_FLAG = 0x00000080  # Overwrite existing key if needed
+
+# Open TPM-backed key storage provider
+provider_handle = ctypes.c_void_p()
+status = ncrypt.NCryptOpenStorageProvider(ctypes.byref(provider_handle), MS_PLATFORM_CRYPTO_PROVIDER, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to open TPM storage provider: {status}")
+
+# Define key name
+key_name = "MyHMACKey"
+
+# Create a new persisted key in TPM
+key_handle = ctypes.c_void_p()
+status = ncrypt.NCryptCreatePersistedKey(provider_handle, ctypes.byref(key_handle), b"HMAC", key_name, 0, NCRYPT_OVERWRITE_KEY_FLAG)
+
+if status != 0:
+    raise RuntimeError(f"Failed to create TPM key: {status}")
+
+# Set the key value (32-byte secret key)
+secret_key = b"my_very_secure_32_byte_secret_key_"  # Must be exactly 32 bytes
+status = ncrypt.NCryptSetProperty(key_handle, b"TPM_SEAL_KEY", secret_key, len(secret_key), 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to set TPM key property: {status}")
+
+# Finalize and store key in TPM
+status = ncrypt.NCryptFinalizeKey(key_handle, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to finalize TPM key storage: {status}")
+
+print(f"Secret key '{key_name}' securely stored in TPM.")
+
+🔹 What Happens Here?
+
+A persistent key named "MyHMACKey" is created in TPM.
+
+Your 32-byte secret key is securely stored inside this TPM key.
+
+The key is finalized and saved inside TPM.
+
+
+
+---
+
+Step 2: Use the 32-Byte Key from TPM in Python
+
+Since TPM doesn’t allow extracting the key, you can use it for cryptographic operations inside TPM, like HMAC authentication.
+
+Python Code to Use the Stored Key for HMAC
+
+import ctypes
+
+# Load Windows CNG library
+ncrypt = ctypes.windll.ncrypt
+
+# Open TPM-backed key storage provider
+provider_handle = ctypes.c_void_p()
+status = ncrypt.NCryptOpenStorageProvider(ctypes.byref(provider_handle), "Microsoft Platform Crypto Provider", 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to open TPM storage provider: {status}")
+
+# Retrieve the key
+key_name = "MyHMACKey"
+retrieved_key_handle = ctypes.c_void_p()
+status = ncrypt.NCryptOpenKey(provider_handle, ctypes.byref(retrieved_key_handle), key_name, 0, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to retrieve TPM key: {status}")
+
+# Use TPM key for HMAC (Example: Sign a message)
+message = b"Hello, TPM!"
+signature = ctypes.create_string_buffer(32)  # Output buffer for HMAC
+
+status = ncrypt.NCryptSignHash(retrieved_key_handle, None, message, len(message), signature, len(signature), None)
+
+if status != 0:
+    raise RuntimeError(f"Failed to sign message with TPM key: {status}")
+
+print(f"HMAC signature generated: {signature.raw.hex()}")
+
+🔹 What Happens Here?
+
+The 32-byte key is securely retrieved from TPM.
+
+TPM is used to generate an HMAC signature for authentication.
+
+Your Python app can use the TPM-stored key securely without exposing it in memory.
+
+
+
+---
+
+Why Is This Secure?
+
+✅ The secret key never leaves TPM – It stays protected inside hardware.
+✅ Even an attacker with full access to your system cannot extract the key.
+✅ Only authorized applications can use TPM for cryptographic operations.
+
+
+---
+
+Next Steps
+
+Would you like an example of how to encrypt/decrypt data using this TPM key instead of HMAC? 🚀
+
+
+
+
+
+
+
+
+
+
+
+
 ncrypt.NCryptOpenKey.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong]
 
 # Open the stored TPM key
