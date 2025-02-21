@@ -1,4 +1,203 @@
 
+Step 1: Generate Public-Private Key Pair (EDDSA - Ed25519)
+
+Run this script once to create a key pair.
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+
+# Generate a new private key
+private_key = Ed25519PrivateKey.generate()
+
+# Save private key
+with open("private_key.pem", "wb") as f:
+    f.write(private_key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption()
+    ))
+
+# Save public key
+public_key = private_key.public_key()
+with open("public_key.pem", "wb") as f:
+    f.write(public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    ))
+
+print("Private and public keys generated successfully!")
+
+✅ Generates:
+
+private_key.pem → Used by the client.
+
+public_key.pem → Used by the server.
+
+
+
+---
+
+Step 2: Generate 32-Byte Secret Key
+
+Run this once to create a shared secret key.
+
+import os
+
+# Generate a random 32-byte secret key
+secret_key = os.urandom(32)
+
+# Save it to a file
+with open("secret_key.bin", "wb") as f:
+    f.write(secret_key)
+
+print("Secret key generated successfully!")
+
+✅ Generates:
+
+secret_key.bin → Shared between client & server.
+
+
+
+---
+
+Step 3: Client-Side Code
+
+Client will sign requests using the private key & send them.
+
+import time
+import hmac
+import hashlib
+import requests
+import binascii
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+# Load secret key
+with open("secret_key.bin", "rb") as f:
+    SECRET_KEY = f.read()
+
+# Load private key
+with open("private_key.pem", "rb") as f:
+    private_key = Ed25519PrivateKey.from_private_bytes(f.read())
+
+# Constants
+USER_ID = "45231234"
+SERVER_URL = "http://127.0.0.1:8000"
+
+def generate_auth_headers():
+    timestamp = str(int(time.time()))
+    message = f"{USER_ID}{timestamp}".encode()
+    
+    # Generate HMAC session key
+    session_key = hmac.new(SECRET_KEY, message, hashlib.sha256).digest()
+    
+    # Sign session key
+    signature = private_key.sign(session_key)
+
+    return {
+        "X-User-ID": USER_ID,
+        "X-Timestamp": timestamp,
+        "X-Signature": binascii.hexlify(signature).decode()
+    }
+
+# Step 1: Make an authenticated GET request
+headers = generate_auth_headers()
+response = requests.get(f"{SERVER_URL}/get_keys", headers=headers)
+print("GET Response:", response.json())
+
+# Step 2: Make an authenticated POST request
+headers = generate_auth_headers()
+response = requests.post(f"{SERVER_URL}/submit_data", headers=headers)
+print("POST Response:", response.json())
+
+✅ Sends headers:
+
+X-User-ID: 45231234
+X-Timestamp: 1700000000
+X-Signature: <signed_hmac>
+
+
+---
+
+Step 4: Server-Side Code (FastAPI Authentication Middleware)
+
+The server verifies the request before allowing access to endpoints.
+
+from fastapi import FastAPI, Request, HTTPException, Depends
+from pydantic import BaseModel
+import time
+import hmac
+import hashlib
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+import binascii
+
+app = FastAPI()
+
+# Load secret key
+with open("secret_key.bin", "rb") as f:
+    SECRET_KEY = f.read()
+
+# Load public key
+with open("public_key.pem", "rb") as f:
+    public_key_bytes = f.read()
+public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+
+TIME_LIMIT = 60  # Request must be within 60 seconds
+
+class AuthRequest(BaseModel):
+    user_id: str
+    timestamp: str
+    signature: str
+
+async def verify_request(request: Request):
+    headers = request.headers
+    user_id = headers.get("X-User-ID")
+    timestamp = headers.get("X-Timestamp")
+    signature = headers.get("X-Signature")
+
+    if not user_id or not timestamp or not signature:
+        raise HTTPException(status_code=401, detail="Missing authentication headers")
+
+    # Step 1: Validate timestamp (Prevent replay attacks)
+    server_time = int(time.time())
+    client_time = int(timestamp)
+    if abs(server_time - client_time) > TIME_LIMIT:
+        raise HTTPException(status_code=400, detail="Timestamp expired")
+
+    # Step 2: Generate session key (Same as client)
+    message = f"{user_id}{timestamp}".encode()
+    session_key = hmac.new(SECRET_KEY, message, hashlib.sha256).digest()
+
+    # Step 3: Verify the signature
+    try:
+        signature_bytes = binascii.unhexlify(signature)
+        public_key.verify(signature_bytes, session_key)
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    return {"user_id": user_id}
+
+@app.get("/get_keys", dependencies=[Depends(verify_request)])
+async def get_keys():
+    return {"message": "Keys retrieved successfully!"}
+
+@app.post("/submit_data", dependencies=[Depends(verify_request)])
+async def submit_data():
+    return {"message": "Data submitted successfully!"}
+
+✅ Every request must be authenticated before the endpoint executes.
+
+
+---
+
+Summary
+
+This ensures authentication on every request, preventing unauthorized access. 🚀
+
+
+
+
+
+
 Here’s a refactored and optimized FastAPI code where the signature, public key verification, and nonce check are moved to a separate reusable function. This ensures that any API request can use it for verification.
 
 
