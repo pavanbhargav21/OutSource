@@ -1,4 +1,39 @@
+import ctypes
+import ctypes.wintypes
 
+# Load Windows CNG library
+ncrypt = ctypes.WinDLL("ncrypt.dll")
+
+# Define constants
+NCRYPT_SILENT_FLAG = 0x00000040
+MS_PLATFORM_CRYPTO_PROVIDER = "Microsoft Platform Crypto Provider"
+
+# Function prototypes
+ncrypt.NCryptOpenStorageProvider.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_wchar_p, ctypes.c_ulong]
+ncrypt.NCryptCreatePersistedKey.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong]
+ncrypt.NCryptFinalizeKey.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+
+# Open TPM-backed key storage provider
+provider_handle = ctypes.c_void_p()
+status = ncrypt.NCryptOpenStorageProvider(ctypes.byref(provider_handle), MS_PLATFORM_CRYPTO_PROVIDER, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to open TPM storage provider: {status}")
+
+# Create a TPM-backed key
+key_handle = ctypes.c_void_p()
+key_name = "MySecureHMACKey"
+status = ncrypt.NCryptCreatePersistedKey(provider_handle, ctypes.byref(key_handle), "RSA", key_name, 0, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to create TPM key: {status}")
+
+# Finalize the key (makes it persistent in TPM)
+status = ncrypt.NCryptFinalizeKey(key_handle, 0)
+if status != 0:
+    raise RuntimeError(f"Failed to finalize TPM key: {status}")
+
+print("Secret key securely stored in TPM!")
 
 import win32security
 
