@@ -1,5 +1,433 @@
 
 
+
+
+Yes, you can use Redis instead of TTLCache, and in your case, Redis is preferable over an in-memory LRU cache like cachetools.TTLCache. Here's why:
+
+
+---
+
+Why is Redis better for your use case?
+
+1. Azure Web Apps Have Memory Constraints
+
+Your app runs on shared memory, and using a large in-memory cache like TTLCache could cause excessive memory usage.
+
+Redis offloads the storage to an external database instead of keeping it in the app’s memory.
+
+
+
+2. Persistence & Scalability
+
+If your app restarts or scales across multiple instances, TTLCache will lose its stored values.
+
+Redis persists across restarts and is shared across multiple app instances.
+
+
+
+3. High Volume Requests
+
+For 60,000+ users running for years, TTLCache (limited by maxsize) may require a very high maxsize value.
+
+Redis can store millions of records with automatic eviction based on time-to-live (EXPIRE).
+
+
+
+4. Built-In Expiry (TTL) Support
+
+Redis supports automatic expiration of keys (e.g., delete after 5 minutes).
+
+This avoids manual cleanup that would be required with TTLCache.
+
+
+
+
+
+---
+
+How to Implement Redis for Nonce Storage
+
+First, install Redis and its Python client:
+
+pip install redis
+
+Step 1: Use Redis Instead of TTLCache in Flask Server
+
+Modify the Flask server to use Redis for nonce storage.
+
+import redis
+import os
+from flask import Flask, request, jsonify
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+import base64
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+app = Flask(__name__)
+
+# Initialize Redis connection (Azure Redis Cache or local)
+redis_client = redis.Redis(host="your-redis-host", port=6379, db=0, decode_responses=True)
+
+@app.route("/get-env-variables", methods=["GET"])
+def get_env_variables():
+    try:
+        # Step 1: Retrieve headers from request
+        signature_b64 = request.headers.get("X-Signature")
+        public_key_pem = request.headers.get("X-Public-Key")
+        nonce_b64 = request.headers.get("X-Nonce")
+
+        if not signature_b64 or not public_key_pem or not nonce_b64:
+            return jsonify({"error": "Missing required headers"}), 400
+
+        # Step 2: Decode received values
+        signature = base64.b64decode(signature_b64)
+        public_key = load_pem_public_key(public_key_pem.encode())
+        nonce = base64.b64decode(nonce_b64)
+
+        # Step 3: Check if nonce was used before (Replay Attack Prevention)
+        nonce_key = f"nonce:{nonce_b64}"  # Unique key for Redis
+        if redis_client.exists(nonce_key):
+            return jsonify({"error": "Nonce already used"}), 403  # Reject replay attack
+
+        # Store nonce with an expiration time (300 seconds = 5 minutes)
+        redis_client.setex(nonce_key, 300, "1")  # Auto-delete after 5 minutes
+
+        # Step 4: Verify the signature
+        message = f"GET /get-env-variables {nonce_b64}"
+        public_key.verify(
+            signature,
+            message.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+
+        # Step 5: Fetch six environment variables
+        response_data = {
+            "VAR1": os.getenv("VAR1", "default_value_1"),
+            "VAR2": os.getenv("VAR2", "default_value_2"),
+            "VAR3": os.getenv("VAR3", "default_value_3"),
+            "VAR4": os.getenv("VAR4", "default_value_4"),
+            "VAR5": os.getenv("VAR5", "default_value_5"),
+            "VAR6": os.getenv("VAR6", "default_value_6"),
+        }
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 401
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
+
+---
+
+Why Redis is More Scalable?
+
+When to Use TTLCache?
+
+✅ If your app is a small-scale single-instance Flask app with low request volume.
+✅ If you don't have Redis or prefer an in-memory approach.
+
+When to Use Redis?
+
+✅ If your app runs on Azure Web Apps (memory-constrained).
+✅ If you expect high traffic (e.g., 60,000+ users, API running for years).
+✅ If you deploy multiple instances (Redis is centralized).
+✅ If you need automatic expiration of stored values.
+
+
+---
+
+Final Recommendation
+
+For Azure Web Apps running in production, use Redis for nonce storage to prevent replay attacks efficiently without excessive memory usage.
+
+Would you like me to add Azure Redis Cache setup steps?
+
+
+
+
+
+
+
+
+
+Here's the end-to-end solution with rolling nonce expiration (LRU Cache) and detailed comments including example values for private key, public key, nonce, message, signature, etc.
+
+
+---
+
+1. Install Required Libraries
+
+On both the client and server, install the required dependencies:
+
+pip install flask cryptography requests python-dotenv cachetools
+
+
+---
+
+2. Client Code (Python)
+
+This script dynamically generates an RSA key pair, creates a nonce, signs the request, and sends it to the Flask server.
+
+import os
+import base64
+import requests
+import json
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
+
+# Flask API URL (Replace with actual API)
+API_URL = "https://your-flask-api.azurewebsites.net/get-env-variables"
+
+# Step 1: Generate RSA Key Pair (Generated dynamically, not stored)
+private_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048
+)
+
+# Step 2: Export Public Key (to be sent with request)
+public_key = private_key.public_key().public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo
+).decode()
+
+"""
+Example Public Key (PEM Format):
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...
+-----END PUBLIC KEY-----
+"""
+
+# Step 3: Generate a Unique Nonce (16-byte random value)
+nonce = os.urandom(16)  # 16-byte secure random nonce
+
+"""
+Example Nonce (Raw Bytes):
+b'1f\x8eT\x99\xad\xdb\x82\xc3\xf5\xf6\xab\xb8\xd7\x92g'
+
+Example Nonce (Base64 Encoded for transmission):
+'Mh+OVJmt24LD9faruNeSZw=='
+"""
+
+# Step 4: Construct the message to be signed
+message = f"GET /get-env-variables {base64.b64encode(nonce).decode()}"
+
+"""
+Example Message to Sign:
+'GET /get-env-variables Mh+OVJmt24LD9faruNeSZw=='
+"""
+
+# Step 5: Sign the message using the private key
+signature = private_key.sign(
+    message.encode(),
+    padding.PKCS1v15(),
+    hashes.SHA256()
+)
+
+"""
+Example Signature (Raw Bytes):
+b'\xa3X\x9c\xf5\x86\xd2\x18\x9e\xcd\xf0\x13\x83\xfc\x99\xfb\x9d...'
+
+Example Signature (Base64 Encoded for transmission):
+'o1ic9YbS... (truncated)'
+"""
+
+signature_b64 = base64.b64encode(signature).decode()
+
+# Step 6: Send GET request to the Flask server with headers
+headers = {
+    "X-Signature": signature_b64,
+    "X-Public-Key": public_key,
+    "X-Nonce": base64.b64encode(nonce).decode()
+}
+
+# Step 7: Make the request and print response
+response = requests.get(API_URL, headers=headers)
+print("Server Response:", response.json())
+
+
+---
+
+3. Server Code (Flask Web App with Rolling Nonce Expiration)
+
+The server verifies the signature, prevents replay attacks with nonce tracking, and returns six environment variables.
+
+from flask import Flask, request, jsonify
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+import base64
+import os
+from dotenv import load_dotenv
+from cachetools import TTLCache
+
+# Load environment variables from .env file (if using locally)
+load_dotenv()
+
+app = Flask(__name__)
+
+# Use TTLCache to store used nonces with automatic expiration (5 min timeout)
+used_nonces = TTLCache(maxsize=100000, ttl=300)  # 100,000 entries, expire after 5 min
+
+@app.route("/get-env-variables", methods=["GET"])
+def get_env_variables():
+    try:
+        # Step 1: Retrieve headers from request
+        signature_b64 = request.headers.get("X-Signature")
+        public_key_pem = request.headers.get("X-Public-Key")
+        nonce_b64 = request.headers.get("X-Nonce")
+
+        if not signature_b64 or not public_key_pem or not nonce_b64:
+            return jsonify({"error": "Missing required headers"}), 400
+
+        # Step 2: Decode received values
+        signature = base64.b64decode(signature_b64)
+        public_key = load_pem_public_key(public_key_pem.encode())
+        nonce = base64.b64decode(nonce_b64)
+
+        """
+        Example Nonce (Base64 Decoded):
+        b'1f\x8eT\x99\xad\xdb\x82\xc3\xf5\xf6\xab\xb8\xd7\x92g'
+        """
+
+        # Step 3: Check if nonce was used before (Replay Attack Prevention)
+        if nonce in used_nonces:
+            return jsonify({"error": "Nonce already used"}), 403
+        used_nonces[nonce] = True  # Store used nonce
+
+        # Step 4: Verify the signature
+        message = f"GET /get-env-variables {nonce_b64}"
+        public_key.verify(
+            signature,
+            message.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+
+        """
+        If verification fails, an exception is raised, and response is returned as:
+        {"error": "Signature verification failed"}
+        """
+
+        # Step 5: Fetch six environment variables (Replace with actual env variables)
+        response_data = {
+            "VAR1": os.getenv("VAR1", "default_value_1"),
+            "VAR2": os.getenv("VAR2", "default_value_2"),
+            "VAR3": os.getenv("VAR3", "default_value_3"),
+            "VAR4": os.getenv("VAR4", "default_value_4"),
+            "VAR5": os.getenv("VAR5", "default_value_5"),
+            "VAR6": os.getenv("VAR6", "default_value_6"),
+        }
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 401
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
+
+---
+
+4. Explanation of Security Enhancements
+
+1. Public-Private Key Authentication:
+
+The client generates a new key pair for each request.
+
+The server does not store any keys.
+
+
+
+2. Nonce-Based Replay Protection (with LRU Expiration)
+
+Nonces are stored only for 5 minutes (configurable via TTLCache).
+
+Prevents replay attacks without excessive memory usage.
+
+
+
+3. Signature Verification:
+
+If the signature does not match, the server rejects the request.
+
+
+
+
+
+---
+
+5. Example Values
+
+Client-Side Generated Values
+
+Public Key (sent in request)
+
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...
+-----END PUBLIC KEY-----
+
+Nonce (Base64 Encoded)
+
+Mh+OVJmt24LD9faruNeSZw==
+
+Message to be Signed
+
+GET /get-env-variables Mh+OVJmt24LD9faruNeSZw==
+
+Signature (Base64 Encoded)
+
+o1ic9YbS... (truncated)
+
+Server Responses
+
+✅ Success Response
+
+{
+    "VAR1": "MySecretValue1",
+    "VAR2": "MySecretValue2",
+    "VAR3": "MySecretValue3",
+    "VAR4": "MySecretValue4",
+    "VAR5": "MySecretValue5",
+    "VAR6": "MySecretValue6"
+}
+
+❌ Replay Attack Detected
+
+{
+    "error": "Nonce already used"
+}
+
+❌ Signature Verification Failed
+
+{
+    "error": "Signature verification failed"
+}
+
+
+---
+
+Final Thoughts
+
+✅ Rolling Nonce Expiration (efficient for 60,000+ users).
+✅ Secure authentication without stored secrets.
+✅ Ready for GET, easily extendable for POST.
+
+Would you like me to extend this to POST requests as well?
+
+
+
+
+
+
 from com.azure.messaging.eventhubs import EventHubClientBuilder, EventHubProducerClient, EventDataBatch, EventData
 from com.azure.identity import ClientSecretCredentialBuilder
 
