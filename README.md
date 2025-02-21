@@ -1,4 +1,73 @@
+import redis
+import os
+import base64
+from fastapi import FastAPI, Request, HTTPException
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Initialize Redis connection
+redis_client = redis.Redis(host="your-redis-host", port=6379, db=0, decode_responses=True)
+
+@app.get("/get-env-variables")
+async def get_env_variables(request: Request):
+    try:
+        # Step 1: Retrieve headers from request
+        headers = request.headers
+        signature_b64 = headers.get("X-Signature")
+        public_key_pem = headers.get("X-Public-Key")
+        nonce_b64 = headers.get("X-Nonce")
+
+        if not signature_b64 or not public_key_pem or not nonce_b64:
+            raise HTTPException(status_code=400, detail="Missing required headers")
+
+        # Step 2: Decode received values
+        signature = base64.b64decode(signature_b64)
+        public_key = load_pem_public_key(public_key_pem.encode())
+        nonce = base64.b64decode(nonce_b64)
+
+        # Step 3: Check if nonce was used before (Replay Attack Prevention)
+        nonce_key = f"nonce:{nonce_b64}"  # Unique key for Redis
+        if redis_client.exists(nonce_key):
+            raise HTTPException(status_code=403, detail="Nonce already used")  # Reject replay attack
+
+        # Store nonce with expiration (300 seconds = 5 minutes)
+        redis_client.setex(nonce_key, 300, "1")  # Auto-delete after 5 minutes
+
+        # Step 4: Verify the signature
+        message = f"GET /get-env-variables {nonce_b64}"
+        public_key.verify(
+            signature,
+            message.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+
+        # Step 5: Fetch six environment variables
+        response_data = {
+            "VAR1": os.getenv("VAR1", "default_value_1"),
+            "VAR2": os.getenv("VAR2", "default_value_2"),
+            "VAR3": os.getenv("VAR3", "default_value_3"),
+            "VAR4": os.getenv("VAR4", "default_value_4"),
+            "VAR5": os.getenv("VAR5", "default_value_5"),
+            "VAR6": os.getenv("VAR6", "default_value_6"),
+        }
+
+        return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+# To run the FastAPI server, use the command:
+# uvicorn main:app --host 0.0.0.0 --port 5000
 
 
 
