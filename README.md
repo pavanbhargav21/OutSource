@@ -1,5 +1,43 @@
 🔹 Overview of the Authentication Approach
 
+
+import com.azure.messaging.eventhubs.*;
+import com.azure.identity.ClientSecretCredential;
+import com.azure.identity.ClientSecretCredentialBuilder;
+
+public class EventHubSender {
+    public static void main(String[] args) {
+        String tenantId = "YOUR_TENANT_ID";
+        String clientId = "YOUR_CLIENT_ID";
+        String clientSecret = "YOUR_CLIENT_SECRET";
+        String namespace = "YOUR_EVENT_HUB_NAMESPACE";
+        String eventHubName = "YOUR_EVENT_HUB_NAME";
+
+        ClientSecretCredential credential = new ClientSecretCredentialBuilder()
+            .tenantId(tenantId)
+            .clientId(clientId)
+            .clientSecret(clientSecret)
+            .build();
+
+        EventHubProducerClient producer = new EventHubClientBuilder()
+            .fullyQualifiedNamespace(namespace + ".servicebus.windows.net")
+            .eventHubName(eventHubName)
+            .credential(credential)
+            .buildProducerClient();
+
+        EventDataBatch batch = producer.createBatch();
+        batch.tryAdd(new EventData("Event from Java!"));
+        
+        producer.send(batch);
+        System.out.println("Event sent successfully!");
+
+        producer.close();
+    }
+}
+
+
+
+
 This approach combines asymmetric encryption (EDDSA), HMAC for integrity, and timestamp-based validation to authenticate API requests securely.
 
 🔹 Workflow Overview
