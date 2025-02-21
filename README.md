@@ -1,3 +1,250 @@
+🔹 Overview of the Authentication Approach
+
+This approach combines asymmetric encryption (EDDSA), HMAC for integrity, and timestamp-based validation to authenticate API requests securely.
+
+🔹 Workflow Overview
+
+1️⃣ Key Generation
+
+Public-Private Key Pair (EDDSA)
+
+Client: Stores the private key (private.pem).
+
+Server: Stores the public key (public.pem).
+
+
+Secret Key for HMAC (Shared Key)
+
+A 32-byte secret key is stored both on the client and server.
+
+This is used for HMAC-SHA256 signing to prevent request tampering.
+
+
+
+2️⃣ Client-Side Authentication
+
+The client constructs a secure request by:
+
+1. Using the Private Key (private.pem)
+
+Loads the private key.
+
+Uses EDDSA signing on the HMAC-based token.
+
+
+
+2. Generating an HMAC Token
+
+Uses HMAC-SHA256 with:
+
+Secret Key
+
+User ID (8-digit unique identifier)
+
+Timestamp (for replay protection)
+
+
+This generates a one-time signature.
+
+
+
+3. Sending the Request
+
+Sends the user ID, timestamp, HMAC token, and digital signature to the server.
+
+
+
+
+
+---
+
+3️⃣ Server-Side Authentication
+
+The server verifies the request:
+
+1. Public Key Verification (EDDSA)
+
+The server retrieves the client’s public key.
+
+Uses it to verify the signature in the request.
+
+
+
+2. Recomputing HMAC Token
+
+The server:
+
+Uses the same secret key.
+
+Recomputes the HMAC using the received user ID & timestamp.
+
+
+Compares it with the HMAC in the request.
+
+
+
+3. Validating Timestamp
+
+Ensures the timestamp is within an acceptable range (e.g., ±5 minutes).
+
+This prevents replay attacks.
+
+
+
+4. Final Authentication
+
+If HMAC & signature match, the request is authenticated.
+
+Otherwise, the request is rejected.
+
+
+
+
+
+---
+
+🔹 Security Aspects
+
+
+---
+
+🔹 Summary of Algorithms Used
+
+1. EDDSA (Ed25519)
+
+Used for digital signatures.
+
+Client signs requests with the private key.
+
+Server verifies signatures with the public key.
+
+
+
+2. HMAC-SHA256
+
+Ensures message integrity.
+
+Uses a shared secret key to generate a one-time HMAC token.
+
+
+
+3. Timestamp Validation
+
+Prevents replay attacks.
+
+Ensures requests are time-bound.
+
+
+
+
+
+---
+
+This approach provides strong authentication, ensuring:
+✅ Tamper-proof requests
+✅ No secret key exchange over the network
+✅ No need for user registration
+
+Let me know if you need code breakdowns! 🚀
+
+
+
+
+
+You can use Python to convert a PEM file into a Base64-encoded string and back.
+
+
+---
+
+🔹 Convert PEM File to Base64 String (Encoding)
+
+import base64
+
+def encode_pem_to_base64(pem_path):
+    with open(pem_path, "rb") as pem_file:
+        pem_content = pem_file.read()
+    base64_encoded = base64.b64encode(pem_content).decode("utf-8")
+    return base64_encoded
+
+# Example usage
+pem_path = "private_key.pem"
+base64_pem = encode_pem_to_base64(pem_path)
+print("Base64 Encoded PEM:\n", base64_pem)
+
+
+---
+
+🔹 Convert Base64 String Back to PEM File (Decoding)
+
+def decode_base64_to_pem(base64_string, output_path):
+    pem_content = base64.b64decode(base64_string.encode("utf-8"))
+    with open(output_path, "wb") as pem_file:
+        pem_file.write(pem_content)
+
+# Example usage
+output_pem_path = "restored_private_key.pem"
+decode_base64_to_pem(base64_pem, output_pem_path)
+print("PEM file restored successfully!")
+
+
+---
+
+🔹 Why Use Base64 Encoding?
+
+✅ Preserves the multi-line format of the PEM file
+✅ Makes it easy to store in Azure Key Vault, environment variables, or databases
+✅ Helps prevent formatting issues when pasting
+
+
+---
+
+🔹 How to Use This in Azure Key Vault?
+
+1. Use encode_pem_to_base64() before storing in Key Vault.
+
+
+2. Retrieve it in FastAPI and use decode_base64_to_pem() to restore the key.
+
+
+
+Would you like me to integrate this directly into your FastAPI authentication flow? 🚀
+
+
+
+
+
+
+import base64
+import os
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+# Configure Azure Key Vault details
+KEY_VAULT_NAME = "your-key-vault-name"
+KV_URL = f"https://{KEY_VAULT_NAME}.vault.azure.net"
+
+# Authenticate using Managed Identity (or use Client ID/Secret)
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=KV_URL, credential=credential)
+
+# Retrieve the secret from Key Vault
+secret = client.get_secret("PRIVATE_KEY")
+
+# Decode Base64 to restore PEM format
+pem_content = base64.b64decode(secret.value).decode("utf-8")
+
+# Save to a temporary file (Optional, if required for libraries)
+pem_file_path = "/tmp/private_key.pem"
+with open(pem_file_path, "w") as f:
+    f.write(pem_content)
+
+print("Private key successfully retrieved from Key Vault!")
+
+
+
+
+
+
 
 🔹 Overview of the Authentication Approach
 
