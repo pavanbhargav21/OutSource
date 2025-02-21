@@ -1,3 +1,20 @@
+
+ncrypt.NCryptOpenKey.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong]
+
+# Open the stored TPM key
+retrieved_key_handle = ctypes.c_void_p()
+status = ncrypt.NCryptOpenKey(provider_handle, ctypes.byref(retrieved_key_handle), key_name, 0, 0)
+
+if status != 0:
+    raise RuntimeError(f"Failed to retrieve TPM key: {status}")
+
+print(f"Key '{key_name}' retrieved from TPM successfully!")
+
+
+
+
+
+
 import ctypes
 import ctypes.wintypes
 
