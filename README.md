@@ -1,4 +1,162 @@
 
+🔹 Overview of the Authentication Approach
+
+This approach combines asymmetric encryption (EDDSA), HMAC for integrity, and timestamp-based validation to authenticate API requests securely.
+
+🔹 Workflow Overview
+
+1️⃣ Key Generation
+
+Public-Private Key Pair (EDDSA)
+
+Client: Stores the private key (private.pem).
+
+Server: Stores the public key (public.pem).
+
+
+Secret Key for HMAC (Shared Key)
+
+A 32-byte secret key is stored both on the client and server.
+
+This is used for HMAC-SHA256 signing to prevent request tampering.
+
+
+
+2️⃣ Client-Side Authentication
+
+The client constructs a secure request by:
+
+1. Using the Private Key (private.pem)
+
+Loads the private key.
+
+Uses EDDSA signing on the HMAC-based token.
+
+
+
+2. Generating an HMAC Token
+
+Uses HMAC-SHA256 with:
+
+Secret Key
+
+User ID (8-digit unique identifier)
+
+Timestamp (for replay protection)
+
+
+This generates a one-time signature.
+
+
+
+3. Sending the Request
+
+Sends the user ID, timestamp, HMAC token, and digital signature to the server.
+
+
+
+
+
+---
+
+3️⃣ Server-Side Authentication
+
+The server verifies the request:
+
+1. Public Key Verification (EDDSA)
+
+The server retrieves the client’s public key.
+
+Uses it to verify the signature in the request.
+
+
+
+2. Recomputing HMAC Token
+
+The server:
+
+Uses the same secret key.
+
+Recomputes the HMAC using the received user ID & timestamp.
+
+
+Compares it with the HMAC in the request.
+
+
+
+3. Validating Timestamp
+
+Ensures the timestamp is within an acceptable range (e.g., ±5 minutes).
+
+This prevents replay attacks.
+
+
+
+4. Final Authentication
+
+If HMAC & signature match, the request is authenticated.
+
+Otherwise, the request is rejected.
+
+
+
+
+
+---
+
+🔹 Security Aspects
+
+
+---
+
+🔹 Summary of Algorithms Used
+
+1. EDDSA (Ed25519)
+
+Used for digital signatures.
+
+Client signs requests with the private key.
+
+Server verifies signatures with the public key.
+
+
+
+2. HMAC-SHA256
+
+Ensures message integrity.
+
+Uses a shared secret key to generate a one-time HMAC token.
+
+
+
+3. Timestamp Validation
+
+Prevents replay attacks.
+
+Ensures requests are time-bound.
+
+
+
+
+
+---
+
+This approach provides strong authentication, ensuring:
+✅ Tamper-proof requests
+✅ No secret key exchange over the network
+✅ No need for user registration
+
+Let me know if you need code breakdowns! 🚀
+
+
+
+
+
+
+
+
+
+
 Step 1: Generate Public-Private Key Pair (EDDSA - Ed25519)
 
 Run this script once to create a key pair.
