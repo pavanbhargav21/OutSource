@@ -1,5 +1,52 @@
 
 
+import logging
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
+import pytz
+from app.routes import employee_shift  # Ensure correct import path
+
+# Configure Logging
+logging.basicConfig(
+    filename="/home/site/wwwroot/scheduler.log",  
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
+# Set timezone
+IST = pytz.timezone("Asia/Kolkata")
+
+# Initialize Scheduler
+scheduler = BackgroundScheduler(timezone=IST)
+
+def start_scheduler():
+    """Starts the APScheduler to run the copy task every Monday at 12:01 AM IST"""
+    logging.info("Scheduler Initialized: Will run copy_previous_week_efforts as planned")
+
+    scheduler.add_job(
+        employee_shift.copy_previous_week_efforts,
+        'cron',
+        day_of_week="mon",
+        hour=12,  # 12:01 AM IST
+        minute=1,
+        misfire_grace_time=3600  # 1 hour grace time
+    )
+
+    scheduler.start()
+    logging.info("Scheduler started: Running copy_previous_week_efforts every Monday at 12:01 AM IST")
+
+if __name__ == '__main__':
+    start_scheduler()
+
+    # Keep the script running
+    while True:
+        time.sleep(60)  # Prevents script from exiting
+
+
+
+
+
+
 Got it! You have a 32-byte secret key that you want to store securely in the TPM and later use in your Python code. Since TPM does not allow direct retrieval of stored secrets, you need to:
 
 1. Store the 32-byte key securely in TPM.
