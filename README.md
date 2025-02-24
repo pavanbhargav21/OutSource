@@ -1,4 +1,62 @@
 
+import com.azure.messaging.eventhubs.*;
+import com.azure.identity.ClientSecretCredential;
+import com.azure.identity.ClientSecretCredentialBuilder;
+import com.azure.core.util.BinaryData;
+import java.util.Arrays;
+import java.util.List;
+
+public class EventHubJsonSender {
+    public static void main(String[] args) {
+        // Replace with your values
+        String tenantId = "YOUR_TENANT_ID";
+        String clientId = "YOUR_CLIENT_ID";
+        String clientSecret = "YOUR_CLIENT_SECRET";
+        String namespace = "YOUR_EVENT_HUB_NAMESPACE";
+        String eventHubName = "YOUR_EVENT_HUB_NAME";
+        String partitionKey = "my-partition-key";  // Partition key for routing
+
+        // Create credential
+        ClientSecretCredential credential = new ClientSecretCredentialBuilder()
+            .tenantId(tenantId)
+            .clientId(clientId)
+            .clientSecret(clientSecret)
+            .build();
+
+        // Create producer client
+        EventHubProducerClient producer = new EventHubClientBuilder()
+            .fullyQualifiedNamespace(namespace + ".servicebus.windows.net")
+            .eventHubName(eventHubName)
+            .credential(credential)
+            .buildProducerClient();
+
+        // List of JSON messages
+        List<String> jsonMessages = Arrays.asList(
+            "{\"id\": 1, \"message\": \"Hello Event Hub\"}",
+            "{\"id\": 2, \"message\": \"Another JSON Event\"}"
+        );
+
+        // Create batch with partition key
+        CreateBatchOptions options = new CreateBatchOptions().setPartitionKey(partitionKey);
+        EventDataBatch batch = producer.createBatch(options);
+
+        for (String json : jsonMessages) {
+            batch.tryAdd(new EventData(BinaryData.fromString(json)));
+        }
+
+        // Send batch
+        producer.send(batch);
+        System.out.println("JSON events sent successfully with partition key: " + partitionKey);
+
+        // Close producer
+        producer.close();
+    }
+}
+
+
+
+
+
 
 import logging
 import time
