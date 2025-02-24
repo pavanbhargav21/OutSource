@@ -1,4 +1,51 @@
 
+import threading
+import time
+import logging
+from app.routes.employeeshift import copy_previous_week_efforts
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Global lock to prevent multiple executions
+task_lock = threading.Lock()
+scheduler_thread = None
+
+def start_scheduler():
+    global scheduler_thread
+    if scheduler_thread and scheduler_thread.is_alive():
+        logging.warning("Scheduler is already running. Another instance will not start.")
+        return  # Prevent duplicate execution
+
+    logging.info("Starting scheduler thread...")
+    scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
+    scheduler_thread.start()
+
+def scheduler_loop():
+    while True:
+        # Wait until Monday 12 PM (for example)
+        if time.strftime("%A") == "Monday" and time.strftime("%H:%M") == "12":
+            logging.info("Scheduler triggered: Running copy_previous_week_efforts...")
+            run_copy_previous_week_efforts()
+        time.sleep(60)  # Check every 60 seconds to avoid high CPU usage
+
+def run_copy_previous_week_efforts():
+    if task_lock.locked():
+        logging.warning("Task is already running, skipping this execution.")
+        return  # Prevent running twice
+
+    with task_lock:  # Ensure only one execution at a time
+        try:
+            logging.info("Executing copy_previous_week_efforts...")
+            copy_previous_week_efforts()
+            logging.info("Task completed successfully.")
+        except Exception as e:
+            logging.error(f"Error in copy_previous_week_efforts: {e}", exc_info=True)
+
+
+
+
+
 
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
