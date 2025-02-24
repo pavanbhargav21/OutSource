@@ -1,4 +1,78 @@
 
+
+from datetime import datetime, timedelta
+from flask import Flask, jsonify
+from flask_restful import Resource, Api
+from your_database_module import session_scope, EmployeeShiftInfo  # Update with actual module import
+import logging
+
+logger = logging.getLogger(__name__)
+
+class CopyScheduler(Resource):
+    def get(self):
+        """ Get shift details for the last and current week """
+        with session_scope("DESIGNER") as session:
+            today = datetime.today()
+
+            # Calculate week start and end dates
+            last_monday = today - timedelta(days=today.weekday() + 7)
+            last_sunday = last_monday + timedelta(days=6)
+            current_monday = last_sunday + timedelta(days=1)
+            current_sunday = current_monday + timedelta(days=6)
+
+            logger.info(f"Fetching shifts from {last_monday} - {last_sunday} and {current_monday} - {current_sunday}")
+
+            # Get distinct employee IDs
+            employees = session.query(EmployeeShiftInfo.emp_id).distinct().all()
+            employee_ids = [emp.emp_id for emp in employees]
+
+            # Fetch all shifts for last and current week
+            last_week_shifts = session.query(EmployeeShiftInfo).filter(
+                EmployeeShiftInfo.emp_id.in_(employee_ids),
+                EmployeeShiftInfo.shift_date.between(last_monday, last_sunday)
+            ).all()
+
+            current_week_shifts = session.query(EmployeeShiftInfo).filter(
+                EmployeeShiftInfo.emp_id.in_(employee_ids),
+                EmployeeShiftInfo.shift_date.between(current_monday, current_sunday)
+            ).all()
+
+            # Map shifts
+            last_week_shift_map = {(shift.emp_id, shift.shift_date): shift for shift in last_week_shifts}
+            current_week_shift_dates = {(shift.emp_id, shift.shift_date) for shift in current_week_shifts}
+
+            # Categorize employees into three groups
+            current_week_present = []
+            current_week_missing = []
+            last_week_missing = []
+
+            for emp_id in employee_ids:
+                for i in range(7):  # Iterate through each day of the current week
+                    shift_date = current_monday + timedelta(days=i)
+                    prev_shift_date = shift_date - timedelta(days=7)
+
+                    if (emp_id, shift_date) in current_week_shift_dates:
+                        current_week_present.append({"emp_id": emp_id, "shift_date": str(shift_date)})
+                    elif (emp_id, prev_shift_date) in last_week_shift_map:
+                        current_week_missing.append({"emp_id": emp_id, "shift_date": str(shift_date)})
+                    else:
+                        last_week_missing.append({"emp_id": emp_id, "shift_date": str(prev_shift_date)})
+
+            response = {
+                "current_week_present": current_week_present,
+                "current_week_missing": current_week_missing,
+                "last_week_missing": last_week_missing
+            }
+
+            return jsonify(response)
+
+
+
+
+
+
+
+
 import com.azure.messaging.eventhubs.*;
 import com.azure.identity.ClientSecretCredential;
 import com.azure.identity.ClientSecretCredentialBuilder;
