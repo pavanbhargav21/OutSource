@@ -1,4 +1,38 @@
 
+import multiprocessing
+import time
+import logging
+from app.routes.employeeshift import copy_previous_week_efforts
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+def scheduler_loop():
+    """Scheduler loop that runs every Tuesday at 10:00 AM."""
+    while True:
+        current_time = time.strftime("%A %H:%M")  # Example: "Tuesday 10:00"
+        if current_time == "Tuesday 10:00":
+            logging.info("Scheduler triggered: Running copy_previous_week_efforts...")
+            run_copy_previous_week_efforts()
+        time.sleep(60)  # Check every 60 seconds
+
+def run_copy_previous_week_efforts():
+    try:
+        logging.info("Executing copy_previous_week_efforts...")
+        copy_previous_week_efforts()
+        logging.info("Task completed successfully.")
+    except Exception as e:
+        logging.error(f"Error in copy_previous_week_efforts: {e}", exc_info=True)
+
+def start_scheduler():
+    """Start the scheduler in a separate process."""
+    scheduler_process = multiprocessing.Process(target=scheduler_loop, daemon=True)
+    scheduler_process.start()
+    logging.info("Scheduler process started.")
+
+
+
+
 import threading
 import time
 import logging
