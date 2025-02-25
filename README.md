@@ -1,4 +1,78 @@
 
+import threading
+import time
+import logging
+import os
+from app.routes.employeeshift import copy_previous_week_efforts
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Global lock for thread safety
+task_lock = threading.Lock()
+scheduler_thread = None
+
+# File lock to ensure only one process executes the task
+lock_file = "/tmp/scheduler.lock"
+
+def is_scheduler_running():
+    """Check if the scheduler is already running by checking the lock file."""
+    return os.path.exists(lock_file)
+
+def set_scheduler_running():
+    """Create a lock file to indicate the scheduler is running."""
+    open(lock_file, 'w').close()
+
+def clear_scheduler_running():
+    """Remove the lock file after execution."""
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
+
+def start_scheduler():
+    """Starts the scheduler thread if it's not already running."""
+    global scheduler_thread
+    if scheduler_thread and scheduler_thread.is_alive():
+        logging.warning("Scheduler is already running. Another instance will not start.")
+        return  # Prevent duplicate execution
+
+    logging.info("Starting scheduler thread...")
+    scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
+    scheduler_thread.start()
+
+def scheduler_loop():
+    """Scheduler runs every minute and checks if it's time to execute the task."""
+    while True:
+        current_time = time.strftime("%A %H:%M")  # Example: "Monday 00:04"
+        if current_time == "Monday 00:04":
+            logging.info("Scheduler triggered: Running copy_previous_week_efforts...")
+            run_copy_previous_week_efforts()
+        time.sleep(60)  # Check every 60 seconds
+
+def run_copy_previous_week_efforts():
+    """Executes the task with file lock and threading lock."""
+    if is_scheduler_running():
+        logging.warning("Task is already running in another process, skipping this execution.")
+        return  # Prevent duplicate execution across processes
+
+    if task_lock.locked():
+        logging.warning("Task is already running in this process, skipping execution.")
+        return  # Prevent duplicate execution in the same process
+
+    with task_lock:  # Ensure only one execution at a time within the process
+        try:
+            set_scheduler_running()  # Create a lock file
+            logging.info("Executing copy_previous_week_efforts...")
+            copy_previous_week_efforts()
+            logging.info("Task completed successfully.")
+        except Exception as e:
+            logging.error(f"Error in copy_previous_week_efforts: {e}", exc_info=True)
+        finally:
+            clear_scheduler_running()  # Remove the lock file after execution
+
+
+
+
+
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from flask_restful import Resource, Api
