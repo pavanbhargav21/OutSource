@@ -1,3 +1,43 @@
+import requests
+import jwt
+import json
+from datetime import datetime
+
+# API endpoint URL
+API_URL = "http://your-flask-api-host/copy-scheduler"  # Update with actual API URL
+
+# JWT Secret Key (must match the one in your Flask app)
+SECRET_KEY = "your_jwt_secret_key"
+
+def generate_token():
+    """Generates a JWT token with a 'purpose' claim."""
+    payload = {"purpose": "databricks-job"}  # No expiration needed
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return token
+
+def trigger_shift_copy():
+    """Calls the CopyScheduler endpoint with JWT authentication."""
+    try:
+        token = generate_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        response = requests.post(API_URL, json={}, headers=headers)
+        response_data = response.json()
+
+        if response.status_code == 200:
+            print(f"[{datetime.now()}] Shift copy successful: {response_data}")
+        else:
+            print(f"[{datetime.now()}] Shift copy failed: {response_data}")
+
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calling API: {str(e)}")
+
+# Trigger the API call
+trigger_shift_copy()
+
+
+
+
 
 Got it! Since you can't use OAuth 2.0 with token exchange but still want security, you can implement a simple JWT-based authentication using a JWT secret key. Here's the plan:
 
