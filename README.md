@@ -1,4 +1,122 @@
 
+Got it! Since you can't use OAuth 2.0 with token exchange but still want security, you can implement a simple JWT-based authentication using a JWT secret key. Here's the plan:
+
+
+---
+
+🔒 Steps to Secure the Endpoint with a JWT Secret
+
+1. The client (Databricks job) must include a token in the request header.
+
+
+2. The server will verify the token before processing the request.
+
+
+3. If the token is missing or incorrect, reject the request with a 403 Forbidden.
+
+
+4. The JWT will be signed using a shared secret key (no need for token exchange).
+
+
+
+
+---
+
+✅ Implementation: Add JWT Token Verification
+
+1️⃣ Generate the Token (Run this once and store it securely)
+
+Use the following script to generate a JWT token with your secret:
+
+import jwt
+import datetime
+
+SECRET_KEY = "your_jwt_secret_key"  # Change this to a strong secret key
+
+payload = {
+    "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7),  # Expiration (Optional)
+    "purpose": "databricks-job"
+}
+
+token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+print(f"Generated Token: {token}")
+
+✅ Store this token securely and use it in the Databricks job request.
+
+
+---
+
+2️⃣ Modify Your Endpoint to Verify the Token
+
+Update the post() function in CopyScheduler:
+
+import jwt
+from flask import request
+
+SECRET_KEY = "your_jwt_secret_key"  # Use the same secret key as above
+
+class CopyScheduler(Resource):
+    def post(self):
+        """ API endpoint to copy previous week's shift data to the current week with JWT authentication. """
+        auth_header = request.headers.get("Authorization")
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Unauthorized", "status": "failure"}), 403
+
+        token = auth_header.split("Bearer ")[1]
+
+        try:
+            # Decode and verify the JWT token
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            
+            # Optional: Check if token has the correct purpose
+            if payload.get("purpose") != "databricks-job":
+                return jsonify({"error": "Invalid token purpose", "status": "failure"}), 403
+
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token expired", "status": "failure"}), 403
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid token", "status": "failure"}), 403
+
+        # 🔽 Proceed with shift copying logic here 🔽
+        return jsonify({"message": "Success", "status": "success"}), 200
+
+
+---
+
+📌 How to Use the Token in Databricks
+
+When calling the endpoint in your Databricks job, include the token in the Authorization header:
+
+import requests
+
+API_URL = "https://your-api-url/copy-scheduler"
+TOKEN = "your_generated_token"
+
+headers = {
+    "Authorization": f"Bearer {TOKEN}"
+}
+
+response = requests.post(API_URL, headers=headers)
+
+print(response.json())  # Check response
+
+
+---
+
+🔍 Why This Works for Your Use Case
+
+✅ No token exchange – The same secret key is used for signing & verification.
+✅ Simple & Secure – If someone hits the endpoint without the correct token, access is denied.
+✅ Prevents accidental execution – Only the Databricks job with the token can call it.
+
+Let me know if you need modifications!
+
+
+
+
+
+
 
 Here's a MySQL stored procedure that replicates the logic of your Python function. It copies shift data from the previous week to the current week, ensuring that existing shifts in the current week are not duplicated.
 
