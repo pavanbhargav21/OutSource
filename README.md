@@ -1,5 +1,117 @@
 
 
+Here's a MySQL stored procedure that replicates the logic of your Python function. It copies shift data from the previous week to the current week, ensuring that existing shifts in the current week are not duplicated.
+
+
+---
+
+Stored Procedure: Copy Previous Week’s Shifts
+
+DELIMITER $$
+
+CREATE PROCEDURE CopyPreviousWeekShifts()
+BEGIN
+    DECLARE last_monday DATE;
+    DECLARE last_sunday DATE;
+    DECLARE current_monday DATE;
+    DECLARE current_sunday DATE;
+    
+    -- Calculate date ranges
+    SET last_monday = DATE_SUB(CURDATE(), INTERVAL (WEEKDAY(CURDATE()) + 7) DAY);
+    SET last_sunday = DATE_ADD(last_monday, INTERVAL 6 DAY);
+    SET current_monday = DATE_ADD(last_sunday, INTERVAL 1 DAY);
+    SET current_sunday = DATE_ADD(current_monday, INTERVAL 6 DAY);
+    
+    -- Temporary table to store shifts that need to be copied
+    CREATE TEMPORARY TABLE TempShifts AS
+    SELECT 
+        emp_id, 
+        DATE_ADD(shift_date, INTERVAL 7 DAY) AS new_shift_date,
+        WEEKDAY(DATE_ADD(shift_date, INTERVAL 7 DAY)) AS new_day_id,
+        start_time,
+        end_time,
+        is_week_off,
+        emp_contracted_hours,
+        emp_night_shift_flag
+    FROM EmployeeShiftInfo
+    WHERE shift_date BETWEEN last_monday AND last_sunday;
+
+    -- Remove shifts that already exist in the current week
+    DELETE FROM TempShifts
+    WHERE (emp_id, new_shift_date) IN (
+        SELECT emp_id, shift_date FROM EmployeeShiftInfo 
+        WHERE shift_date BETWEEN current_monday AND current_sunday
+    );
+
+    -- Insert new shifts into EmployeeShiftInfo
+    INSERT INTO EmployeeShiftInfo (emp_id, shift_date, day_id, start_time, end_time, is_week_off, emp_contracted_hours, emp_night_shift_flag)
+    SELECT emp_id, new_shift_date, new_day_id, start_time, end_time, is_week_off, emp_contracted_hours, emp_night_shift_flag
+    FROM TempShifts;
+
+    -- Clean up temporary table
+    DROP TEMPORARY TABLE IF EXISTS TempShifts;
+END $$
+
+DELIMITER ;
+
+
+---
+
+How to Execute the Procedure
+
+CALL CopyPreviousWeekShifts();
+
+
+---
+
+How This Works
+
+1. Calculates Date Ranges
+
+last_monday to last_sunday → Previous week.
+
+current_monday to current_sunday → Current week.
+
+
+
+2. Copies Last Week’s Shifts
+
+Shifts from EmployeeShiftInfo are duplicated with a new shift date (+7 days).
+
+
+
+3. Prevents Duplicate Entries
+
+If a shift already exists in the current week, it is removed before insertion.
+
+
+
+4. Inserts Missing Shifts
+
+Adds only new shifts to EmployeeShiftInfo.
+
+
+
+
+
+---
+
+Next Steps
+
+Schedule the procedure using Azure Logic Apps, Data Factory, or a cron job.
+
+Manually run it whenever needed via CALL CopyPreviousWeekShifts();
+
+
+Would you like additional handling, such as default values for new shifts (e.g., weekends off)?
+
+
+
+
+
+
+
+
 from datetime import datetime, timedelta from your_database_module import session_scope, EmployeeShiftInfo  # Update with actual module import logging
 
 logger = logging.getLogger(name)
