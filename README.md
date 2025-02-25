@@ -1,4 +1,98 @@
 
+
+from datetime import datetime, timedelta from your_database_module import session_scope, EmployeeShiftInfo  # Update with actual module import logging
+
+logger = logging.getLogger(name)
+
+def copy_previous_week_efforts(): """ Copies last week's efforts to the current week for all employees. """ with session_scope("DESIGNER") as session: today = datetime.today()
+
+Calculate dates
+
+last_monday = today - timedelta(days=today.weekday() + 7)  # Last Monday  
+last_sunday = last_monday + timedelta(days=6)  # Last Sunday  
+current_monday = last_sunday + timedelta(days=1)  # Current Monday  
+current_sunday = current_monday + timedelta(days=6)  # Current Sunday  
+  
+logger.info(f"Copying shifts from {last_monday} - {last_sunday} to {current_monday} - {current_sunday}")  
+  
+# Get distinct employee IDs from EmployeeShiftInfo table  
+employees = session.query(EmployeeShiftInfo.emp_id).distinct().all()  
+employee_ids = [emp.emp_id for emp in employees]  
+  
+# Fetch all shifts for the last week  
+last_week_shifts = session.query(EmployeeShiftInfo).filter(  
+    EmployeeShiftInfo.emp_id.in_(employee_ids),  
+    EmployeeShiftInfo.shift_date.between(last_monday, last_sunday)  
+).all()  
+  
+# Fetch all shifts for the current week  
+current_week_shifts = session.query(EmployeeShiftInfo).filter(  
+    EmployeeShiftInfo.emp_id.in_(employee_ids),  
+    EmployeeShiftInfo.shift_date.between(current_monday, current_sunday)  
+).all()  
+  
+# Use dictionaries for quick lookups  
+last_week_shift_map = {(shift.emp_id, shift.shift_date): shift for shift in last_week_shifts}  
+current_week_shift_dates = {(shift.emp_id, shift.shift_date) for shift in current_week_shifts}  
+  
+batch_insert = []  
+time_format = "%H:%M:%S"  
+default_start_time = "09:00:00"  
+default_end_time = "17:00:00"  
+  
+for emp_id in employee_ids:  
+    for i in range(7):  # Loop through 7 days of the current week  
+        new_shift_date = current_monday + timedelta(days=i)  
+          
+        # Skip if shift already exists  
+        if (emp_id, new_shift_date) in current_week_shift_dates:  
+            continue  
+          
+        # Copy shift from last week if it exists, otherwise assign defaults  
+        prev_shift_date = new_shift_date - timedelta(days=7)  
+        prev_shift = last_week_shift_map.get((emp_id, prev_shift_date))  
+          
+        if prev_shift:  
+            start_time = prev_shift.start_time.strftime(time_format)  
+            end_time = prev_shift.end_time.strftime(time_format)  
+            is_week_off = prev_shift.is_week_off  
+            contracted_hrs = prev_shift.emp_contracted_hours  
+            is_night_shift = prev_shift.emp_night_shift_flag  
+        else:  
+            start_time = default_start_time  
+            end_time = default_end_time  
+            is_week_off = "N"  
+            contracted_hrs = 8.0  # Default contracted hours  
+            is_night_shift = "N"  
+          
+        batch_insert.append(EmployeeShiftInfo(  
+            emp_id=emp_id,  
+            shift_date=new_shift_date,  
+            day_id=new_shift_date.weekday(),  
+            start_time=start_time,  
+            end_time=end_time,  
+            is_week_off=is_week_off,  
+            emp_contracted_hours=contracted_hrs,  
+            emp_night_shift_flag=is_night_shift  
+        ))  
+  
+# Bulk insert only if there are new shifts to add  
+if batch_insert:  
+    session.bulk_save_objects(batch_insert)  
+    session.commit()  
+    logger.info(f"{len(batch_insert)} shift records inserted.")  
+else:  
+    logger.info("No new shifts to insert.")
+
+In the above code, I want to write it as a GET, I mean I'll want it in a new class called copy scheduler, and I want the data in the GET function, where I'll get all the last week shift info and current week shift dates right, so I want to check the current week shift info and last week shift info based on employee and then the respective shift date, and I want it to meaningful recent response just to verify what's happening, and all along with that I'll be, I mean if you see I have batch insert at up and right, so where bulk insertion I'll do, so I don't want any insertion, but instead I want to check that also the respective details, I mean here it will be objects, but I don't want it as objects, instead I want to see the going to commit in JSON response, so give me such GET function
+
+
+
+
+
+
+
+
 import multiprocessing
 import time
 import logging
