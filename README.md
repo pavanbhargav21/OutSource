@@ -1,3 +1,37 @@
+with session_scope("DESIGNER") as session:
+    today = datetime.today()
+    
+    # Date calculations
+    last_monday = (today - timedelta(days=today.weekday() + 7)).date()
+    last_sunday = (last_monday + timedelta(days=6)).date()
+    current_monday = (last_sunday + timedelta(days=1)).date()
+    current_sunday = (current_monday + timedelta(days=6)).date()
+    
+    logger.info(f"Copying shifts from {last_monday} - {last_sunday} to {current_monday} - {current_sunday}")
+
+    # Single Query to fetch all employees under managers of distinct employees in EmployeeShiftInfo
+    final_employee_ids = session.query(EmployeeInfo.EMPLID).filter(
+        EmployeeInfo.manager_id.in_(
+            session.query(EmployeeInfo.manager_id)
+            .filter(EmployeeInfo.EMPLID.in_(
+                session.query(EmployeeShiftInfo.EMPLID).distinct()
+            ))
+        ),
+        EmployeeInfo.termination_date.is_(None)  # Only active employees
+    ).distinct().all()
+
+    final_employee_ids = [emp.EMPLID for emp in final_employee_ids]
+
+    if not final_employee_ids:
+        return jsonify({"message": "No active employees found under managers", "status": "no_changes"}), 200
+
+    logger.info(f"Found {len(final_employee_ids)} employees under the identified managers.")
+
+    return jsonify({"active_employees": final_employee_ids}), 200
+
+
+
+
 import requests
 import jwt
 import json
