@@ -1,4 +1,66 @@
 
+WITH FilteredData AS (
+    SELECT 
+        EMP_ID,
+        SHIFT_DATE,
+        
+        -- Convert START_TIME to Decimal Hours
+        COALESCE(
+            HOUR(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) + 
+            (MINUTE(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+            (SECOND(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 3600.0),
+            0
+        ) AS START_TIME_DEC,
+
+        -- Convert END_TIME to Decimal Hours
+        COALESCE(
+            HOUR(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) + 
+            (MINUTE(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+            (SECOND(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 3600.0),
+            0
+        ) AS END_TIME_DEC,
+
+        -- Consider only non-null EMP_LOGIN_TIME values
+        CASE 
+            WHEN EMP_LOGIN_TIME IS NOT NULL 
+            THEN HOUR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) + 
+                 (MINUTE(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+                 (SECOND(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 3600.0)
+        END AS LOGIN_TIME_DEC,
+
+        -- Consider only non-null EMP_LOGOUT_TIME values
+        CASE 
+            WHEN EMP_LOGOUT_TIME IS NOT NULL 
+            THEN HOUR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) + 
+                 (MINUTE(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+                 (SECOND(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 3600.0)
+        END AS LOGOUT_TIME_DEC
+
+    FROM employee_attendance
+    WHERE EMP_ID IN ({emp_ids})
+    AND SHIFT_DATE BETWEEN '{start_date}' AND '{end_date}'
+)
+SELECT 
+    EMP_ID,
+    COUNT(SHIFT_DATE) AS TOTAL_SHIFT_DAYS,
+    SUM(START_TIME_DEC) / NULLIF(COUNT(SHIFT_DATE), 0) AS AVG_START_TIME,
+    SUM(END_TIME_DEC) / NULLIF(COUNT(SHIFT_DATE), 0) AS AVG_END_TIME,
+    
+    -- Consider only non-null LOGIN_TIME_DEC values for the average
+    SUM(LOGIN_TIME_DEC) / NULLIF(COUNT(LOGIN_TIME_DEC), 0) AS AVG_LOGIN_TIME,
+
+    -- Consider only non-null LOGOUT_TIME_DEC values for the average
+    SUM(LOGOUT_TIME_DEC) / NULLIF(COUNT(LOGOUT_TIME_DEC), 0) AS AVG_LOGOUT_TIME
+
+FROM FilteredData
+GROUP BY EMP_ID
+ORDER BY EMP_ID;
+
+
+
+
+
+
 
 WITH FilteredData AS (
     SELECT 
