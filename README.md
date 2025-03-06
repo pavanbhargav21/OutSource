@@ -1,4 +1,32 @@
 
+SELECT 
+    EMP_ID, 
+    EMP_CONTRACTED_HOURS,
+
+    ROUND(HOUR(TO_TIMESTAMP(START_TIME, 'yyyy:MM:dd HH:mm:ss')) + 
+          MINUTE(TO_TIMESTAMP(START_TIME, 'yyyy:MM:dd HH:mm:ss')) / 60.0 + 
+          SECOND(TO_TIMESTAMP(START_TIME, 'yyyy:MM:dd HH:mm:ss')) / 3600.0, 2) AS START_TIME_DECIMAL,
+
+    ROUND(HOUR(TO_TIMESTAMP(END_TIME, 'yyyy:MM:dd HH:mm:ss')) + 
+          MINUTE(TO_TIMESTAMP(END_TIME, 'yyyy:MM:dd HH:mm:ss')) / 60.0 + 
+          SECOND(TO_TIMESTAMP(END_TIME, 'yyyy:MM:dd HH:mm:ss')) / 3600.0, 2) AS END_TIME_DECIMAL,
+
+    ROUND(HOUR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'yyyy:MM:dd HH:mm:ss')) + 
+          MINUTE(TO_TIMESTAMP(EMP_LOGIN_TIME, 'yyyy:MM:dd HH:mm:ss')) / 60.0 + 
+          SECOND(TO_TIMESTAMP(EMP_LOGIN_TIME, 'yyyy:MM:dd HH:mm:ss')) / 3600.0, 2) AS EMP_LOGIN_TIME_DECIMAL,
+
+    ROUND(HOUR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'yyyy:MM:dd HH:mm:ss')) + 
+          MINUTE(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'yyyy:MM:dd HH:mm:ss')) / 60.0 + 
+          SECOND(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'yyyy:MM:dd HH:mm:ss')) / 3600.0, 2) AS EMP_LOGOUT_TIME_DECIMAL,
+
+    SHIFT_DATE
+
+FROM strace.emploginlogout;
+
+
+
+
+
 You're right! If we round the values at the Databricks end, it reduces the processing load on Python, making it more efficient. Here’s the updated Databricks query with final rounding so Python only needs to add the Employee Name from HRDict:
 
 
