@@ -1,3 +1,105 @@
+
+You're right! If we round the values at the Databricks end, it reduces the processing load on Python, making it more efficient. Here’s the updated Databricks query with final rounding so Python only needs to add the Employee Name from HRDict:
+
+
+---
+
+Optimized Databricks Query (With Rounding at DB Level)
+
+SELECT 
+    EMP_ID, 
+    EMP_CONTRACTED_HOURS,
+    ROUND(HOUR(START_TIME) + MINUTE(START_TIME) / 60.0 + SECOND(START_TIME) / 3600.0, 2) AS START_TIME_DECIMAL,
+    ROUND(HOUR(END_TIME) + MINUTE(END_TIME) / 60.0 + SECOND(END_TIME) / 3600.0, 2) AS END_TIME_DECIMAL,
+    ROUND(HOUR(EMP_LOGIN_TIME) + MINUTE(EMP_LOGIN_TIME) / 60.0 + SECOND(EMP_LOGIN_TIME) / 3600.0, 2) AS EMP_LOGIN_TIME_DECIMAL,
+    ROUND(HOUR(EMP_LOGOUT_TIME) + MINUTE(EMP_LOGOUT_TIME) / 60.0 + SECOND(EMP_LOGOUT_TIME) / 3600.0, 2) AS EMP_LOGOUT_TIME_DECIMAL,
+    SHIFT_DATE
+FROM 
+    strace.emploginlogout;
+
+
+---
+
+Python Processing (Just Adding Employee Name)
+
+import json
+
+# HR Dictionary (Fetched from Azure SQL)
+HRDict = {
+    "45179442": {"EMP_NAME": "John Doe"},
+    "45179443": {"EMP_NAME": "Jane Smith"},
+}
+
+# Databricks Query Result (Already Rounded at DB Level)
+databricks_result = [
+    (45179442, 9.0, 9.00, 18.00, 10.71, 17.71, "2025-02-12"),
+    (45179442, 9.0, 9.00, 18.00, 10.22, 20.63, "2025-02-13"),
+]
+
+# Process Data (Just Adding Employee Name)
+output = [
+    {
+        "EMP_ID": emp_id,
+        "START_TIME": start_time,  # Already rounded from DB
+        "END_TIME": end_time,      # Already rounded from DB
+        "EMP_LOGIN_TIME": login_time,  # Already rounded from DB
+        "EMP_LOGOUT_TIME": logout_time,  # Already rounded from DB
+        "SHIFT_DATE": shift_date,
+        "EMP_NAME": HRDict.get(str(emp_id), {}).get("EMP_NAME", "Unknown")
+    }
+    for emp_id, contracted_hours, start_time, end_time, login_time, logout_time, shift_date in databricks_result
+]
+
+# Print JSON output
+print(json.dumps(output, indent=4))
+
+
+---
+
+Final Output (Rounded at DB, Efficient in Python)
+
+[
+    {
+        "EMP_ID": 45179442,
+        "START_TIME": 9.00,
+        "END_TIME": 18.00,
+        "EMP_LOGIN_TIME": 10.71,
+        "EMP_LOGOUT_TIME": 17.71,
+        "SHIFT_DATE": "2025-02-12",
+        "EMP_NAME": "John Doe"
+    },
+    {
+        "EMP_ID": 45179442,
+        "START_TIME": 9.00,
+        "END_TIME": 18.00,
+        "EMP_LOGIN_TIME": 10.22,
+        "EMP_LOGOUT_TIME": 20.63,
+        "SHIFT_DATE": "2025-02-13",
+        "EMP_NAME": "John Doe"
+    }
+]
+
+
+---
+
+Why This is More Efficient?
+
+✅ Rounding is done in Databricks (fastest way to process large data).
+✅ Python only adds EMP_NAME (lightweight processing).
+✅ Less data transfer between Databricks and Python (improves performance).
+
+Now Python does almost nothing except attaching names! This is the best balance between performance and accuracy. Let me know if you need further tweaks!
+
+
+
+
+
+
+
+
+
+
+
 with session_scope("DESIGNER") as session:
     today = datetime.today()
     
