@@ -1,4 +1,103 @@
 
+WITH ProcessedData AS ( 
+    SELECT  
+        EMP_ID, 
+        SHIFT_DATE,  
+        
+        -- Convert Times to Decimal Hours
+        ROUND(HOUR(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS START_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS END_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS EMP_LOGIN_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS EMP_LOGOUT_TIME_DECIMAL  
+    FROM strace.emploginlogout  
+    WHERE EMP_ID = {emp_idd}  
+    -- Apply Date Filter Only if User Selects Specific Dates
+    AND ('{start_date}' IS NULL OR SHIFT_DATE >= '{start_date}')  
+    AND ('{end_date}' IS NULL OR SHIFT_DATE <= '{end_date}')  
+)  
+
+SELECT  
+    EMP_ID,  
+    SHIFT_DATE,  
+    START_TIME_DECIMAL,  
+    END_TIME_DECIMAL,  
+    EMP_LOGIN_TIME_DECIMAL,  
+    EMP_LOGOUT_TIME_DECIMAL,  
+
+    -- Determine Attendance Status  
+    CASE  
+        WHEN START_TIME_DECIMAL IS NULL AND END_TIME_DECIMAL IS NULL THEN 'NO SHIFT DATA'  
+        WHEN SHIFT_DATE IS NOT NULL AND EMP_LOGIN_TIME_DECIMAL IS NULL AND EMP_LOGOUT_TIME_DECIMAL IS NULL THEN 'OFFLINE'  
+        ELSE 'PRESENT'  
+    END AS STATUS,  
+
+    -- Late Login Check  
+    CASE  
+        WHEN EMP_LOGIN_TIME_DECIMAL > START_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGIN_TIME_DECIMAL <= START_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS LATE_LOGIN,  
+
+    -- Early Login Check  
+    CASE  
+        WHEN EMP_LOGIN_TIME_DECIMAL <= START_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGIN_TIME_DECIMAL > START_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS EARLY_LOGIN,  
+
+    -- Late Logout Check  
+    CASE  
+        WHEN EMP_LOGOUT_TIME_DECIMAL > END_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGOUT_TIME_DECIMAL <= END_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS LATE_LOGOUT,  
+
+    -- Early Logout Check  
+    CASE  
+        WHEN EMP_LOGOUT_TIME_DECIMAL <= END_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGOUT_TIME_DECIMAL > END_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS EARLY_LOGOUT  
+
+FROM ProcessedData  
+WHERE  
+    -- Apply Attendance Status Filter Only if Selected
+    ('{attendance_status}' IS NULL OR STATUS = '{attendance_status}')  
+    -- Apply Login Status Filter Only if Selected
+    AND ('{login_status}' IS NULL OR  
+        (  
+            ( '{login_status}' = 'Late Login' AND LATE_LOGIN = 'Y' ) OR  
+            ( '{login_status}' = 'Early Login' AND EARLY_LOGIN = 'Y' ) OR  
+            ( '{login_status}' = 'Late Logout' AND LATE_LOGOUT = 'Y' ) OR  
+            ( '{login_status}' = 'Early Logout' AND EARLY_LOGOUT = 'Y' )  
+        )  
+    )  
+ORDER BY EMP_ID, SHIFT_DATE DESC  
+LIMIT {limit} OFFSET {offset};
+
+
+
+
+
+
+
+
+
 WITH FilteredData AS (
     SELECT 
         EMP_ID,
