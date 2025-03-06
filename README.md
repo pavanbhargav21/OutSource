@@ -1,3 +1,137 @@
+# Define dynamic input parameters
+emp_idd = "12345"
+start_date = "2024-02-01"  # Can be None if not selected
+end_date = "2024-02-15"    # Can be None if not selected
+attendance_status = None   # Example: 'PRESENT', 'OFFLINE', etc.
+login_status = None        # Example: 'Late Login', 'Early Login', etc.
+limit = 10
+offset = 0
+
+query = f"""
+WITH ProcessedData AS ( 
+    SELECT  
+        EMP_ID, 
+        SHIFT_DATE,  
+        
+        -- Convert Times to Decimal Hours
+        ROUND(HOUR(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS START_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS END_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS EMP_LOGIN_TIME_DECIMAL,  
+
+        ROUND(HOUR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) + 
+              (MINUTE(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 60.0) + 
+              (SECOND(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS')) / 3600.0), 2) 
+              AS EMP_LOGOUT_TIME_DECIMAL  
+    FROM strace.emploginlogout  
+    WHERE EMP_ID = '{emp_idd}'  
+    """
+
+# Apply date filters if user selects specific dates
+if start_date:
+    query += f" AND SHIFT_DATE >= '{start_date}'"
+
+if end_date:
+    query += f" AND SHIFT_DATE <= '{end_date}'"
+
+query += """
+)  
+
+SELECT  
+    EMP_ID,  
+    SHIFT_DATE,  
+    START_TIME_DECIMAL,  
+    END_TIME_DECIMAL,  
+    EMP_LOGIN_TIME_DECIMAL,  
+    EMP_LOGOUT_TIME_DECIMAL,  
+
+    -- Determine Attendance Status  
+    CASE  
+        WHEN START_TIME_DECIMAL IS NULL AND END_TIME_DECIMAL IS NULL THEN 'NO SHIFT DATA'  
+        WHEN SHIFT_DATE IS NOT NULL AND EMP_LOGIN_TIME_DECIMAL IS NULL AND EMP_LOGOUT_TIME_DECIMAL IS NULL THEN 'OFFLINE'  
+        ELSE 'PRESENT'  
+    END AS STATUS,  
+
+    -- Late Login Check  
+    CASE  
+        WHEN EMP_LOGIN_TIME_DECIMAL > START_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGIN_TIME_DECIMAL <= START_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS LATE_LOGIN,  
+
+    -- Early Login Check  
+    CASE  
+        WHEN EMP_LOGIN_TIME_DECIMAL <= START_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGIN_TIME_DECIMAL > START_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS EARLY_LOGIN,  
+
+    -- Late Logout Check  
+    CASE  
+        WHEN EMP_LOGOUT_TIME_DECIMAL > END_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGOUT_TIME_DECIMAL <= END_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS LATE_LOGOUT,  
+
+    -- Early Logout Check  
+    CASE  
+        WHEN EMP_LOGOUT_TIME_DECIMAL <= END_TIME_DECIMAL THEN 'Y'  
+        WHEN EMP_LOGOUT_TIME_DECIMAL > END_TIME_DECIMAL THEN 'N'  
+        ELSE 'NA'  
+    END AS EARLY_LOGOUT  
+
+FROM ProcessedData  
+WHERE 1=1
+"""
+
+# Apply attendance status filter if selected
+if attendance_status:
+    query += f" AND STATUS = '{attendance_status}'"
+
+# Apply login status filter if selected
+if login_status:
+    query += f""" 
+    AND (
+        ('{login_status}' = 'Late Login' AND LATE_LOGIN = 'Y') OR  
+        ('{login_status}' = 'Early Login' AND EARLY_LOGIN = 'Y') OR  
+        ('{login_status}' = 'Late Logout' AND LATE_LOGOUT = 'Y') OR  
+        ('{login_status}' = 'Early Logout' AND EARLY_LOGOUT = 'Y')  
+    )
+    """
+
+query += f"""
+ORDER BY SHIFT_DATE DESC  
+LIMIT {limit} OFFSET {offset};
+"""
+
+---
+
+## **3️⃣ Execute the Query in PySpark**
+Now, run the SQL query using PySpark.
+
+```python
+df = spark.sql(query)
+df.show()
+
+
+
+
+
+
+
+
+
+
 
 WITH ProcessedData AS ( 
     SELECT  
