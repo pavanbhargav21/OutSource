@@ -1,3 +1,89 @@
+
+WITH ProcessedData AS ( 
+    SELECT 
+        EMP_ID, 
+        SHIFT_DATE, 
+        
+        -- Convert Time to HH:MM:SS Format & Handle NULL as '00:00:00'
+        COALESCE(TO_CHAR(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS START_TIME,
+        COALESCE(TO_CHAR(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS END_TIME,
+        COALESCE(TO_CHAR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS EMP_LOGIN_TIME,
+        COALESCE(TO_CHAR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS EMP_LOGOUT_TIME
+        
+    FROM strace.emploginlogout 
+    WHERE EMP_ID IN ({emp_idd})
+"""  
+# Apply date filters if selected  
+if start_date:  
+    query += f" AND SHIFT_DATE >= '{start_date}'"  
+
+if end_date:  
+    query += f" AND SHIFT_DATE <= '{end_date}'"  
+
+query += """
+), 
+FinalData AS ( 
+    SELECT 
+        EMP_ID, 
+        SHIFT_DATE, 
+        START_TIME, 
+        END_TIME, 
+        EMP_LOGIN_TIME, 
+        EMP_LOGOUT_TIME, 
+        
+        -- Determine Attendance Status  
+        CASE  
+            WHEN START_TIME = '00:00:00' AND END_TIME = '00:00:00' THEN 'NO SHIFT DATA'  
+            WHEN SHIFT_DATE IS NOT NULL AND EMP_LOGIN_TIME = '00:00:00' AND EMP_LOGOUT_TIME = '00:00:00' THEN 'OFFLINE'  
+            ELSE 'PRESENT'  
+        END AS STATUS,  
+        
+        -- Determine Login Status  
+        CASE  
+            WHEN START_TIME = '00:00:00' AND END_TIME = '00:00:00' AND EMP_LOGIN_TIME <> '00:00:00' THEN 'No Shift Data'
+            WHEN EMP_LOGIN_TIME = '00:00:00' THEN 'No Login Data'  
+            WHEN EMP_LOGIN_TIME > START_TIME THEN 'Late Login'  
+            WHEN EMP_LOGIN_TIME < START_TIME THEN 'Early Login'  
+            ELSE 'On Time'  
+        END AS LOGIN_STATUS,  
+
+        -- Determine Logout Status  
+        CASE  
+            WHEN START_TIME = '00:00:00' AND END_TIME = '00:00:00' AND EMP_LOGOUT_TIME <> '00:00:00' THEN 'No Shift Data'
+            WHEN EMP_LOGOUT_TIME = '00:00:00' AND EMP_LOGIN_TIME <> '00:00:00' THEN 'No Logout Data'  
+            WHEN EMP_LOGOUT_TIME = '00:00:00' THEN 'No Login Data'  
+            WHEN EMP_LOGOUT_TIME > END_TIME THEN 'Late Logout'  
+            WHEN EMP_LOGOUT_TIME < END_TIME THEN 'Early Logout'  
+            ELSE 'On Time'  
+        END AS LOGOUT_STATUS  
+
+    FROM ProcessedData  
+) 
+
+SELECT * FROM FinalData  
+WHERE 1=1 
+"""  
+
+# Apply attendance status filter if selected  
+if attendance_status:  
+    query += f" AND STATUS = '{attendance_status}'"  
+
+# Apply login/logout status filter if selected  
+if login_status:  
+    query += f" AND (LOGIN_STATUS = '{login_status}' OR LOGOUT_STATUS = '{login_status}')"  
+
+query += f""" ORDER BY SHIFT_DATE DESC  
+LIMIT {limit} OFFSET {offset}; """
+
+
+
+
+
+
+
+
+
+
 # Define dynamic input parameters
 emp_idd = "12345"
 start_date = "2024-02-01"  # Can be None if not selected
