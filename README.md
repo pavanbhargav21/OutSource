@@ -1,3 +1,150 @@
+def generate_sql_query(employee_id, employee_tuple, start_date, end_date, status, attendance_status, limit, offset):
+    query = f"""
+    WITH ProcessedData AS (
+        SELECT 
+            EMP_ID, SHIFT_DATE,
+            COALESCE(TO_CHAR(TO_TIMESTAMP(START_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS START_TIME,
+            COALESCE(TO_CHAR(TO_TIMESTAMP(END_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS END_TIME,
+            COALESCE(TO_CHAR(TO_TIMESTAMP(EMP_LOGIN_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS EMP_LOGIN_TIME,
+            COALESCE(TO_CHAR(TO_TIMESTAMP(EMP_LOGOUT_TIME, 'YYYYMMDDHH24MISS'), 'HH24:MI:SS'), '00:00:00') AS EMP_LOGOUT_TIME
+        FROM strace.emploginlogout
+        WHERE EMP_ID IN {employee_tuple}
+    """
+
+    # Apply optional filters dynamically
+    if employee_id:
+        query += f" AND EMP_ID = '{employee_id}'"
+    if start_date:
+        query += f" AND SHIFT_DATE >= '{start_date}'"
+    if end_date:
+        query += f" AND SHIFT_DATE <= '{end_date}'"
+
+    query += """
+    ), FinalData AS (
+        SELECT 
+            EMP_ID, SHIFT_DATE, START_TIME, END_TIME, EMP_LOGIN_TIME, EMP_LOGOUT_TIME,
+            CASE 
+                WHEN START_TIME = '00:00:00' AND END_TIME = '00:00:00' THEN 'NO SHIFT DATA'
+                WHEN SHIFT_DATE IS NOT NULL AND EMP_LOGIN_TIME = '00:00:00' AND EMP_LOGOUT_TIME = '00:00:00' THEN 'OFFLINE'
+                ELSE 'PRESENT'
+            END AS STATUS,
+            CASE 
+                WHEN START_TIME = '00:00:00' OR EMP_LOGIN_TIME = '00:00:00' THEN 'N/A'
+                WHEN EMP_LOGIN_TIME > START_TIME THEN 'Late Login'
+                WHEN EMP_LOGIN_TIME <= START_TIME THEN 'Early Login'
+            END AS LOGIN_STATUS,
+            CASE 
+                WHEN END_TIME = '00:00:00' OR EMP_LOGOUT_TIME = '00:00:00' THEN 'No Logout Data'
+                WHEN EMP_LOGOUT_TIME > END_TIME THEN 'Late Logout'
+                WHEN EMP_LOGOUT_TIME <= END_TIME THEN 'Early Logout'
+            END AS LOGOUT_STATUS
+        FROM ProcessedData
+    ) 
+    SELECT * FROM FinalData WHERE 1=1
+    """
+
+    # Apply additional filters dynamically
+    if status:
+        query += f" AND STATUS = '{status}'"
+    if attendance_status:
+        query += f""" 
+        AND (
+            (LOGIN_STATUS = '{attendance_status}') OR 
+            (LOGOUT_STATUS = '{attendance_status}')
+        )
+        """
+
+    query += f" ORDER BY SHIFT_DATE DESC LIMIT {limit} OFFSET {offset};"
+
+    return query
+
+
+from flask import Flask, request, jsonify
+from your_database_module import getDatabricksConnection
+from your_helper_module import ManagerMapping  
+
+app = Flask(__name__)
+
+EMPLOYEE_INFO = {
+    "E001": {"FirstName": "John", "LastName": "Doe"},
+    "E002": {"FirstName": "Jane", "LastName": "Smith"},
+    "E003": {"FirstName": "Alice", "LastName": "Johnson"},
+    "E004": {"FirstName": "Bob", "LastName": "Brown"},
+}
+
+@app.route('/get_employee_attendance', methods=['GET'])
+def get_employee_attendance():
+    try:
+        manager_id = request.args.get('MGRID')
+        limit = request.args.get('Limit', type=int, default=10)
+        offset = request.args.get('Offset', type=int, default=0)
+
+        employee_id = request.args.get('EMPID', None)
+        start_date = request.args.get('StartDate', None)
+        end_date = request.args.get('EndDate', None)
+        status = request.args.get('Status', None)
+        attendance_status = request.args.get('AttendanceStatus', None)
+
+        if not manager_id:
+            return jsonify({"error": "Manager ID (MGRID) is required"}), 400
+
+        employee_list = ManagerMapping(manager_id)  
+        employee_tuple = tuple(employee_list) if employee_list else ('',)  
+
+        if employee_id and employee_id not in employee_list:
+            return jsonify({"error": "Invalid EMPID for this Manager"}), 403
+        
+        connection = getDatabricksConnection()
+        cursor = connection.cursor()
+
+        sql_query = generate_sql_query(employee_id, employee_tuple, start_date, end_date, status, attendance_status, limit, offset)
+        cursor.execute(sql_query)
+        records = cursor.fetchall()
+
+        data = [
+            {
+                "empid": empid,
+                "empname": f"{EMPLOYEE_INFO.get(empid, {}).get('FirstName', 'Unknown')} {EMPLOYEE_INFO.get(empid, {}).get('LastName', '')}".strip(),
+                "shiftdate": shiftdate,
+                "expectedlogintime": expectedlogintime,
+                "expectedlogouttime": expectedlogouttime,
+                "actuallogintime": actuallogintime,
+                "actuallogouttime": actuallogouttime,
+                "attendancestatus": attendancestatus,
+                "loginstatus": loginstatus,
+                "logoutstatus": logoutstatus,
+            }
+            for empid, shiftdate, expectedlogintime, expectedlogouttime, actuallogintime, actuallogouttime, attendancestatus, loginstatus, logoutstatus in records
+        ]
+
+        return jsonify(data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 WITH ProcessedData AS ( 
     SELECT 
