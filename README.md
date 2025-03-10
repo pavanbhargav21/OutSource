@@ -1,4 +1,52 @@
 
+WITH date_series AS (
+    SELECT sequence(
+        to_date('{start_date}'), 
+        to_date('{end_date}'), 
+        INTERVAL 1 DAY
+    ) AS date_range
+),
+
+expanded_dates AS (
+    SELECT explode(date_range) AS cal_date FROM date_series
+),
+
+distinct_employees AS (
+    SELECT DISTINCT emp_id 
+    FROM sys_trace.emp_loginlogout 
+    {where_clause}
+),
+
+employee_dates AS (
+    SELECT 
+        e.emp_id, 
+        d.cal_date 
+    FROM distinct_employees e 
+    CROSS JOIN expanded_dates d
+),
+
+final_attendance AS (
+    SELECT 
+        ed.cal_date, 
+        ed.emp_id, 
+        MIN(el.emp_login_time) AS login_time,  -- Considering the earliest login time
+        CASE 
+            WHEN MIN(el.emp_login_time) IS NOT NULL THEN 'Present' 
+            ELSE 'Absent' 
+        END AS attendance_status
+    FROM employee_dates ed
+    LEFT JOIN sys_trace.emp_loginlogout el
+        ON ed.cal_date = el.shift_date 
+        AND ed.emp_id = el.emp_id
+    GROUP BY ed.cal_date, ed.emp_id
+)
+
+SELECT * FROM final_attendance
+ORDER BY emp_id, cal_date;
+
+
+
+
 
 from flask import Flask, request, jsonify
 from your_database_module import getDatabricksConnection
