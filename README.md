@@ -1,4 +1,336 @@
 
+WITH emp_login_logout AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        MIN(start_time) AS login_time,
+        COALESCE(MAX(start_time), NOW()) AS logout_time
+    FROM emp_activity
+    GROUP BY emp_id, cal_date
+),
+
+activity_duration AS (
+    SELECT 
+        a.emp_id, 
+        a.cal_date,
+        a.app_name,
+        a.start_time, 
+        LEAD(a.start_time, 1, logout_time) OVER (PARTITION BY a.emp_id, a.cal_date ORDER BY a.start_time) AS end_time
+    FROM emp_activity a
+    JOIN emp_login_logout e ON a.emp_id = e.emp_id AND a.cal_date = e.cal_date
+),
+
+idle_duration AS (
+    SELECT 
+        i.emp_id, 
+        i.cal_date,
+        i.end_time, 
+        i.duration_seconds,
+        LAG(a.start_time, 1) OVER (PARTITION BY i.emp_id, i.cal_date ORDER BY i.end_time) AS last_active_time
+    FROM idle_time i
+    JOIN emp_activity a ON i.emp_id = a.emp_id AND i.cal_date = a.cal_date
+),
+
+valid_window_lock AS (
+    SELECT emp_id, cal_date, MAX(start_time) AS last_activity
+    FROM emp_activity
+    WHERE app_name != 'Window Lock'
+    GROUP BY emp_id, cal_date
+),
+
+final_data AS (
+    SELECT 
+        a.emp_id,
+        a.cal_date,
+        a.app_name,
+        CASE 
+            WHEN a.app_name = 'Window Lock' 
+                AND a.start_time > COALESCE(v.last_activity, '2000-01-01') 
+                THEN NULL -- Ignore end-of-day Window Lock
+            WHEN a.app_name = 'Window Lock' THEN TIMESTAMPDIFF(SECOND, a.start_time, a.end_time)
+            ELSE TIMESTAMPDIFF(SECOND, a.start_time, a.end_time) - COALESCE(i.duration_seconds, 0)
+        END AS active_duration,
+        CASE 
+            WHEN a.app_name = 'Window Lock' THEN 0
+            ELSE COALESCE(i.duration_seconds, 0)
+        END AS idle_duration
+    FROM activity_duration a
+    LEFT JOIN idle_duration i 
+    ON a.emp_id = i.emp_id 
+    AND a.cal_date = i.cal_date 
+    AND i.end_time BETWEEN a.start_time AND a.end_time
+    LEFT JOIN valid_window_lock v 
+    ON a.emp_id = v.emp_id 
+    AND a.cal_date = v.cal_date
+)
+
+SELECT * FROM final_data WHERE active_duration IS NOT NULL;
+
+
+_----------++-+-+-+--+-+
+
+Sure! I'll break down each part of the SQL query step by step and explain what is happening at every stage.
+
+
+---
+
+Step 1: Understanding the Problem
+
+We need to calculate active and idle durations for different applications used by multiple employees across a given day (cal_date).
+
+Key Considerations:
+
+1. Active Time Calculation:
+
+For normal applications, active_duration = end_time - start_time - idle_time (if any)
+
+For Window Lock, active_duration = end_time - start_time
+
+Idle time inside Window Lock is ignored.
+
+
+
+2. Ignoring End-of-Day Window Locks:
+
+If an employee does not log out, the last recorded activity should be used as their last active time.
+
+Any Window Lock after the last recorded activity should be ignored (as the employee likely just closed their laptop).
+
+
+
+
+
+---
+
+Step 2: Breaking Down the Query
+
+Now, let's analyze the SQL query step by step.
+
+1. Getting Login and Logout Time (emp_login_logout)
+
+WITH emp_login_logout AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        MIN(start_time) AS login_time,
+        COALESCE(MAX(start_time), NOW()) AS logout_time
+    FROM emp_activity
+    GROUP BY emp_id, cal_date
+),
+
+✅ What is happening here?
+
+We fetch the first login time (MIN(start_time)) and last logout time (MAX(start_time)) for each employee on each cal_date.
+
+If there is no explicit logout time, we assume the last known activity time (MAX(start_time)) as their logout time.
+
+Why? If an employee closes their laptop without logging out, we will use the last known activity instead.
+
+
+
+---
+
+2. Calculating Active Time for Each App (activity_duration)
+
+activity_duration AS (
+    SELECT 
+        a.emp_id, 
+        a.cal_date,
+        a.app_name,
+        a.start_time, 
+        LEAD(a.start_time, 1, logout_time) 
+            OVER (PARTITION BY a.emp_id, a.cal_date ORDER BY a.start_time) AS end_time
+    FROM emp_activity a
+    JOIN emp_login_logout e ON a.emp_id = e.emp_id AND a.cal_date = e.cal_date
+),
+
+✅ What is happening here?
+
+Calculating the end_time for each activity session:
+
+We use the LEAD() window function to get the start_time of the next application.
+
+If there is no next application, we use logout_time as the end_time.
+
+
+Why? This helps us determine how long an application was active before switching to another one.
+
+
+
+---
+
+3. Finding Idle Time Entries (idle_duration)
+
+idle_duration AS (
+    SELECT 
+        i.emp_id, 
+        i.cal_date,
+        i.end_time, 
+        i.duration_seconds,
+        LAG(a.start_time, 1) OVER (PARTITION BY i.emp_id, i.cal_date ORDER BY i.end_time) AS last_active_time
+    FROM idle_time i
+    JOIN emp_activity a ON i.emp_id = a.emp_id AND i.cal_date = a.cal_date
+),
+
+✅ What is happening here?
+
+We retrieve idle time entries for employees.
+
+Finding the last_active_time before idle time:
+
+We use LAG(a.start_time, 1) to get the previous application’s start time.
+
+This helps in determining when idle time occurs within active periods.
+
+
+
+
+---
+
+4. Finding the Last Non-Window Lock Activity (valid_window_lock)
+
+valid_window_lock AS (
+    SELECT emp_id, cal_date, MAX(start_time) AS last_activity
+    FROM emp_activity
+    WHERE app_name != 'Window Lock'
+    GROUP BY emp_id, cal_date
+),
+
+✅ What is happening here?
+
+This CTE finds the latest application activity that is NOT a Window Lock.
+
+Why?
+
+If an employee closes their laptop at the end of the day, the Window Lock entry should be ignored.
+
+The MAX(start_time) of normal apps helps us determine the last valid activity.
+
+
+
+
+---
+
+5. Calculating Final Active and Idle Durations (final_data)
+
+final_data AS (
+    SELECT 
+        a.emp_id,
+        a.cal_date,
+        a.app_name,
+        CASE 
+            WHEN a.app_name = 'Window Lock' 
+                AND a.start_time > COALESCE(v.last_activity, '2000-01-01') 
+                THEN NULL -- Ignore end-of-day Window Lock
+            WHEN a.app_name = 'Window Lock' 
+                THEN TIMESTAMPDIFF(SECOND, a.start_time, a.end_time)
+            ELSE TIMESTAMPDIFF(SECOND, a.start_time, a.end_time) - COALESCE(i.duration_seconds, 0)
+        END AS active_duration,
+        CASE 
+            WHEN a.app_name = 'Window Lock' THEN 0
+            ELSE COALESCE(i.duration_seconds, 0)
+        END AS idle_duration
+    FROM activity_duration a
+    LEFT JOIN idle_duration i 
+    ON a.emp_id = i.emp_id 
+    AND a.cal_date = i.cal_date 
+    AND i.end_time BETWEEN a.start_time AND a.end_time
+    LEFT JOIN valid_window_lock v 
+    ON a.emp_id = v.emp_id 
+    AND a.cal_date = v.cal_date
+)
+
+✅ What is happening here?
+
+Window Lock Handling:
+
+If Window Lock happens after the last valid activity, we ignore it (active_duration = NULL).
+
+Otherwise, its active duration is directly calculated (end_time - start_time).
+
+
+Normal Applications:
+
+active_duration = end_time - start_time - idle_time
+
+idle_duration = idle_time (if any, else 0)
+
+
+Why?
+
+We need to correctly subtract idle time only from regular applications.
+
+Window Lock should not have idle time counted.
+
+
+
+
+---
+
+6. Retrieving Final Data
+
+SELECT * FROM final_data WHERE active_duration IS NOT NULL;
+
+✅ Final Filtering:
+
+Ensures that ignored Window Lock entries (end-of-day locks) do not appear in the final result.
+
+
+
+---
+
+Step 3: Summary of the Query
+
+✅ Key Features:
+
+1. Handles Multiple Employees
+
+
+2. Calculates Active and Idle Time for Each Application
+
+
+3. Ensures End-of-Day Window Locks Are Ignored
+
+
+4. Accounts for Employees Closing Their Laptops Without Logging Off
+
+
+5. Idle Time is Correctly Subtracted Only from Normal Apps
+
+
+
+
+---
+
+Step 4: Example Execution
+
+Given Input Data
+
+emp_activity
+
+idle_time
+
+
+---
+
+Final Output
+
+
+---
+
+This query is now optimized for handling all edge cases. Let me know if you need further refinements!
+
+
+
+
+
+
+
+
+
+
+
+------------------------------
 WITH date_series AS (
     SELECT sequence(
         to_date('{start_date}'), 
