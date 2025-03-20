@@ -1,4 +1,38 @@
 
+EMP_ID | Date       | Start Time | End Time | Is_Weekoff | Emp_Night_Shift_Flag | Shift_Type
+-------|-----------|------------|----------|------------|----------------------|------------
+101    | 2025-03-20 | 06:00      | 14:00    | No         | No                   | Morning
+101    | 2025-03-21 | 06:00      | 14:00    | No         | No                   | Morning
+101    | 2025-03-22 | 00:00      | 00:00    | Yes        | No                   | Week Off
+101    | 2025-03-23 | 00:00      | 00:00    | Yes        | No                   | Week Off
+101    | 2025-03-24 | 22:00      | 06:00    | No         | Yes                  | Night
+102    | 2025-03-20 | 14:00      | 22:00    | No         | No                   | Evening
+102    | 2025-03-21 | 14:00      | 22:00    | No         | No                   | Evening
+102    | 2025-03-22 | 00:00      | 00:00    | Yes        | No                   | Week Off
+102    | 2025-03-23 | 00:00      | 00:00    | Yes        | No                   | Week Off
+102    | 2025-03-24 | 14:00      | 22:00    | No         | No                   | Evening
+103    | 2025-03-20 | 22:00      | 06:00    | No         | Yes                  | Night
+103    | 2025-03-21 | 06:00      | 14:00    | No         | No                   | Morning
+103    | 2025-03-22 | 00:00      | 00:00    | Yes        | No                   | Week Off
+103    | 2025-03-23 | 00:00      | 00:00    | Yes        | No                   | Week Off
+103    | 2025-03-24 | 14:00      | 22:00    | No         | No                   | Evening
+104    | 2025-03-20 | 14:00      | 22:00    | No         | No                   | Evening
+104    | 2025-03-21 | 14:00      | 22:00    | No         | No                   | Evening
+104    | 2025-03-22 | 00:00      | 00:00    | Yes        | No                   | Week Off
+104    | 2025-03-23 | 00:00      | 00:00    | Yes        | No                   | Week Off
+104    | 2025-03-24 | 22:00      | 06:00    | No         | Yes                  | Night
+
+
+
+
+
+
+
+
+
+
+
+
 SELECT COLUMN_NAME 
 FROM INFORMATION_SCHEMA.COLUMNS 
 WHERE TABLE_SCHEMA = 'your_database_name' 
