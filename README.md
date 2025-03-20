@@ -1,4 +1,75 @@
 
+
+
+------****------****------****------****------****------****------****------  
+| Reference Activity Type         | Calendar Date | Time  | EMP_ID | App Name  |
+------****------****------****------****------****------****------****------  
+| Early Login (Ignored)           | 2025-03-20   | 05:15 | 101    | Notepad   |
+| Valid Login                     | 2025-03-20   | 06:05 | 101    | Teams     |
+| Work Activity                   | 2025-03-20   | 07:30 | 101    | Excel     |
+| Valid Login                     | 2025-03-20   | 09:05 | 102    | Excel     |
+| Work Activity                   | 2025-03-20   | 10:45 | 102    | Teams     |
+| Idle Lock                        | 2025-03-20   | 12:30 | 101    | Window Lock |
+| Valid Login                     | 2025-03-20   | 14:10 | 104    | Zoom      |
+| Logout                           | 2025-03-20   | 15:30 | 101    | Teams     |
+| Logout (No Shift)                | 2025-03-20   | 16:30 | 105    | Teams     |
+| Logout                           | 2025-03-20   | 17:30 | 102    | Window Lock |
+| Work Activity                    | 2025-03-20   | 18:45 | 104    | Teams     |
+| Valid Login (Night Shift)        | 2025-03-20   | 22:05 | 103    | Teams     |
+| Logout                           | 2025-03-20   | 22:50 | 104    | Notepad   |
+| Work Activity                    | 2025-03-20   | 23:30 | 103    | Notepad   |
+------****------****------****------****------****------****------****------  
+| Valid Login (Morning Shift)      | 2025-03-21   | 06:15 | 103    | Excel     |
+| Logout                           | 2025-03-21   | 06:55 | 103    | Window Lock |
+| Valid Login (No Shift)           | 2025-03-21   | 07:15 | 105    | Notepad   |
+| Work Activity                    | 2025-03-21   | 10:00 | 103    | Zoom      |
+| Early Login (Ignored)            | 2025-03-21   | 13:50 | 101    | Excel     |
+| Valid Login                      | 2025-03-21   | 14:10 | 101    | Notepad   |
+| Logout                           | 2025-03-21   | 15:30 | 103    | Window Lock |
+| Logout (No Shift)                | 2025-03-21   | 17:00 | 105    | Window Lock |
+| Logout                           | 2025-03-21   | 17:30 | 104    | Window Lock |
+| Work Activity                    | 2025-03-21   | 18:45 | 101    | Zoom      |
+| Valid Login (Night Shift)        | 2025-03-21   | 22:10 | 102    | Teams     |
+| Logout                           | 2025-03-21   | 23:15 | 101    | Teams     |
+------****------****------****------****------****------****------****------  
+| Unexpected Login (Week Off!)     | 2025-03-22   | 07:00 | 101    | Notepad   |
+| Unexpected Login (Week Off!)     | 2025-03-22   | 07:00 | 102    | Zoom      |
+| Valid Login (No Shift)           | 2025-03-22   | 08:00 | 105    | Teams     |
+| Unexpected Login (Week Off!)     | 2025-03-22   | 10:30 | 104    | Zoom      |
+| Unexpected Login (Week Off!)     | 2025-03-22   | 11:00 | 103    | Excel     |
+| Logout (No Shift)                | 2025-03-22   | 15:00 | 105    | Window Lock |
+------****------****------****------****------****------****------****------  
+| Unexpected Login (Week Off!)     | 2025-03-23   | 10:00 | 101    | Zoom      |
+| Valid Login (No Shift)           | 2025-03-23   | 10:00 | 105    | Teams     |
+| Logout (No Shift)                | 2025-03-23   | 17:30 | 105    | Window Lock |
+------****------****------****------****------****------****------****------  
+| Valid Login (Morning Shift)      | 2025-03-24   | 06:05 | 102    | Excel     |
+| Logout                           | 2025-03-24   | 07:10 | 101    | Notepad   |
+| Valid Login (No Shift)           | 2025-03-24   | 07:20 | 105    | Notepad   |
+| Valid Login (Evening Shift)      | 2025-03-24   | 14:05 | 103    | Notepad   |
+| Logout                           | 2025-03-24   | 14:50 | 102    | Window Lock |
+| Logout (No Shift)                | 2025-03-24   | 16:00 | 105    | Excel     |
+| Valid Login (Night Shift)        | 2025-03-24   | 22:10 | 104    | Teams     |
+| Logout                           | 2025-03-24   | 22:30 | 103    | Teams     |
+| Valid Login                      | 2025-03-24   | 22:05 | 101    | Teams     |
+| Work Activity                    | 2025-03-24   | 23:50 | 102    | Excel     |
+------****------****------****------****------****------****------****------  
+| Logout                           | 2025-03-25   | 06:50 | 104    | Window Lock |
+------****------****------****------****------****------****------****------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 EMP_ID | Date       | Start Time | End Time | Is_Weekoff | Emp_Night_Shift_Flag | Shift_Type
 -------|-----------|------------|----------|------------|----------------------|------------
 101    | 2025-03-20 | 06:00      | 14:00    | No         | No                   | Morning
