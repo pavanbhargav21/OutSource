@@ -1,4 +1,85 @@
+import os
+import queue
+import databricks.sql as sql
+from databricks.sql.exc import OperationalError
+from flask import Flask, jsonify, request
 
+# Flask App
+app = Flask(__name__)
+
+# Connection Pool Settings
+POOL_SIZE = 5  # Adjust based on load
+connection_pool = queue.Queue(maxsize=POOL_SIZE)
+
+# Get Environment Variables
+DATABRICKS_HOST = os.getenv("DATABRICKS_SERVER_HOST")
+DATABRICKS_HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH")
+DATABRICKS_CLIENT_SECRET = os.getenv("DATABRICKS_CLIENT_SECRET")
+
+# Create Initial Connections
+def create_connection():
+    try:
+        return sql.connect(
+            server_hostname=DATABRICKS_HOST,
+            http_path=DATABRICKS_HTTP_PATH,
+            access_token=DATABRICKS_CLIENT_SECRET  # Token-based auth
+        )
+    except OperationalError as e:
+        print(f"Databricks Connection Error: {e}")
+        return None
+
+# Initialize Pool with Connections
+for _ in range(POOL_SIZE):
+    conn = create_connection()
+    if conn:
+        connection_pool.put(conn)
+
+# Function to Get Connection from Pool
+def get_connection():
+    try:
+        return connection_pool.get(timeout=5)  # Wait 5 sec if no connection is available
+    except queue.Empty:
+        return create_connection()  # Create new if pool is exhausted
+
+# Function to Return Connection to Pool
+def release_connection(conn):
+    try:
+        connection_pool.put(conn, timeout=2)
+    except queue.Full:
+        conn.close()  # Close if pool is full
+
+# Function to Execute Query
+def execute_query(query, params=None):
+    conn = get_connection()
+    if not conn:
+        return []
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(query, params or {})
+            result = cursor.fetchall()
+        return result
+    except OperationalError as e:
+        print(f"Query Execution Failed: {e}")
+        return []
+    finally:
+        release_connection(conn)  # Return connection back to pool
+
+# Example API Endpoint
+@app.route("/get-employees", methods=["GET"])
+def get_employees():
+    query = "SELECT * FROM Employee_Central WHERE ManagerID = ?"
+    manager_id = request.args.get("manager_id")
+
+    if not manager_id:
+        return jsonify({"error": "Manager ID required"}), 400
+
+    data = execute_query(query, (manager_id,))
+    return jsonify(data)
+
+# Run Flask App
+if __name__ == "__main__":
+    app.run(debug=True, threaded=True)
 
 
 ------****------****------****------****------****------****------****------  
