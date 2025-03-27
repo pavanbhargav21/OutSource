@@ -1,4 +1,142 @@
+
+from flask import Flask, jsonify, request
+from database import DatabricksSession, execute_query
+
+app = Flask(__name__)
+
+
+# ✅ Single Query Example: Get Employee Details
+class GetEmployeeDetails:
+    def get(self, employee_id):
+        query = "SELECT * FROM Employee_Central WHERE employee_id = ?"
+        with DatabricksSession() as conn:
+            data = execute_query(conn, query, params=(employee_id,), fetch_mode="one")
+        return jsonify({"employee_details": data})
+
+
+# ✅ Multiple Independent Queries Example: Get Distinct Apps
+class GetDistinctApps:
+    def get(self, employee_id):
+        query = "SELECT DISTINCT app_name FROM Applications WHERE employee_id = ?"
+        with DatabricksSession() as conn:
+            data = execute_query(conn, query, params=(employee_id,), fetch_mode="all")
+        return jsonify({"distinct_apps": data})
+
+
+# ✅ Sequential Queries Example: Get Manager Data
+class GetManagerData:
+    def get(self, manager_id):
+        with DatabricksSession() as conn:
+            # 1️⃣ Get employees under manager
+            employees = execute_query(conn, "SELECT employee_id FROM Employee_Central WHERE manager_id = ?", 
+                                      params=(manager_id,), fetch_mode="all")
+
+            if not employees:
+                return jsonify({"error": "No employees found for this manager"})
+
+            employee_ids = tuple(emp[0] for emp in employees)
+
+            # 2️⃣ Get distinct applications used by employees
+            apps_query = f"SELECT DISTINCT app_name FROM Applications WHERE employee_id IN {str(employee_ids)}"
+            apps = execute_query(conn, apps_query, fetch_mode="all")
+
+            # 3️⃣ Get mouse click data for employees
+            clicks_query = f"SELECT employee_id, click_count FROM MouseClicks WHERE employee_id IN {str(employee_ids)}"
+            mouse_clicks = execute_query(conn, clicks_query, fetch_mode="all")
+
+        return jsonify({"employees": employees, "distinct_apps": apps, "mouse_clicks": mouse_clicks})
+
+
+# Flask Route Bindings
+app.add_url_rule('/employee/<int:employee_id>', view_func=GetEmployeeDetails().get)
+app.add_url_rule('/distinct_apps/<int:employee_id>', view_func=GetDistinctApps().get)
+app.add_url_rule('/manager_data/<int:manager_id>', view_func=GetManagerData().get)
+
+if __name__ == '__main__':
+    app.run()
+
+
 import os
+import threading
+from databricks import sql
+from databricks.sdk.core import Config
+from databricks.sdk.oauth import oauth_service_principal
+from queue import Queue
+
+# Connection Pool Configuration
+POOL_SIZE = 10  # Max number of connections in the pool
+connection_pool = Queue(maxsize=POOL_SIZE)
+pool_lock = threading.Lock()
+
+
+# Function to create a new Databricks connection
+def create_connection():
+    server_hostname = os.getenv('DATABRICKS_SERVER_HOST')
+
+    config = Config(
+        host=f"https://{server_hostname}",
+        client_id=os.getenv('DATABRICKS_CLIENT_ID'),
+        client_secret=os.getenv('DATABRICKS_CLIENT_SECRET')
+    )
+
+    return sql.connect(
+        server_hostname=server_hostname,
+        http_path=os.getenv('DATABRICKS_HTTP_PATH'),
+        credentials_provider=lambda: oauth_service_principal(config)
+    )
+
+
+# Context Manager for Connection Pooling
+class DatabricksSession:
+    def __enter__(self):
+        with pool_lock:
+            if connection_pool.empty():
+                self.conn = create_connection()
+            else:
+                self.conn = connection_pool.get()
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        with pool_lock:
+            if connection_pool.full():
+                self.conn.close()
+            else:
+                connection_pool.put(self.conn)
+
+
+# Function to Execute Queries Efficiently
+def execute_query(conn, query, params=None, fetch_mode="all", fetch_size=None):
+    """Executes a SQL query using an existing connection."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(query, params or {})
+
+            if fetch_mode == "one":
+                return cursor.fetchone()
+            elif fetch_mode == "many" and fetch_size:
+                return cursor.fetchmany(fetch_size)
+            elif fetch_mode == "iter":
+                return iter(cursor)
+            elif fetch_mode == "dict":
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            elif fetch_mode == "pandas":
+                return cursor.fetch_pandas_df()
+            elif fetch_mode == "arrow":
+                return cursor.fetch_arrow_table()
+            else:
+                return cursor.fetchall()
+    except Exception as e:
+        print(f"Query Execution Failed: {e}")
+        return []
+
+
+
+
+
+
+
+mport os
 import queue
 import databricks.sql as sql
 from databricks.sql.exc import OperationalError
