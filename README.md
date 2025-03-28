@@ -1,4 +1,198 @@
 
+
+from flask import request, jsonify
+from flask_restful import Resource
+from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
+from datetime import datetime, timedelta
+from app.database import execute_query  # Import Databricks query executor
+
+class EmpActInfo(Resource):
+    def get(self):
+        # ✅ Decode JWT to get Manager ID
+        verify_jwt_in_request()
+        manager_id = get_jwt_identity()  # Assuming it's stored in token
+        
+        # ✅ Get date range type from query params
+        date_range = request.args.get('date_range', 'daily')  # Default is 'daily'
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+
+        # ✅ Compute start and end dates
+        today = datetime.today().date()
+
+        if date_range == "weekly":
+            start_date = today - timedelta(days=today.weekday())  # Monday of this week
+            end_date = today
+            last_period_start = start_date - timedelta(weeks=1)
+            last_period_end = end_date - timedelta(weeks=1)
+
+        elif date_range == "monthly":
+            start_date = today.replace(day=1)  # First day of current month
+            last_period_start = (start_date - timedelta(days=1)).replace(day=1)  # First day of last month
+            end_date = today
+            last_period_end = start_date - timedelta(days=1)  # Last day of last month
+
+        elif date_range == "custom" and start_date_str and end_date_str:
+            try:
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                delta_days = (end_date - start_date).days + 1  # Number of days in range
+                last_period_start = start_date - timedelta(days=delta_days)
+                last_period_end = end_date - timedelta(days=delta_days)
+            except ValueError:
+                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+        else:  # Default to daily
+            start_date = today
+            end_date = today
+            last_period_start = today - timedelta(days=1)
+            last_period_end = today - timedelta(days=1)
+
+        # ✅ SQL Query Execution using Databricks Pooling
+        query = """
+            WITH EmployeeList AS (
+                SELECT EMPL_ID 
+                FROM inbound.HR_EMPLOYEES_CENTRAL 
+                WHERE FUNC_MANAGER_ID = %(manager_id)s
+            ),
+            CurrentData AS (
+                SELECT 
+                    EMP_ID,
+                    APP_NAME,
+                    SUM(TOTAL_ACTIVE_TIME) AS TOTAL_ACTIVE_TIME,
+                    SUM(TOTAL_IDLE_TIME) AS TOTAL_IDLE_TIME
+                FROM analytics.EMP_APP_INFO
+                WHERE CAL_DATE BETWEEN %(start_date)s AND %(end_date)s
+                AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+                AND APP_NAME != 'WINDOW_LOCK'
+                GROUP BY EMP_ID, APP_NAME
+            ),
+            LastPeriodData AS (
+                SELECT 
+                    EMP_ID,
+                    APP_NAME,
+                    SUM(TOTAL_ACTIVE_TIME) AS LAST_ACTIVE_TIME,
+                    SUM(TOTAL_IDLE_TIME) AS LAST_IDLE_TIME
+                FROM analytics.EMP_APP_INFO
+                WHERE CAL_DATE BETWEEN %(last_period_start)s AND %(last_period_end)s
+                AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+                AND APP_NAME != 'WINDOW_LOCK'
+                GROUP BY EMP_ID, APP_NAME
+            ),
+            TeamCurrent AS (
+                SELECT 
+                    AVG(TOTAL_ACTIVE_TIME) AS TEAM_AVG_ACTIVE,
+                    AVG(TOTAL_IDLE_TIME) AS TEAM_AVG_IDLE
+                FROM CurrentData
+            ),
+            TeamLast AS (
+                SELECT 
+                    AVG(LAST_ACTIVE_TIME) AS LAST_TEAM_AVG_ACTIVE,
+                    AVG(LAST_IDLE_TIME) AS LAST_TEAM_AVG_IDLE
+                FROM LastPeriodData
+            ),
+            AppWiseCurrent AS (
+                SELECT 
+                    APP_NAME,
+                    SUM(TOTAL_ACTIVE_TIME) AS TOTAL_ACTIVE_TIME,
+                    SUM(TOTAL_IDLE_TIME) AS TOTAL_IDLE_TIME
+                FROM CurrentData
+                GROUP BY APP_NAME
+            ),
+            AppWiseLast AS (
+                SELECT 
+                    APP_NAME,
+                    SUM(LAST_ACTIVE_TIME) AS LAST_TOTAL_ACTIVE_TIME,
+                    SUM(LAST_IDLE_TIME) AS LAST_TOTAL_IDLE_TIME
+                FROM LastPeriodData
+                GROUP BY APP_NAME
+            )
+            SELECT 
+                tc.TEAM_AVG_ACTIVE,
+                tc.TEAM_AVG_IDLE,
+                tl.LAST_TEAM_AVG_ACTIVE,
+                tl.LAST_TEAM_AVG_IDLE,
+                
+                -- Team percentage change
+                ROUND(
+                    CASE 
+                        WHEN COALESCE(tl.LAST_TEAM_AVG_ACTIVE, 0) + COALESCE(tl.LAST_TEAM_AVG_IDLE, 0) > 0 THEN 
+                            ((COALESCE(tc.TEAM_AVG_ACTIVE, 0) + COALESCE(tc.TEAM_AVG_IDLE, 0)) 
+                            - (COALESCE(tl.LAST_TEAM_AVG_ACTIVE, 0) + COALESCE(tl.LAST_TEAM_AVG_IDLE, 0))) 
+                            / (COALESCE(tl.LAST_TEAM_AVG_ACTIVE, 0) + COALESCE(tl.LAST_TEAM_AVG_IDLE, 0)) * 100
+                        ELSE NULL
+                    END, 2
+                ) AS TEAM_PERCENT_CHANGE,
+
+                ac.APP_NAME,
+                ac.TOTAL_ACTIVE_TIME,
+                ac.TOTAL_IDLE_TIME,
+                COALESCE(al.LAST_TOTAL_ACTIVE_TIME, 0) AS LAST_TOTAL_ACTIVE_TIME,
+                COALESCE(al.LAST_TOTAL_IDLE_TIME, 0) AS LAST_TOTAL_IDLE_TIME,
+                
+                -- Application-wise percentage change
+                ROUND(
+                    CASE 
+                        WHEN COALESCE(al.LAST_TOTAL_ACTIVE_TIME, 0) + COALESCE(al.LAST_TOTAL_IDLE_TIME, 0) > 0 THEN 
+                            ((COALESCE(ac.TOTAL_ACTIVE_TIME, 0) + COALESCE(ac.TOTAL_IDLE_TIME, 0)) 
+                            - (COALESCE(al.LAST_TOTAL_ACTIVE_TIME, 0) + COALESCE(al.LAST_TOTAL_IDLE_TIME, 0))) 
+                            / (COALESCE(al.LAST_TOTAL_ACTIVE_TIME, 0) + COALESCE(al.LAST_TOTAL_IDLE_TIME, 0)) * 100
+                        ELSE NULL
+                    END, 2
+                ) AS APP_PERCENT_CHANGE
+
+            FROM TeamCurrent tc
+            CROSS JOIN TeamLast tl
+            LEFT JOIN AppWiseCurrent ac ON 1=1
+            LEFT JOIN AppWiseLast al ON ac.APP_NAME = al.APP_NAME
+            ORDER BY ac.TOTAL_ACTIVE_TIME DESC;
+        """
+
+        params = {
+            "manager_id": manager_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "last_period_start": last_period_start,
+            "last_period_end": last_period_end
+        }
+
+        # ✅ Execute query using Databricks pooling
+        data = execute_query(query, params, fetch_mode="dict")
+
+        # ✅ Format JSON Response
+        if not data:
+            return jsonify({"message": "No data available for the given period."}), 404
+
+        response = {
+            "team_summary": {
+                "average_active_time": data[0]["TEAM_AVG_ACTIVE"],
+                "average_idle_time": data[0]["TEAM_AVG_IDLE"],
+                "last_period": {
+                    "average_active_time": data[0]["LAST_TEAM_AVG_ACTIVE"],
+                    "average_idle_time": data[0]["LAST_TEAM_AVG_IDLE"]
+                },
+                "percent_change": data[0]["TEAM_PERCENT_CHANGE"]
+            },
+            "application_summary": []
+        }
+
+        for row in data:
+            if row["APP_NAME"]:
+                response["application_summary"].append({
+                    "app_name": row["APP_NAME"],
+                    "total_active_time": row["TOTAL_ACTIVE_TIME"],
+                    "total_idle_time": row["TOTAL_IDLE_TIME"],
+                    "last_period": {
+                        "active_time": row["LAST_TOTAL_ACTIVE_TIME"],
+                        "idle_time": row["LAST_TOTAL_IDLE_TIME"]
+                    },
+                    "percent_change": row["APP_PERCENT_CHANGE"]
+                })
+
+        return jsonify(response)
+
+
+
+
 from flask import Flask, jsonify, request
 from database import DatabricksSession, execute_query
 
