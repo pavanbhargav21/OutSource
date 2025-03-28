@@ -1,4 +1,84 @@
 
+WITH EmployeeList AS (
+    SELECT EMPL_ID 
+    FROM inbound.HR_EMPLOYEES_CENTRAL 
+    WHERE FUNC_MANAGER_ID = %(manager_id)s
+),
+CurrentData AS (
+    SELECT 
+        APP_NAME,
+        AVG(TOTAL_ACTIVE_TIME) AS AVG_ACTIVE_TIME,
+        AVG(TOTAL_IDLE_TIME) AS AVG_IDLE_TIME
+    FROM analytics.EMP_APP_INFO
+    WHERE CAL_DATE BETWEEN %(start_date)s AND %(end_date)s
+    AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+    AND APP_NAME != 'WINDOW_LOCK'  -- 🔹 Excluding WINDOW_LOCK here
+    GROUP BY APP_NAME
+),
+LastPeriodData AS (
+    SELECT 
+        APP_NAME,
+        AVG(TOTAL_ACTIVE_TIME) AS LAST_AVG_ACTIVE_TIME,
+        AVG(TOTAL_IDLE_TIME) AS LAST_AVG_IDLE_TIME
+    FROM analytics.EMP_APP_INFO
+    WHERE CAL_DATE BETWEEN %(last_period_start)s AND %(last_period_end)s
+    AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+    AND APP_NAME != 'WINDOW_LOCK'  -- 🔹 Excluding WINDOW_LOCK here
+    GROUP BY APP_NAME
+),
+WindowLockData AS (
+    SELECT 
+        AVG(WINDOW_LOCK_TIME) AS WINDOW_LOCK_TIME,
+        (SELECT AVG(WINDOW_LOCK_TIME) 
+         FROM analytics.EMP_APP_INFO
+         WHERE CAL_DATE BETWEEN %(last_period_start)s AND %(last_period_end)s
+         AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+         AND APP_NAME = 'WINDOW_LOCK'
+        ) AS LAST_WINDOW_LOCK_TIME
+    FROM analytics.EMP_APP_INFO
+    WHERE CAL_DATE BETWEEN %(start_date)s AND %(end_date)s
+    AND EMP_ID IN (SELECT EMPL_ID FROM EmployeeList)
+    AND APP_NAME = 'WINDOW_LOCK'
+)
+SELECT 
+    c.APP_NAME,
+    c.AVG_ACTIVE_TIME,
+    c.AVG_IDLE_TIME,
+    COALESCE(l.LAST_AVG_ACTIVE_TIME, 0) AS LAST_AVG_ACTIVE_TIME,
+    COALESCE(l.LAST_AVG_IDLE_TIME, 0) AS LAST_AVG_IDLE_TIME,
+
+    -- 🔹 Percentage change per application
+    ROUND(
+        CASE 
+            WHEN COALESCE(l.LAST_AVG_ACTIVE_TIME, 0) + COALESCE(l.LAST_AVG_IDLE_TIME, 0) > 0 THEN 
+                ((COALESCE(c.AVG_ACTIVE_TIME, 0) + COALESCE(c.AVG_IDLE_TIME, 0)) 
+                - (COALESCE(l.LAST_AVG_ACTIVE_TIME, 0) + COALESCE(l.LAST_AVG_IDLE_TIME, 0))) 
+                / (COALESCE(l.LAST_AVG_ACTIVE_TIME, 0) + COALESCE(l.LAST_AVG_IDLE_TIME, 0)) * 100
+            ELSE NULL
+        END, 2
+    ) AS APP_PERCENT_CHANGE,
+
+    -- 🔹 Adding Window Lock Time
+    wl.WINDOW_LOCK_TIME,
+    wl.LAST_WINDOW_LOCK_TIME,
+    
+    -- 🔹 Window Lock Time Percentage Change
+    ROUND(
+        CASE 
+            WHEN COALESCE(wl.LAST_WINDOW_LOCK_TIME, 0) > 0 THEN 
+                ((COALESCE(wl.WINDOW_LOCK_TIME, 0) - COALESCE(wl.LAST_WINDOW_LOCK_TIME, 0)) 
+                / COALESCE(wl.LAST_WINDOW_LOCK_TIME, 1) * 100)
+            ELSE NULL
+        END, 2
+    ) AS WINDOW_LOCK_PERCENT_CHANGE
+
+FROM CurrentData c
+LEFT JOIN LastPeriodData l ON c.APP_NAME = l.APP_NAME
+JOIN WindowLockData wl ON 1=1  -- 🔹 Ensuring Window Lock Data is always included
+ORDER BY c.AVG_ACTIVE_TIME DESC;
+
+
+
 
 from flask import request, jsonify
 from flask_restful import Resource
