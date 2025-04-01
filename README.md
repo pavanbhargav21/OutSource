@@ -1,4 +1,251 @@
 
+Got it! You have two different sources of data:
+
+1. EMPAPPINFO Table (Interval-based data, recorded every hour)
+
+
+2. EMPLOGINLOGOUT Table (Actual login/logout timestamps per employee per day)
+
+
+
+So, calculations should:
+
+Restrict data within the actual login-logout duration per employee from EMPLOGINLOGOUT.
+
+Aggregate hourly intervals from EMPAPPINFO, but only within each employee's actual working hours.
+
+
+
+---
+
+Updated SQL Query Considering Both Tables
+
+WITH Employee_Working_Hours AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        MIN(login_time) AS first_login,
+        MAX(logout_time) AS last_logout
+    FROM EMP_ANALYTICS.EMPLOGINLOGOUT
+    WHERE cal_date BETWEEN :start_date AND :end_date
+    GROUP BY emp_id, cal_date
+),
+Filtered_Employee_Intervals AS (
+    SELECT 
+        e.emp_id,
+        e.application_name,
+        e.cal_date,
+        e.active_time,
+        e.idle_time,
+        CASE WHEN e.application_name = 'Window Lock' THEN e.active_time ELSE 0 END AS window_lock_time
+    FROM EMP_ANALYTICS.EMPAPPINFO e
+    JOIN Employee_Working_Hours l ON e.emp_id = l.emp_id AND e.cal_date = l.cal_date
+    WHERE e.timestamp BETWEEN l.first_login AND l.last_logout
+),
+Employee_Daily_Sum AS (
+    SELECT
+        emp_id,
+        application_name,
+        cal_date,
+        SUM(active_time) AS daily_active_time,
+        SUM(idle_time) AS daily_idle_time,
+        SUM(window_lock_time) AS daily_window_lock_time
+    FROM Filtered_Employee_Intervals
+    GROUP BY emp_id, application_name, cal_date
+),
+Employee_Average AS (
+    SELECT
+        emp_id,
+        application_name,
+        AVG(daily_active_time) AS avg_active_time,
+        AVG(daily_idle_time) AS avg_idle_time,
+        AVG(daily_window_lock_time) AS avg_window_lock_time
+    FROM Employee_Daily_Sum
+    GROUP BY emp_id, application_name
+),
+Application_Average AS (
+    SELECT
+        application_name,
+        AVG(avg_active_time) AS application_active_time,
+        AVG(avg_idle_time) AS application_idle_time,
+        AVG(avg_window_lock_time) AS application_window_lock_time
+    FROM Employee_Average
+    GROUP BY application_name
+),
+Team_Average AS (
+    SELECT
+        AVG(application_active_time) AS team_active_time,
+        AVG(application_idle_time) AS team_idle_time,
+        AVG(application_window_lock_time) AS team_window_lock_time
+    FROM Application_Average
+)
+SELECT 
+    a.application_name,
+    a.application_active_time AS current_active_time,
+    a.application_idle_time AS current_idle_time,
+    a.application_window_lock_time AS current_window_lock_time,
+    lp.application_active_time AS last_active_time,
+    lp.application_idle_time AS last_idle_time,
+    lp.application_window_lock_time AS last_window_lock_time,
+    ((a.application_active_time - lp.application_active_time) / NULLIF(lp.application_active_time, 0)) * 100 AS active_change,
+    ((a.application_idle_time - lp.application_idle_time) / NULLIF(lp.application_idle_time, 0)) * 100 AS idle_change,
+    ((a.application_window_lock_time - lp.application_window_lock_time) / NULLIF(lp.application_window_lock_time, 0)) * 100 AS window_lock_change,
+    CASE WHEN ((a.application_active_time - lp.application_active_time) / NULLIF(lp.application_active_time, 0)) * 100 > 0 THEN 'up' ELSE 'down' END AS active_trend,
+    CASE WHEN ((a.application_idle_time - lp.application_idle_time) / NULLIF(lp.application_idle_time, 0)) * 100 > 0 THEN 'up' ELSE 'down' END AS idle_trend,
+    CASE WHEN ((a.application_window_lock_time - lp.application_window_lock_time) / NULLIF(lp.application_window_lock_time, 0)) * 100 > 0 THEN 'up' ELSE 'down' END AS window_lock_trend
+FROM Application_Average a
+LEFT JOIN Application_Average lp ON a.application_name = lp.application_name
+WHERE lp.application_active_time IS NOT NULL
+ORDER BY a.application_name;
+
+
+---
+
+Key Fixes in This Query
+
+1. Login-Logout Time Restriction
+
+Extracts first_login and last_logout per employee from EMPLOGINLOGOUT.
+
+Filters EMPAPPINFO records to only include those within this working window.
+
+
+
+2. Interval Data Aggregation
+
+Since EMPAPPINFO stores hourly records, we sum them up per employee per day.
+
+Then, we calculate employee-wise averages for the period.
+
+
+
+3. Application-Wise and Team-Wide Averages
+
+Each application’s active/idle time is averaged across employees.
+
+Team-wide average is computed from application-wise averages.
+
+
+
+4. Percentage Change & Trend Calculation
+
+Compares current period vs. last period for trends (up / down).
+
+
+
+
+
+---
+
+How This Works
+
+If an employee logs in at 9:30 AM and logs out at 6:15 PM, only data between these times is considered.
+
+Each hour’s active and idle time is summed per employee per day.
+
+Employee-wise averages are computed over the selected week/month/day/custom period.
+
+The final average for an application is derived from all employees who used it.
+
+Window Lock is treated as another application, but all time under it is counted as active time.
+
+
+
+---
+
+Updated API Response Format
+
+{
+  "team_average": {
+    "current_period": {
+      "active_time": "4h 25m",
+      "idle_time": "2h 10m",
+      "window_lock_time": "1h 15m"
+    },
+    "last_period": {
+      "active_time": "4h 45m",
+      "idle_time": "2h 30m",
+      "window_lock_time": "1h 20m"
+    },
+    "percentage_change": {
+      "active_time": "-7.0%",
+      "idle_time": "-13.3%",
+      "window_lock_time": "-6.3%"
+    },
+    "trend": {
+      "active_time": "down",
+      "idle_time": "down",
+      "window_lock_time": "down"
+    }
+  },
+  "applications": [
+    {
+      "application_name": "Google Chrome",
+      "current_period": {
+        "average_active_time": "3h 50m",
+        "average_idle_time": "1h 15m"
+      },
+      "last_period": {
+        "average_active_time": "4h 10m",
+        "average_idle_time": "1h 20m"
+      },
+      "percentage_change": {
+        "active_time": "-8.0%",
+        "idle_time": "-6.3%"
+      },
+      "trend": {
+        "active_time": "down",
+        "idle_time": "down"
+      },
+      "employees": [
+        {
+          "employee_id": "EMP001",
+          "average_active_time": "4h 20m",
+          "average_idle_time": "1h 30m"
+        },
+        {
+          "employee_id": "EMP002",
+          "average_active_time": "3h 20m",
+          "average_idle_time": "1h 00m"
+        }
+      ]
+    },
+    {
+      "application_name": "Window Lock",
+      "current_period": {
+        "window_lock_time": "1h 15m"
+      },
+      "last_period": {
+        "window_lock_time": "1h 20m"
+      },
+      "percentage_change": {
+        "window_lock_time": "-6.3%"
+      },
+      "trend": {
+        "window_lock_time": "down"
+      }
+    }
+  ]
+}
+
+
+---
+
+Next Steps
+
+Integrate the query into Flask and pass start_date and end_date dynamically.
+
+Ensure frontend correctly displays trends and percentage changes.
+
+
+Would you like me to format the Flask API code as well?
+
+
+
+
+
+
+
 
 
 INSERT INTO ShiftTable (EMPID, ShiftDate, StartTime, EndTime, DayID, EachWeekOf, ContactedHours, EachNightShift, Created)
