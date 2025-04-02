@@ -19,6 +19,49 @@ EmployeeActivity AS (
         ON i.emp_id = l.emp_id 
         AND i.shifted_date = l.shifted_date
         AND (
+            -- Convert login and logout times using required format
+            (l.login_time IS NOT NULL 
+             AND l.logout_time IS NOT NULL 
+             AND TO_TIMESTAMP(l.login_time, 'YYYY-MM-DD HH:MI:SS') 
+                 <= TO_TIMESTAMP(CONCAT(i.shifted_date, ' ', SUBSTRING(i.time_interval, 1, 5), ':00'), 'YYYY-MM-DD HH:MI:SS')
+                 AND TO_TIMESTAMP(l.logout_time, 'YYYY-MM-DD HH:MI:SS') 
+                 >= TO_TIMESTAMP(CONCAT(i.shifted_date, ' ', SUBSTRING(i.time_interval, 1, 5), ':00'), 'YYYY-MM-DD HH:MI:SS')
+            )
+
+            -- If logout_time is NULL, consider all intervals after login
+            OR
+            (l.logout_time IS NULL 
+             AND TO_TIMESTAMP(l.login_time, 'YYYY-MM-DD HH:MI:SS') 
+                 <= TO_TIMESTAMP(CONCAT(i.shifted_date, ' ', SUBSTRING(i.time_interval, 1, 5), ':00'), 'YYYY-MM-DD HH:MI:SS')
+            )
+        )
+    WHERE l.emp_id IN (SELECT emp_id FROM FilteredEmployees)  -- Filter by ManagerID
+    GROUP BY i.emp_id, i.shifted_date, i.application_name
+)
+SELECT * FROM EmployeeActivity;
+
+
+
+WITH FilteredEmployees AS (
+    -- Step 1: Get employees under a specific ManagerID
+    SELECT emp_id 
+    FROM HREmployeeCentral
+    WHERE manager_id = @manager_id
+),
+EmployeeActivity AS (
+    -- Step 2: Extract activity data for the selected employees
+    SELECT 
+        i.emp_id,
+        i.shifted_date,
+        i.application_name,
+        COALESCE(SUM(i.active_time_sec), 0) AS total_active_time,
+        COALESCE(SUM(i.ideal_time_sec), 0) AS total_idle_time,
+        COALESCE(SUM(i.window_lock_time_sec), 0) AS total_window_lock_time
+    FROM empinfo i
+    LEFT JOIN emploginlogout l 
+        ON i.emp_id = l.emp_id 
+        AND i.shifted_date = l.shifted_date
+        AND (
             -- Convert login and logout times to TIMESTAMP
             (CAST(l.login_time AS TIMESTAMP) IS NOT NULL AND 
              CAST(l.logout_time AS TIMESTAMP) IS NOT NULL AND 
