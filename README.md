@@ -1,4 +1,51 @@
 
+WITH FilteredEmployees AS (
+    -- Step 1: Get employees under a specific ManagerID
+    SELECT emp_id 
+    FROM HREmployeeCentral
+    WHERE manager_id = @manager_id
+),
+EmployeeActivity AS (
+    -- Step 2: Extract activity data for the selected employees
+    SELECT 
+        i.emp_id,
+        i.shifted_date,
+        i.application_name,
+        COALESCE(SUM(i.active_time_sec), 0) AS total_active_time,
+        COALESCE(SUM(i.ideal_time_sec), 0) AS total_idle_time,
+        COALESCE(SUM(i.window_lock_time_sec), 0) AS total_window_lock_time
+    FROM empinfo i
+    LEFT JOIN emploginlogout l 
+        ON i.emp_id = l.emp_id 
+        AND i.shifted_date = l.shifted_date
+        AND (
+            -- Convert login and logout times to TIMESTAMP
+            (CAST(l.login_time AS TIMESTAMP) IS NOT NULL AND 
+             CAST(l.logout_time AS TIMESTAMP) IS NOT NULL AND 
+             
+             -- Extract start and end times from the interval
+             CAST(CONCAT(i.shifted_date, ' ', SUBSTRING(i.time_interval, 1, 5), ':00') AS TIMESTAMP) 
+             BETWEEN CAST(l.login_time AS TIMESTAMP) 
+                 AND CAST(l.logout_time AS TIMESTAMP)
+            )
+            
+            -- If logout_time is NULL, consider all intervals after login
+            OR
+            (CAST(l.logout_time AS TIMESTAMP) IS NULL AND 
+             CAST(CONCAT(i.shifted_date, ' ', SUBSTRING(i.time_interval, 1, 5), ':00') AS TIMESTAMP) 
+             >= CAST(l.login_time AS TIMESTAMP)
+            )
+        )
+    WHERE l.emp_id IN (SELECT emp_id FROM FilteredEmployees)  -- Filter by ManagerID
+    GROUP BY i.emp_id, i.shifted_date, i.application_name
+)
+SELECT * FROM EmployeeActivity;
+
+
+
+
+
+
 
 WITH EmployeeActivity AS (
     -- Step 1: Extract employee activity based on login times, considering logout time and handling NULL logout times
