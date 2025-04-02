@@ -1,4 +1,151 @@
 
+
+WITH EmployeeActivity AS (
+    -- Step 1: Extract employee activity based on login times, considering logout time and handling NULL logout times
+    SELECT 
+        l.emp_id,
+        i.shifted_date,
+        i.application_name,
+        COALESCE(SUM(i.active_time_sec), 0) AS total_active_time,
+        COALESCE(SUM(i.ideal_time_sec), 0) AS total_idle_time,
+        COALESCE(SUM(i.window_lock_time_sec), 0) AS total_window_lock_time
+    FROM empinfo i
+    LEFT JOIN emploginlogout l 
+        ON i.emp_id = l.emp_id 
+        AND i.shifted_date = l.shifted_date 
+        -- Handling login time to be within the interval, but now considering logout time logic
+        AND l.login_time BETWEEN STR_TO_DATE(i.time_interval, '%H:%i') AND ADDTIME(STR_TO_DATE(i.time_interval, '%H:%i'), '01:00:00') 
+        -- If logout time is NULL, consider the last possible interval (e.g., end of the workday)
+        AND (
+            (l.logout_time IS NULL AND l.login_time BETWEEN STR_TO_DATE(i.time_interval, '%H:%i') AND ADDTIME(STR_TO_DATE(i.time_interval, '%H:%i'), '01:00:00'))
+            OR
+            (l.logout_time IS NOT NULL AND l.logout_time BETWEEN STR_TO_DATE(i.time_interval, '%H:%i') AND ADDTIME(STR_TO_DATE(i.time_interval, '%H:%i'), '01:00:00'))
+        )
+    GROUP BY l.emp_id, i.shifted_date, i.application_name
+),
+PerDayEmployeeSummary AS (
+    -- Step 2: Aggregate total active, idle, and window lock times per employee per day
+    SELECT 
+        emp_id,
+        shifted_date,
+        SUM(total_active_time) AS daily_active_time,
+        SUM(total_idle_time) AS daily_idle_time,
+        SUM(total_window_lock_time) AS daily_window_time
+    FROM EmployeeActivity
+    GROUP BY emp_id, shifted_date
+),
+TeamAverages AS (
+    -- Step 3: Compute team-level averages for current and previous period
+    SELECT 
+        'current' AS period_type, 
+        AVG(daily_active_time) AS avg_team_active_time, 
+        AVG(daily_idle_time) AS avg_team_idle_time, 
+        AVG(daily_active_time + daily_idle_time) AS avg_team_total_time
+    FROM PerDayEmployeeSummary 
+    WHERE shifted_date BETWEEN @start_date AND @end_date
+
+    UNION ALL
+
+    SELECT 
+        'previous', 
+        AVG(daily_active_time), 
+        AVG(daily_idle_time), 
+        AVG(daily_active_time + daily_idle_time)
+    FROM PerDayEmployeeSummary 
+    WHERE shifted_date BETWEEN DATE_SUB(@start_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY) AND DATE_SUB(@end_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY)
+),
+ApplicationAverages AS (
+    -- Step 4: Compute application-level averages per employee
+    SELECT 
+        application_name, 
+        emp_id, 
+        AVG(total_active_time) AS avg_active_time, 
+        AVG(total_idle_time) AS avg_idle_time
+    FROM EmployeeActivity
+    WHERE shifted_date BETWEEN @start_date AND @end_date
+    GROUP BY application_name, emp_id
+
+    UNION ALL 
+
+    SELECT 
+        application_name, 
+        emp_id, 
+        AVG(total_active_time), 
+        AVG(total_idle_time)
+    FROM EmployeeActivity
+    WHERE shifted_date BETWEEN DATE_SUB(@start_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY) AND DATE_SUB(@end_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY)
+    GROUP BY application_name, emp_id
+),
+FinalApplicationSummary AS (
+    -- Step 5: Compute final application-level summary
+    SELECT 
+        app.application_name, 
+        AVG(CASE WHEN period_type = 'current' THEN avg_active_time END) AS current_active_time, 
+        AVG(CASE WHEN period_type = 'current' THEN avg_idle_time END) AS current_idle_time, 
+        AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END) AS last_active_time, 
+        AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END) AS last_idle_time, 
+        (AVG(CASE WHEN period_type = 'current' THEN avg_active_time END) - AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END)) / AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END) * 100 AS active_change, 
+        (AVG(CASE WHEN period_type = 'current' THEN avg_idle_time END) - AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END)) / AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END) * 100 AS idle_change
+    FROM ApplicationAverages app
+    GROUP BY app.application_name
+),
+EmployeeSummary AS (
+    -- Step 6: Employee-level details
+    SELECT 
+        emp_id, 
+        SUM(total_active_time) AS employee_active_time, 
+        SUM(total_idle_time) AS employee_idle_time
+    FROM EmployeeActivity
+    WHERE shifted_date BETWEEN @start_date AND @end_date
+    GROUP BY emp_id
+)
+SELECT 
+    JSON_OBJECT(
+        'teamSummary', JSON_ARRAYAGG(
+            JSON_OBJECT(
+                'currentactiveavginsec', t1.avg_team_active_time, 
+                'lastactiveavginsec', t2.avg_team_active_time, 
+                'activetrend', CASE WHEN t1.avg_team_active_time > t2.avg_team_active_time THEN 'Up' ELSE 'Down' END, 
+                'active_change', ((t1.avg_team_active_time - t2.avg_team_active_time) / t2.avg_team_active_time) * 100,
+                'currenttotalavginsec', t1.avg_team_total_time, 
+                'lasttotalavginsec', t2.avg_team_total_time, 
+                'totaltrend', CASE WHEN t1.avg_team_total_time > t2.avg_team_total_time THEN 'Up' ELSE 'Down' END, 
+                'total_change', ((t1.avg_team_total_time - t2.avg_team_total_time) / t2.avg_team_total_time) * 100
+            )
+        ),
+        'appSummary', JSON_ARRAYAGG(
+            JSON_OBJECT(
+                'application_name', fa.application_name, 
+                'current_active_time', fa.current_active_time, 
+                'current_idle_time', fa.current_idle_time, 
+                'last_active_time', fa.last_active_time, 
+                'last_idle_time', fa.last_idle_time, 
+                'active_change', fa.active_change, 
+                'idle_change', fa.idle_change, 
+                'active_trend', CASE WHEN fa.active_change > 0 THEN 'Up' ELSE 'Down' END, 
+                'idle_trend', CASE WHEN fa.idle_change > 0 THEN 'Up' ELSE 'Down' END
+            )
+        ),
+        'employeeInfo', JSON_ARRAYAGG(
+            JSON_OBJECT(
+                'employee_id', es.emp_id, 
+                'current_active_time', es.employee_active_time, 
+                'current_idle_time', es.employee_idle_time
+            )
+        )
+    ) AS final_output
+FROM TeamAverages t1 
+JOIN TeamAverages t2 
+    ON t1.period_type = 'current' AND t2.period_type = 'previous' 
+JOIN FinalApplicationSummary fa 
+JOIN EmployeeSummary es;
+
+
+
+
+
+
+
 Got it! You have two different sources of data:
 
 1. EMPAPPINFO Table (Interval-based data, recorded every hour)
