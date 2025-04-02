@@ -1,4 +1,106 @@
 
+
+{
+    "teamSummary": [
+        {
+            "currentactiveavginsec": 3500,
+            "lastactiveavginsec": 3300,
+            "activetrend": "Up",
+            "active_change": 6.06,
+            "currenttotalavginsec": 5000,
+            "lasttotalavginsec": 4800,
+            "totaltrend": "Up",
+            "total_change": 4.17
+        }
+    ],
+    "appSummary": [
+        {
+            "application_name": "Microsoft Excel",
+            "current_active_time": 1200,
+            "current_idle_time": 300,
+            "last_active_time": 1100,
+            "last_idle_time": 250,
+            "active_change": 9.09,
+            "idle_change": 20.00,
+            "active_trend": "Up",
+            "idle_trend": "Up",
+            "empSummary": [
+                {
+                    "employee_id": "EMP001",
+                    "active_time": 600,
+                    "idle_time": 150
+                },
+                {
+                    "employee_id": "EMP002",
+                    "active_time": 400,
+                    "idle_time": 100
+                }
+            ]
+        },
+        {
+            "application_name": "Google Chrome",
+            "current_active_time": 1500,
+            "current_idle_time": 400,
+            "last_active_time": 1400,
+            "last_idle_time": 350,
+            "active_change": 7.14,
+            "idle_change": 14.29,
+            "active_trend": "Up",
+            "idle_trend": "Up",
+            "empSummary": [
+                {
+                    "employee_id": "EMP001",
+                    "active_time": 800,
+                    "idle_time": 200
+                },
+                {
+                    "employee_id": "EMP003",
+                    "active_time": 500,
+                    "idle_time": 150
+                }
+            ]
+        }
+    ]
+}
+
+
+
+WITH FilteredEmployees AS ( -- Step 1: Get employees under a specific ManagerID SELECT emp_id FROM HREmployeeCentral WHERE manager_id = @manager_id ), EmployeeActivity AS ( -- Step 2: Extract activity data only for the employees under the specified ManagerID SELECT l.emp_id, i.shifted_date, i.application_name, COALESCE(SUM(i.active_time_sec), 0) AS total_active_time, COALESCE(SUM(i.ideal_time_sec), 0) AS total_idle_time, COALESCE(SUM(i.window_lock_time_sec), 0) AS total_window_lock_time FROM empinfo i LEFT JOIN emploginlogout l ON i.emp_id = l.emp_id AND i.shifted_date = l.shifted_date AND ( (l.logout_time IS NULL AND l.login_time BETWEEN STR_TO_DATE(i.time_interval, '%H:%i') AND ADDTIME(STR_TO_DATE(i.time_interval, '%H:%i'), '01:00:00')) OR (l.logout_time IS NOT NULL AND l.logout_time BETWEEN STR_TO_DATE(i.time_interval, '%H:%i') AND ADDTIME(STR_TO_DATE(i.time_interval, '%H:%i'), '01:00:00')) ) WHERE l.emp_id IN (SELECT emp_id FROM FilteredEmployees)  -- Filter by ManagerID GROUP BY l.emp_id, i.shifted_date, i.application_name ), PerDayEmployeeSummary AS ( -- Step 3: Aggregate per employee per day SELECT emp_id, shifted_date, SUM(total_active_time) AS daily_active_time, SUM(total_idle_time) AS daily_idle_time, SUM(total_window_lock_time) AS daily_window_time FROM EmployeeActivity GROUP BY emp_id, shifted_date ), TeamAverages AS ( -- Step 4: Compute team-level averages SELECT 'current' AS period_type, AVG(daily_active_time) AS avg_team_active_time, AVG(daily_idle_time) AS avg_team_idle_time, AVG(daily_active_time + daily_idle_time) AS avg_team_total_time FROM PerDayEmployeeSummary WHERE shifted_date BETWEEN @start_date AND @end_date
+
+UNION ALL
+
+SELECT 
+    'previous', 
+    AVG(daily_active_time), 
+    AVG(daily_idle_time), 
+    AVG(daily_active_time + daily_idle_time)
+FROM PerDayEmployeeSummary 
+WHERE shifted_date BETWEEN DATE_SUB(@start_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY) 
+                      AND DATE_SUB(@end_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY)
+
+), ApplicationAverages AS ( -- Step 5: Compute application-level averages SELECT application_name, emp_id, 'current' AS period_type, AVG(total_active_time) AS avg_active_time, AVG(total_idle_time) AS avg_idle_time FROM EmployeeActivity WHERE shifted_date BETWEEN @start_date AND @end_date GROUP BY application_name, emp_id
+
+UNION ALL 
+
+SELECT 
+    application_name, 
+    emp_id, 
+    'previous',
+    AVG(total_active_time), 
+    AVG(total_idle_time)
+FROM EmployeeActivity
+WHERE shifted_date BETWEEN DATE_SUB(@start_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY) 
+                      AND DATE_SUB(@end_date, INTERVAL (DATEDIFF(@end_date, @start_date) + 1) DAY)
+GROUP BY application_name, emp_id
+
+), FinalApplicationSummary AS ( -- Step 6: Compute final application summary (only keep applications in the current period) SELECT app.application_name, AVG(CASE WHEN app.period_type = 'current' THEN app.avg_active_time END) AS current_active_time, AVG(CASE WHEN app.period_type = 'current' THEN app.avg_idle_time END) AS current_idle_time, AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_active_time END) AS last_active_time, AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_idle_time END) AS last_idle_time, (AVG(CASE WHEN app.period_type = 'current' THEN app.avg_active_time END) - AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_active_time END)) / NULLIF(AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_active_time END), 0) * 100 AS active_change, (AVG(CASE WHEN app.period_type = 'current' THEN app.avg_idle_time END) - AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_idle_time END)) / NULLIF(AVG(CASE WHEN app.period_type = 'previous' THEN app.avg_idle_time END), 0) * 100 AS idle_change FROM ApplicationAverages app WHERE app.application_name IN (SELECT DISTINCT application_name FROM ApplicationAverages WHERE period_type = 'current') GROUP BY app.application_name ), EmployeeApplicationSummary AS ( -- Step 7: Employee-level summary per application (current period only) SELECT application_name, emp_id, SUM(total_active_time) AS employee_active_time, SUM(total_idle_time) AS employee_idle_time FROM EmployeeActivity WHERE shifted_date BETWEEN @start_date AND @end_date GROUP BY application_name, emp_id ) SELECT JSON_OBJECT( 'teamSummary', JSON_ARRAYAGG( JSON_OBJECT( 'currentactiveavginsec', t1.avg_team_active_time, 'lastactiveavginsec', t2.avg_team_active_time, 'activetrend', CASE WHEN t1.avg_team_active_time > t2.avg_team_active_time THEN 'Up' ELSE 'Down' END, 'active_change', ((t1.avg_team_active_time - t2.avg_team_active_time) / t2.avg_team_active_time) * 100, 'currenttotalavginsec', t1.avg_team_total_time, 'lasttotalavginsec', t2.avg_team_total_time, 'totaltrend', CASE WHEN t1.avg_team_total_time > t2.avg_team_total_time THEN 'Up' ELSE 'Down' END, 'total_change', ((t1.avg_team_total_time - t2.avg_team_total_time) / t2.avg_team_total_time) * 100 ) ), 'appSummary', JSON_ARRAYAGG( JSON_OBJECT( 'application_name', fa.application_name, 'current_active_time', fa.current_active_time, 'current_idle_time', fa.current_idle_time, 'last_active_time', fa.last_active_time, 'last_idle_time', fa.last_idle_time, 'active_change', fa.active_change, 'idle_change', fa.idle_change, 'active_trend', CASE WHEN fa.active_change > 0 THEN 'Up' ELSE 'Down' END, 'idle_trend', CASE WHEN fa.idle_change > 0 THEN 'Up' ELSE 'Down' END, 'empSummary', ( SELECT JSON_ARRAYAGG( JSON_OBJECT( 'employee_id', eas.emp_id, 'current_active_time', eas.employee_active_time, 'current_idle_time', eas.employee_idle_time ) ) FROM EmployeeApplicationSummary eas WHERE eas.application_name = fa.application_name ) ) ) ) AS final_output FROM TeamAverages t1 JOIN TeamAverages t2 ON t1.period_type = 'current' AND t2.period_type = 'previous' JOIN FinalApplicationSummary fa;
+
+
+
+
+
+
+
 WITH FilteredEmployees AS (
     -- Step 1: Get employees under a specific ManagerID
     SELECT emp_id 
