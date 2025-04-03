@@ -1,4 +1,164 @@
 
+WITH FilteredEmployees AS (
+    SELECT emplid AS emp_id
+    FROM lobound.hr_employee_central
+    WHERE func_mer_id = 45179442
+),
+
+EmployeeActivity AS (
+    SELECT 
+        e.emp_id,
+        e.cal_date,
+        e.app_name,
+        COALESCE(SUM(e.total_time_spent_active), 0) AS total_active_time,
+        COALESCE(SUM(e.total_time_spent_idle), 0) AS total_idle_time
+    FROM gold_dashboard.analytics_emp_app_info e
+    JOIN FilteredEmployees fe ON e.emp_id = fe.emp_id
+    GROUP BY e.emp_id, e.cal_date, e.app_name
+),
+
+PerDayEmployeeSummary AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        SUM(total_active_time) AS daily_active_time,
+        SUM(total_active_time + total_idle_time) AS daily_total_time
+    FROM EmployeeActivity
+    GROUP BY emp_id, cal_date
+),
+
+TeamAverages AS (
+    SELECT 
+        'current' AS period_type,
+        AVG(daily_active_time) AS avg_team_active_time,
+        AVG(daily_total_time) AS avg_team_total_time
+    FROM PerDayEmployeeSummary
+    WHERE cal_date BETWEEN '2025-03-10' AND '2025-03-16'
+
+    UNION ALL
+
+    SELECT 
+        'previous' AS period_type,
+        AVG(daily_active_time),
+        AVG(daily_total_time)
+    FROM PerDayEmployeeSummary
+    WHERE cal_date BETWEEN date_add('2025-03-10', -datediff('2025-03-16', '2025-03-10')) 
+                      AND date_add('2025-03-10', -1)
+),
+
+ApplicationAverages AS (
+    SELECT 
+        'current' AS period_type,
+        app_name,
+        emp_id,
+        AVG(total_active_time) AS avg_active_time,
+        AVG(total_idle_time) AS avg_idle_time
+    FROM EmployeeActivity
+    WHERE cal_date BETWEEN '2025-03-10' AND '2025-03-16'
+    GROUP BY app_name, emp_id
+
+    UNION ALL
+
+    SELECT 
+        'previous' AS period_type,
+        app_name,
+        emp_id,
+        AVG(total_active_time),
+        AVG(total_idle_time)
+    FROM EmployeeActivity
+    WHERE cal_date BETWEEN date_add('2025-03-10', -datediff('2025-03-16', '2025-03-10')) 
+                      AND date_add('2025-03-10', -1)
+    GROUP BY app_name, emp_id
+),
+
+FinalApplicationSummary AS (
+    SELECT 
+        app_name,
+        AVG(CASE WHEN period_type = 'current' THEN avg_active_time END) AS current_active_time,
+        AVG(CASE WHEN period_type = 'current' THEN avg_idle_time END) AS current_idle_time,
+        AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END) AS last_active_time,
+        AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END) AS last_idle_time,
+        
+        (AVG(CASE WHEN period_type = 'current' THEN avg_active_time END) - 
+         AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END)) / 
+         NULLIF(AVG(CASE WHEN period_type = 'previous' THEN avg_active_time END), 0) * 100 AS active_change,
+
+        (AVG(CASE WHEN period_type = 'current' THEN avg_idle_time END) - 
+         AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END)) / 
+         NULLIF(AVG(CASE WHEN period_type = 'previous' THEN avg_idle_time END), 0) * 100 AS idle_change
+    FROM ApplicationAverages
+    GROUP BY app_name
+),
+
+TeamSummary AS (
+    SELECT 
+        (SELECT avg_team_active_time FROM TeamAverages WHERE period_type = 'current') AS activeavginsec,
+        (SELECT avg_team_active_time FROM TeamAverages WHERE period_type = 'previous') AS lastactiveavginsec,
+        (SELECT avg_team_active_time > (SELECT avg_team_active_time FROM TeamAverages WHERE period_type = 'previous') 
+         FROM TeamAverages WHERE period_type = 'current' LIMIT 1) AS isactivetrendup,
+        (SELECT (avg_team_active_time - (SELECT avg_team_active_time FROM TeamAverages WHERE period_type = 'previous')) / 
+                NULLIF((SELECT avg_team_active_time FROM TeamAverages WHERE period_type = 'previous'), 0) * 100
+         FROM TeamAverages WHERE period_type = 'current') AS active_change,
+        (SELECT avg_team_total_time FROM TeamAverages WHERE period_type = 'current') AS totalavginsec,
+        (SELECT avg_team_total_time FROM TeamAverages WHERE period_type = 'previous') AS lasttotalavginsec,
+        (SELECT avg_team_total_time > (SELECT avg_team_total_time FROM TeamAverages WHERE period_type = 'previous') 
+         FROM TeamAverages WHERE period_type = 'current' LIMIT 1) AS istotaltrendup,
+        (SELECT (avg_team_total_time - (SELECT avg_team_total_time FROM TeamAverages WHERE period_type = 'previous')) / 
+                NULLIF((SELECT avg_team_total_time FROM TeamAverages WHERE period_type = 'previous'), 0) * 100
+         FROM TeamAverages WHERE period_type = 'current') AS total_change
+),
+
+AppSummary AS (
+    SELECT 
+        f.app_name AS application_name,
+        f.current_active_time AS active_time,
+        f.current_idle_time AS idle_time,
+        (
+            SELECT collect_list(
+                named_struct(
+                    'employee_id', a.emp_id,
+                    'active_time', a.avg_active_time,
+                    'idle_time', a.avg_idle_time
+                )
+            )
+            FROM ApplicationAverages a 
+            WHERE a.app_name = f.app_name AND period_type = 'current'
+        ) AS empSummary
+    FROM FinalApplicationSummary f
+)
+
+SELECT to_json(
+    named_struct(
+        'teamSummary', 
+        (SELECT named_struct(
+            'activeavginsec', activeavginsec,
+            'lastactiveavginsec', lastactiveavginsec,
+            'isactivetrendup', isactivetrendup,
+            'active_change', active_change,
+            'totalavginsec', totalavginsec,
+            'lasttotalavginsec', lasttotalavginsec,
+            'istotaltrendup', istotaltrendup,
+            'total_change', total_change
+        ) FROM TeamSummary),
+        'appSummary', 
+        (SELECT collect_list(
+            named_struct(
+                'application_name', application_name,
+                'active_time', active_time,
+                'idle_time', idle_time,
+                'empSummary', empSummary
+            )
+        ) FROM AppSummary)
+    )
+) AS json_result
+
+
+
+
+
+
+
+
 WITH FilteredEmployees AS ( -- Step 1: Get employees under a specific ManagerID SELECT emp_id FROM HREmployeeCentral WHERE manager_id = @manager_id ), EmployeeActivity AS ( -- Step 2: Extract activity data only for the employees under the specified ManagerID SELECT l.emp_id, i.shifted_date, i.application_name, COALESCE(SUM(i.active_time_sec), 0) AS total_active_time, COALESCE(SUM(i.ideal_time_sec), 0) AS total_idle_time FROM empinfo i LEFT JOIN emploginlogout l ON i.emp_id = l.emp_id AND i.shifted_date = l.shifted_date WHERE l.emp_id IN (SELECT emp_id FROM FilteredEmployees)  -- Filter by ManagerID GROUP BY l.emp_id, i.shifted_date, i.application_name ), PerDayEmployeeSummary AS ( -- Step 3: Aggregate per employee per day SELECT emp_id, shifted_date, SUM(total_active_time) AS daily_active_time, SUM(total_idle_time) AS daily_idle_time FROM EmployeeActivity GROUP BY emp_id, shifted_date ), TeamAverages AS ( -- Step 4: Compute team-level averages SELECT 'current' AS period_type, AVG(daily_active_time) AS avg_team_active_time, AVG(daily_idle_time) AS avg_team_idle_time, AVG(daily_active_time + daily_idle_time) AS avg_team_total_time FROM PerDayEmployeeSummary WHERE shifted_date BETWEEN @start_date AND @end_date
 
 UNION ALL
