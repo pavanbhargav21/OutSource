@@ -1,4 +1,23 @@
 
+TeamAverages AS (
+    SELECT 
+        p.period_type,
+        AVG(s.daily_active_time) AS avg_team_active_time,
+        AVG(s.daily_active_time + s.daily_idle_time + s.daily_window_lock_time) AS avg_team_total_time
+    FROM (VALUES ('current'), ('previous')) p(period_type)
+    LEFT JOIN PerDayEmployeeSummary s
+        ON (p.period_type = 'current' AND s.cal_date BETWEEN @start_date AND @end_date)
+        OR (p.period_type = 'previous' AND s.cal_date BETWEEN 
+            DATEADD(DAY, DATEDIFF(DAY, @end_date, @start_date) - 1, @start_date) 
+            AND DATEADD(DAY, DATEDIFF(DAY, @end_date, @start_date) - 1, @end_date)
+        )
+    GROUP BY p.period_type
+)
+
+
+
+
+
 WITH FilteredEmployees AS (
     SELECT emplid AS emp_id
     FROM lobound.hr_employee_central
