@@ -1,4 +1,60 @@
 
+-- 1. Generate date range from start_date to end_date
+WITH DateRange AS (
+  SELECT sequence(to_date('<start_date>'), to_date('<end_date>'), interval 1 day) AS dates
+),
+ExplodedDates AS (
+  SELECT explode(dates) AS cal_date FROM DateRange
+),
+
+-- 2. Aggregate actual employee activity by date
+DailyAgg AS (
+  SELECT
+    cal_date,
+    SUM(CAST(total_idle_time AS DOUBLE)) AS total_idle_time_seconds,
+    SUM(CAST(total_active_time AS DOUBLE)) AS total_non_prod_seconds,
+    SUM(CAST(total_window_lock_time AS DOUBLE)) AS total_time_spent_seconds
+  FROM gold_dashboard.analytics_emp_app_info
+  WHERE cal_date BETWEEN DATE('<start_date>') AND DATE('<end_date>')
+    AND emp_id = '<your_emp_id>'
+  GROUP BY cal_date
+),
+
+-- 3. Left join date range with actual data
+FullData AS (
+  SELECT
+    d.cal_date,
+    COALESCE(a.total_idle_time_seconds, 0) AS total_idle_time_seconds,
+    COALESCE(a.total_non_prod_seconds, 0) AS total_non_prod_seconds,
+    COALESCE(a.total_time_spent_seconds, 0) AS total_time_spent_seconds
+  FROM ExplodedDates d
+  LEFT JOIN DailyAgg a ON d.cal_date = a.cal_date
+),
+
+-- 4. Format final JSON
+FinalJSON AS (
+  SELECT TO_JSON(
+    NAMED_STRUCT(
+      'employee_time_spent_data', COLLECT_LIST(
+        NAMED_STRUCT(
+          'cal_date', cal_date,
+          'total_idle_time_seconds', total_idle_time_seconds,
+          'total_non_prod_seconds', total_non_prod_seconds,
+          'total_time_spent_seconds', total_time_spent_seconds
+        )
+      )
+    )
+  ) AS employee_time_summary
+  FROM FullData
+)
+
+SELECT * FROM FinalJSON;
+
+
+
+
+
+
 TeamAverages AS (
     SELECT 
         p.period_type,
