@@ -1,4 +1,90 @@
 
+-- Set employee ID here
+WITH 
+-- 1. Generate a date range from today - 30 days to today
+DateRange AS (
+  SELECT sequence(
+    date_sub(current_date(), 30), 
+    current_date(), 
+    interval 1 day
+  ) AS dates
+),
+
+-- 2. Flatten the dates into rows and assign week number
+ExplodedDates AS (
+  SELECT 
+    explode(dates) AS cal_date 
+  FROM DateRange
+),
+
+DateWithWeek AS (
+  SELECT 
+    cal_date,
+    weekofyear(cal_date) AS week_number
+  FROM ExplodedDates
+),
+
+-- 3. Filter and prepare actual employee data (minimal columns)
+FilteredActivity AS (
+  SELECT 
+    cal_date,
+    weekofyear(cal_date) AS week_number,
+    CAST(total_idle_time AS DOUBLE) AS total_idle_time_seconds,
+    CAST(total_active_time AS DOUBLE) AS total_non_prod_seconds,
+    CAST(total_window_lock_time AS DOUBLE) AS total_time_spent_seconds
+  FROM gold_dashboard.analytics_emp_app_info
+  WHERE emp_id = '<your_emp_id>'
+    AND cal_date BETWEEN date_sub(current_date(), 30) AND current_date()
+),
+
+-- 4. Aggregate actual data by week number
+WeeklyAgg AS (
+  SELECT 
+    week_number,
+    SUM(total_idle_time_seconds) AS total_idle_time_seconds,
+    SUM(total_non_prod_seconds) AS total_non_prod_seconds,
+    SUM(total_time_spent_seconds) AS total_time_spent_seconds
+  FROM FilteredActivity
+  GROUP BY week_number
+),
+
+-- 5. Get distinct weeks in range (even if no data)
+AllWeeks AS (
+  SELECT DISTINCT week_number FROM DateWithWeek
+),
+
+-- 6. Left join to ensure all weeks show up in final output
+FinalData AS (
+  SELECT 
+    w.week_number,
+    COALESCE(a.total_idle_time_seconds, 0) AS total_idle_time_seconds,
+    COALESCE(a.total_non_prod_seconds, 0) AS total_non_prod_seconds,
+    COALESCE(a.total_time_spent_seconds, 0) AS total_time_spent_seconds
+  FROM AllWeeks w
+  LEFT JOIN WeeklyAgg a ON w.week_number = a.week_number
+)
+
+-- 7. Format as JSON
+SELECT to_json(named_struct(
+  'employee_time_spent_data', collect_list(named_struct(
+    'week_number', week_number,
+    'total_idle_time_seconds', total_idle_time_seconds,
+    'total_non_prod_seconds', total_non_prod_seconds,
+    'total_time_spent_seconds', total_time_spent_seconds
+  ))
+)) AS employee_time_spent_json
+FROM FinalData
+ORDER BY week_number;
+
+
+
+
+
+
+
+
+
+
 -- 1. Generate date range from start_date to end_date
 WITH DateRange AS (
   SELECT sequence(to_date('<start_date>'), to_date('<end_date>'), interval 1 day) AS dates
