@@ -1,4 +1,58 @@
 
+WITH IntervalBuckets AS (
+  -- Step 1: Create static list of 3-hour intervals for the day
+  SELECT explode(array(
+    '00:00-03:00', '03:00-06:00', '06:00-09:00', '09:00-12:00',
+    '12:00-15:00', '15:00-18:00', '18:00-21:00', '21:00-00:00'
+  )) AS interval
+),
+
+ThreeHourAggregated AS (
+  -- Step 2: Extract and bucket interval from the data (if any)
+  SELECT
+    emp_id,
+    cal_date,
+    CONCAT(
+      LPAD(FLOOR(CAST(SUBSTRING(interval, 1, 2) AS INT) / 3) * 3, 2, '0'), ':00-',
+      LPAD(FLOOR(CAST(SUBSTRING(interval, 1, 2) AS INT) / 3) * 3 + 3, 2, '0'), ':00'
+    ) AS interval,
+    SUM(CAST(total_active_time AS DOUBLE)) AS total_active_time_seconds,
+    SUM(CAST(total_idle_time AS DOUBLE)) AS total_idle_time_seconds,
+    SUM(CAST(total_window_lock_time AS DOUBLE)) AS total_window_lock_time_seconds
+  FROM gold_dashboard.analytics_emp_app_info
+  WHERE emp_id = '<your_emp_id>'
+    AND cal_date = CURRENT_DATE()
+  GROUP BY emp_id, cal_date, 
+           FLOOR(CAST(SUBSTRING(interval, 1, 2) AS INT) / 3)
+),
+
+FinalData AS (
+  -- Step 3: Join static 3-hour intervals with actual aggregated data
+  SELECT
+    i.interval,
+    COALESCE(a.total_active_time_seconds, 0) AS total_active_time_seconds,
+    COALESCE(a.total_idle_time_seconds, 0) AS total_idle_time_seconds,
+    COALESCE(a.total_window_lock_time_seconds, 0) AS total_window_lock_time_seconds
+  FROM IntervalBuckets i
+  LEFT JOIN ThreeHourAggregated a
+    ON i.interval = a.interval
+)
+
+-- Step 4: Output result (e.g., select as JSON or return as API response)
+SELECT
+  to_json(named_struct(
+    'employee_time_spent_data', collect_list(named_struct(
+      'interval', interval,
+      'total_active_time_seconds', total_active_time_seconds,
+      'total_idle_time_seconds', total_idle_time_seconds,
+      'total_window_lock_time_seconds', total_window_lock_time_seconds
+    ))
+  )) AS employee_time_spent_json
+FROM FinalData;
+
+
+
+
 -- Set employee ID here
 WITH 
 -- 1. Generate a date range from today - 30 days to today
