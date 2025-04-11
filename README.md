@@ -1,4 +1,152 @@
 
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta
+
+def process_employee_activities():
+    # Current timestamp and 70-minute threshold
+    current_time = datetime.now()
+    ingestion_threshold = current_time - timedelta(minutes=70)
+    
+    # Step 1: Get activities ingested in last 70 minutes
+    recent_activities = spark.table("emp_activity").filter(
+        F.col("ingestion_time") >= ingestion_threshold
+    )
+    
+    if recent_activities.isEmpty():
+        print("No new activities in the last 70 minutes")
+        return
+    
+    # Step 2: Get latest activity per employee (from the recent ingestions)
+    window_spec = Window.partitionBy("emp_id").orderBy(F.desc("start_time"))
+    latest_activities = recent_activities.withColumn("row_num", F.row_number().over(window_spec)) \
+                                      .filter(F.col("row_num") == 1) \
+                                      .select("emp_id", "cal_date", "start_time", "app_name")
+    
+    # Step 3: Get distinct employee-date pairs we need to process
+    emp_date_pairs = latest_activities.select("emp_id", "cal_date").distinct()
+    
+    # Step 4: Get corresponding shift data only for these specific employee-dates
+    current_shifts = spark.table("shift").join(
+        F.broadcast(emp_date_pairs),
+        (F.col("shift.emp_id") == F.col("emp_id")) & 
+        (F.col("shift.shift_date") == F.col("cal_date")),
+        "inner"
+    ).select("emp_id", "shift_date", "shift_start_time", "shift_end_time")
+    
+    # Step 5: Get previous day shifts for logout calculations
+    prev_date_pairs = emp_date_pairs.withColumn("prev_date", F.date_sub("cal_date", 1))
+    prev_shifts = spark.table("shift").join(
+        F.broadcast(prev_date_pairs),
+        (F.col("shift.emp_id") == F.col("emp_id")) & 
+        (F.col("shift.shift_date") == F.col("prev_date")),
+        "inner"
+    ).select("emp_id", "shift_date", "shift_end_time")
+    
+    # Step 6: Join with current and previous shifts
+    processed_data = latest_activities.join(
+        current_shifts,
+        ["emp_id", "cal_date"],
+        "left"
+    ).join(
+        prev_shifts,
+        (latest_activities["emp_id"] == prev_shifts["emp_id"]) &
+        (F.date_sub(latest_activities["cal_date"], 1) == prev_shifts["shift_date"]),
+        "left"
+    )
+    
+    # Step 7: Determine activity type with current day login priority
+    processed_data = processed_data.withColumn(
+        "activity_type",
+        F.when(
+            # Current day login condition
+            (F.col("shift_start_time").isNotNull()) &
+            (F.col("start_time") >= (F.col("shift_start_time") - F.expr("INTERVAL 4 HOURS"))),
+            F.lit("LOGIN")
+        ).when(
+            # Previous day logout condition
+            (F.col("shift_end_time").isNotNull()) &
+            (F.col("start_time") <= (F.col("shift_end_time") + F.expr("INTERVAL 8 HOURS"))),
+            F.lit("LOGOUT")
+        ).otherwise(
+            F.lit("ACTIVE")  # Not a login/logout event
+        )
+    ).withColumn(
+        "effective_date",
+        F.when(
+            F.col("activity_type") == "LOGOUT",
+            F.date_sub(F.col("cal_date"), 1)  # Attribute to previous day
+        ).otherwise(
+            F.col("cal_date")  # Use activity date for logins
+        )
+    )
+    
+    # Step 8: Filter only login/logout events
+    login_logout_events = processed_data.filter(
+        F.col("activity_type").isin(["LOGIN", "LOGOUT"])
+    )
+    
+    if login_logout_events.isEmpty():
+        print("No login/logout events to process")
+        return
+    
+    # Step 9: Get last known logout times for validation
+    emp_ids = [row.emp_id for row in latest_activities.select("emp_id").distinct().collect()]
+    last_logouts = spark.table("emp_login_logout") \
+                      .filter(F.col("activity_type") == "LOGOUT") \
+                      .filter(F.col("emp_id").isin(emp_ids)) \
+                      .groupBy("emp_id") \
+                      .agg(F.max("start_time").alias("last_logout_time"))
+    
+    # Step 10: Validate logins don't occur after known logouts
+    final_records = login_logout_events.join(
+        last_logouts,
+        "emp_id",
+        "left"
+    ).filter(
+        ~((F.col("activity_type") == "LOGIN") &
+         (F.col("last_logout_time").isNotNull()) &
+         (F.col("start_time") <= F.col("last_logout_time")))
+    ).select(
+        "emp_id",
+        "effective_date".alias("cal_date"),
+        "start_time",
+        "activity_type",
+        F.lit(current_time).alias("update_time")
+    )
+    
+    # Step 11: Merge with target table
+    final_records.createOrReplaceTempView("updates_temp")
+    
+    spark.sql("""
+        MERGE INTO emp_login_logout target
+        USING updates_temp source
+        ON target.emp_id = source.emp_id AND target.cal_date = source.cal_date
+        WHEN MATCHED AND (
+            target.activity_type != source.activity_type OR
+            (target.activity_type = 'LOGIN' AND source.start_time > target.start_time) OR
+            (target.activity_type = 'LOGOUT' AND source.start_time < target.start_time)
+        ) THEN
+            UPDATE SET 
+                target.start_time = source.start_time,
+                target.activity_type = source.activity_type,
+                target.update_time = source.update_time
+        WHEN NOT MATCHED THEN
+            INSERT (emp_id, cal_date, start_time, activity_type, update_time)
+            VALUES (source.emp_id, source.cal_date, source.start_time, source.activity_type, source.update_time)
+    """)
+    
+    print(f"Processed {final_records.count()} login/logout records")
+
+# Schedule this job to run every hour
+process_employee_activities()
+
+
+
+
+
+
 WITH IntervalBuckets AS (
   -- Step 1: Create static list of 3-hour intervals for the day
   SELECT explode(array(
