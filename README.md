@@ -1,5 +1,121 @@
 
 
+# **Complete Employee Login/Logout Tracking Logic (All Scenarios & Rules)**
+
+---
+
+## **1. Core Business Rules**
+### **A. Shift Definitions**
+| **Shift Type** | **Time Range** | **Login Window** | **Logout Window** | **Notes** |
+|--------------|--------------|----------------|-----------------|---------|
+| **Day Shift** | `09:00 - 17:00` | `[05:00, 09:00]` | `[17:00, 01:00 (next day)]` | Standard workday |
+| **Night Shift** | `18:00 - 02:00` (next day) | `[14:00, 18:00]` | `[02:00, 10:00]` (next day) | Spans midnight |
+| **Default Shift** (No data) | `09:00 - 17:00` | `[05:00, 09:00]` | `[17:00, 01:00]` | Fallback rule |
+
+---
+
+## **2. Classification Logic**
+### **Priority Rules**
+1. **Current Day Login Check (First Priority)**  
+   - If activity falls in `[shift_start - 4h, shift_start]` → **LOGIN** (current date)  
+   - *Example*: 06:00 activity for 09:00-17:00 shift → LOGIN  
+
+2. **Previous Day Logout Check (Second Priority)**  
+   - If activity falls in `[shift_end, shift_end + 8h]` → **LOGOUT** (previous date)  
+   - *Example*: 03:00 activity after 18:00-02:00 shift → LOGOUT (previous day)  
+
+3. **No Match** → **ACTIVE** (not tracked)  
+
+---
+
+## **3. Scenario Matrix**
+### **A. Standard Day Shift (09:00-17:00)**
+| **Activity Time** | **Classification** | **Effective Date** | **Logic** |
+|------------------|------------------|------------------|---------|
+| 04:00 | ACTIVE | - | Before login window |
+| **05:00** | **LOGIN** | Current day | `05:00 ∈ [05:00, 09:00]` |
+| 12:00 | ACTIVE | - | Mid-shift |
+| **18:00** | **LOGOUT** | Current day | `18:00 ∈ [17:00, 01:00]` |
+| 02:00 (next day) | ACTIVE | - | After logout window |
+
+### **B. Night Shift (18:00-02:00)**
+| **Activity Time** | **Classification** | **Effective Date** | **Logic** |
+|------------------|------------------|------------------|---------|
+| **14:00** | **LOGIN** | Current day | `14:00 ∈ [14:00, 18:00]` |
+| 20:00 | ACTIVE | - | Mid-shift |
+| **03:00** (next day) | **LOGOUT** | Previous day | `03:00 ∈ [02:00, 10:00]` |
+| 11:00 (next day) | ACTIVE | - | After logout window |
+
+### **C. No Shift Data (Defaults to 09:00-17:00)**
+| **Activity Time** | **Classification** | **Effective Date** | **Logic** |
+|------------------|------------------|------------------|---------|
+| **08:00** | **LOGIN** | Current day | `08:00 ∈ [05:00, 09:00]` |
+| **19:00** | **LOGOUT** | Current day | `19:00 ∈ [17:00, 01:00]` |
+
+### **D. Overlapping Scenarios**
+| **Activity Time** | **Shift Context** | **Classification** | **Priority** |
+|------------------|------------------|------------------|------------|
+| **06:00** | Day (09:00-17:00) + Previous Night (18:00-02:00) | **LOGIN** (current day) | Current day takes precedence |
+| **03:00** | Night (18:00-02:00) + Next Day (09:00-17:00) | **LOGOUT** (previous day) | Previous day logout first |
+
+---
+
+## **4. Edge Cases & Special Rules**
+### **A. Multi-Day Shifts**
+- **Example**: Night shift ends at 02:00 next day  
+  - Logout valid until **10:00 next day** (`02:00 + 8h`)  
+
+### **B. Late Ingestions**
+- If system processes old data (e.g., yesterday's activity today):  
+  - Still checks against **correct historical shift**  
+
+### **C. Missing Logouts**
+- If an employee has **LOGIN but no LOGOUT**:  
+  - System **does not auto-logout** (requires manual review)  
+
+### **D. Shift Overlaps**
+- If two shifts overlap (e.g., night + early morning):  
+  - **Priority**: Current day login > Previous day logout  
+
+---
+
+## **5. Decision Tree**
+```mermaid
+graph TD
+    A[Activity Time] --> B{Has Shift Data?}
+    B -->|Yes| C[Check Current Day Login Window]
+    B -->|No| D[Use Default Shift]
+    C --> E{In Login Window?}
+    E -->|Yes| F[Mark as LOGIN]
+    E -->|No| G[Check Previous Day Logout Window]
+    G --> H{In Logout Window?}
+    H -->|Yes| I[Mark as LOGOUT]
+    H -->|No| J[Mark as ACTIVE]
+```
+
+---
+
+## **6. Key Assumptions**
+1. **Shift End Time** = Actual end of work (not including buffer)  
+2. **Login Window** = 4 hours before shift start  
+3. **Logout Window** = 8 hours after shift end  
+4. **No Shift Data** → Defaults to 9AM-5PM  
+
+---
+
+## **Next Steps**
+Would you like me to:  
+1. Provide the **complete PySpark code** for this logic?  
+2. Add **additional validation rules** (e.g., minimum login duration)?  
+3. Handle **special cases** like holidays?  
+
+Let me know how you'd like to proceed! 🚀
+
+
+
+
+---------------
+
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from datetime import datetime, timedelta
