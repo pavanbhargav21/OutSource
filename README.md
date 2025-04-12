@@ -1,4 +1,128 @@
 
+# **Complete Employee Login/Logout Tracking System**
+## **Final Implementation with WindowLock Handling**
+
+```python
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta
+
+# Configuration
+DEFAULT_SHIFT_START = "09:00:00"
+DEFAULT_SHIFT_END = "18:00:00"
+LOGIN_WINDOW_HOURS = 4  # Hours before shift start to count as login
+MIN_SESSION_MINUTES = 30  # Minimum session duration
+
+def process_employee_activities():
+    # 1. Load recent activities (70-minute sliding window)
+    current_time = datetime.now()
+    ingestion_threshold = current_time - timedelta(minutes=70)
+    
+    activities_df = spark.table("emp_activity").filter(
+        F.col("ingestion_time") >= ingestion_threshold
+    )
+    
+    if activities_df.isEmpty():
+        print("No new activities to process")
+        return
+
+    # 2. Load shift data
+    shifts_df = spark.table("shift")
+    
+    # 3. Process activities with shift information
+    processed_df = activities_df.join(
+        shifts_df,
+        (activities_df["emp_id"] == shifts_df["emp_id"]) & 
+        (activities_df["cal_date"] == shifts_df["shift_date"]),
+        "left"
+    )
+    
+    # 4. Apply default shift if missing
+    processed_df = processed_df.withColumn(
+        "effective_shift_start",
+        F.coalesce(
+            F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.col("shift_start_time"))),
+            F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.lit(DEFAULT_SHIFT_START)))
+    ).withColumn(
+        "effective_shift_end",
+        F.coalesce(
+            F.when(
+                F.col("shift_end_time") < F.col("shift_start_time"),
+                F.to_timestamp(F.concat(F.date_add("cal_date", 1), F.lit(" "), F.col("shift_end_time"))
+            ).otherwise(
+                F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.col("shift_end_time"))
+            ),
+            F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.lit(DEFAULT_SHIFT_END)))
+    )
+    
+    # 5. Identify first and last activities per employee-day
+    window_spec = Window.partitionBy("emp_id", "cal_date").orderBy("start_time")
+    ranked_activities = processed_df.withColumn("activity_seq", F.row_number().over(window_spec)) \
+                                  .withColumn("max_seq", F.max("activity_seq").over(window_spec))
+    
+    # 6. Find login candidates (first non-WindowLock activity)
+    first_non_wl = ranked_activities.filter(
+        (F.col("activity_seq") == 1) & 
+        (F.col("app_name") != "WindowLock")
+    )
+    
+    # 7. Find fallback WindowLock logins (if no other activities)
+    wl_fallback = ranked_activities.filter(
+        (F.col("activity_seq") == 1) & 
+        (F.col("app_name") == "WindowLock")
+    ).join(
+        first_non_wl.select("emp_id", "cal_date"),
+        ["emp_id", "cal_date"],
+        "left_anti"  # Only keep WL records where no non-WL exists
+    )
+    
+    # 8. Combine login candidates
+    login_candidates = first_non_wl.unionByName(wl_fallback, allowMissingColumns=True)
+    
+    # 9. Apply login window validation
+    valid_logins = login_candidates.filter(
+        (F.col("start_time") >= (F.col("effective_shift_start") - F.expr(f"INTERVAL {LOGIN_WINDOW_HOURS} HOURS"))) &
+        (F.col("start_time") <= F.col("effective_shift_end"))
+    ).select(
+        "emp_id",
+        "cal_date",
+        F.col("start_time").alias("login_time"),
+        "effective_shift_start",
+        "effective_shift_end",
+        F.col("app_name") == "WindowLock").alias("is_wl_login")
+    )
+    
+    # 10. Find last activities (including WindowLock) for logout
+    last_activities = ranked_activities.filter(
+        F.col("activity_seq") == F.col("max_seq")
+    ).select(
+        "emp_id",
+        "cal_date",
+        F.col("start_time").alias("logout_time"),
+        F.col("app_name") == "WindowLock").alias("is_wl_logout")
+    )
+    
+    # 11. Join logins and logouts
+    session_records = valid_logins.join(
+        last_activities,
+        ["emp_id", "cal_date"],
+        "left"
+    )
+    
+    # 12. Validate session duration
+    final_records = session_records.withColumn(
+        "session_duration_mins",
+        F.when(
+            F.col("logout_time").isNotNull(),
+            F.round((F.unix_timestamp("logout_time") - F.unix_timestamp("login_time")) / 60)
+        .otherwise(None)
+
+
+
+
+
+
+
 
 # **Complete Employee Login/Logout Tracking Logic (All Scenarios & Rules)**
 
