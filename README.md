@@ -1,3 +1,159 @@
+take-11
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta
+
+# Configuration
+DEFAULT_SHIFT_START = "09:00:00"
+DEFAULT_SHIFT_END = "18:00:00"
+LOGIN_WINDOW_HOURS = 4  # Hours before shift start to count as login
+MIN_SESSION_MINUTES = 30  # Minimum session duration
+PROCESSING_WINDOW_MINUTES = 70  # Sliding window for activity ingestion
+
+def process_employee_activities():
+    # 1. Initialize processing window
+    current_time = datetime.now()
+    ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+    
+    # 2. Load recent activities
+    activities_df = spark.table("emp_activity").filter(
+        F.col("ingestion_time") >= ingestion_threshold
+    )
+    
+    if activities_df.isEmpty():
+        print("No new activities to process")
+        return
+
+    # 3. Load shift data only for dates present in activities
+    date_range = activities_df.select("cal_date").distinct()
+    shifts_df = spark.table("shift").join(
+        F.broadcast(date_range),
+        F.col("shift_date") == F.col("cal_date"),
+        "right"
+    )
+
+    # 4. Process logins (first non-WindowLock activity per emp-date)
+    login_candidates = (
+        activities_df
+        .filter(F.col("app_name") != "WindowLock")
+        .groupBy("emp_id", "cal_date")
+        .agg(F.min("start_time").alias("login_time"))
+    )
+    
+    # 5. Fallback to WindowLock if no other activities exist
+    wl_fallback = (
+        activities_df
+        .filter(F.col("app_name") == "WindowLock")
+        .groupBy("emp_id", "cal_date")
+        .agg(F.min("start_time").alias("wl_time"))
+        .join(login_candidates, ["emp_id", "cal_date"], "left_anti")
+    )
+    
+    # 6. Combine login candidates with priority to non-WL
+    all_logins = (
+        login_candidates
+        .withColumn("is_wl_login", F.lit(False))
+        .union(
+            wl_fallback
+            .select("emp_id", "cal_date", F.col("wl_time").alias("login_time"), F.lit(True).alias("is_wl_login"))
+        )
+    )
+
+    # 7. Apply login window validation
+    valid_logins = (
+        all_logins
+        .join(shifts_df, ["emp_id", "cal_date"], "left")
+        .withColumn("shift_start_time", 
+            F.coalesce(
+                F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.col("shift_start_time"))),
+                F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.lit(DEFAULT_SHIFT_START)))
+            )
+        )
+        .withColumn("shift_end_time",
+            F.coalesce(
+                F.when(
+                    F.col("shift_end_time") < F.col("shift_start_time"),
+                    F.to_timestamp(F.concat(F.date_add("cal_date", 1), F.lit(" "), F.col("shift_end_time")))
+                ).otherwise(
+                    F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.col("shift_end_time")))
+                ),
+                F.to_timestamp(F.concat(F.col("cal_date"), F.lit(" "), F.lit(DEFAULT_SHIFT_END)))
+            )
+        )
+        .filter(
+            (F.col("login_time") >= (F.col("shift_start_time") - F.expr(f"INTERVAL {LOGIN_WINDOW_HOURS} HOURS"))) &
+            (F.col("login_time") <= F.col("shift_end_time"))
+        )
+    )
+
+    # 8. Process logouts (last activity including WindowLock)
+    logouts = (
+        activities_df
+        .groupBy("emp_id", "cal_date")
+        .agg(
+            F.max("start_time").alias("logout_time"),
+            F.max(F.when(F.col("app_name") == "WindowLock", F.col("start_time"))).alias("wl_logout_time")
+        )
+        .withColumn("is_wl_logout", F.col("logout_time") == F.col("wl_logout_time"))
+        .drop("wl_logout_time")
+    )
+
+    # 9. Join logins and logouts
+    result = (
+        valid_logins
+        .join(logouts, ["emp_id", "cal_date"], "left")
+        .withColumn("update_time", F.lit(current_time))
+    )
+
+    # 10. Validate session duration
+    final_records = result.withColumn(
+        "session_duration_mins",
+        F.when(
+            F.col("logout_time").isNotNull(),
+            F.round((F.unix_timestamp("logout_time") - F.unix_timestamp("login_time")) / 60)
+        .otherwise(None)
+    ).filter(
+        (F.col("session_duration_mins").isNull()) |  # No logout yet
+        (F.col("session_duration_mins") >= MIN_SESSION_MINUTES)  # Valid session
+    )
+
+    # 11. Merge with target table
+    final_records.createOrReplaceTempView("updates_temp")
+    
+    spark.sql("""
+        MERGE INTO emp_login_logout target
+        USING updates_temp source
+        ON target.emp_id = source.emp_id AND target.cal_date = source.cal_date
+        WHEN MATCHED AND (
+            target.logout_time IS NULL OR 
+            source.logout_time > target.logout_time
+        ) THEN
+            UPDATE SET 
+                logout_time = source.logout_time,
+                shift_start_time = source.shift_start_time,
+                shift_end_time = source.shift_end_time,
+                update_time = source.update_time,
+                is_wl_logout = source.is_wl_logout
+        WHEN NOT MATCHED THEN
+            INSERT (
+                emp_id, cal_date, login_time, logout_time, 
+                shift_start_time, shift_end_time, update_time,
+                is_wl_login, is_wl_logout
+            ) VALUES (
+                source.emp_id, source.cal_date, source.login_time, source.logout_time,
+                source.shift_start_time, source.shift_end_time, source.update_time,
+                source.is_wl_login, source.is_wl_logout
+            )
+    """)
+
+    print(f"Processed {final_records.count()} records")
+
+# Execute the job
+process_employee_activities()
+
+
+
 
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
