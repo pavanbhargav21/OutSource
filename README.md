@@ -1,3 +1,54 @@
+
+from pyspark.sql.functions import col, concat_ws, to_timestamp, when, date_add, date_sub
+
+# 1. Get distinct (emp_id, cal_date)
+act = activity_df.select("emp_id", "cal_date").distinct()
+
+# 2. Prepare shift_df with shift_start and shift_end
+shift = shift_df.withColumn(
+    "shift_start",
+    to_timestamp(concat_ws(" ", col("shift_date"), col("start_time")))
+).withColumn(
+    "shift_end",
+    to_timestamp(
+        concat_ws(
+            " ",
+            when(col("start_time") > col("end_time"), date_add(col("shift_date"), 1))
+            .otherwise(col("shift_date")),
+            col("end_time")
+        )
+    )
+)
+
+# 3. Join current shift
+act_with_shift = act.join(
+    shift,
+    (act.emp_id == shift.emp_id) & (act.cal_date == shift.shift_date),
+    "left"
+).select(
+    act["*"],
+    shift["shift_start"],
+    shift["shift_end"]
+)
+
+# 4. Join previous day’s shift
+shift_prev = shift.withColumn("shift_date", date_add(col("shift_date"), 1))
+
+final_df = act_with_shift.join(
+    shift_prev,
+    (act_with_shift.emp_id == shift_prev.emp_id) & (act_with_shift.cal_date == shift_prev.shift_date),
+    "left"
+).select(
+    act_with_shift["*"],
+    shift_prev["shift_start"].alias("prev_shift_start"),
+    shift_prev["shift_end"].alias("prev_shift_end")
+)
+
+# Done
+final_df.show(truncate=False)
+
+
+
 take-11
 
 from pyspark.sql import functions as F
