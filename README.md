@@ -1,4 +1,132 @@
 
+from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+
+# Configs
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 6820
+
+# Time setup
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# Step 1: Recent activity and distinct emp_id, cal_date
+activities_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date") \
+    .distinct()
+
+# Add previous date
+emp_dates_df = activities_df.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# Step 2: Load shift data
+shift_df = spark.table("emp_shift_table") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# Step 3: Join current shift
+cur_shift = emp_dates_df.join(
+    shift_df,
+    (emp_dates_df.emp_id == shift_df.emp_id) & (emp_dates_df.cal_date == shift_df.shift_date),
+    how='left'
+).select(
+    emp_dates_df.emp_id,
+    emp_dates_df.cal_date,
+    emp_dates_df.prev_date,
+    shift_df.start_time.alias("cur_start_time_raw"),
+    shift_df.end_time.alias("cur_end_time_raw"),
+    shift_df.is_week_off
+)
+
+# Step 4: Join previous shift
+prev_shift = shift_df.withColumnRenamed("shift_date", "prev_date") \
+    .withColumnRenamed("start_time", "prev_start_time_raw") \
+    .withColumnRenamed("end_time", "prev_end_time_raw") \
+    .withColumnRenamed("emp_id", "emp_id_prev")
+
+cur_with_prev = cur_shift.join(
+    prev_shift,
+    (cur_shift.emp_id == prev_shift.emp_id_prev) & (cur_shift.prev_date == prev_shift.prev_date),
+    how='left'
+).drop("emp_id_prev")
+
+# Step 5: Apply defaults based on missing data and day of week
+final_df = cur_with_prev \
+    .withColumn("dow", F.date_format("cal_date", "E")) \
+    .withColumn("prev_dow", F.date_format("prev_date", "E")) \
+    
+    # Fill current start time
+    .withColumn("cur_start_time",
+        F.when(F.col("cur_start_time_raw").isNotNull(), F.col("cur_start_time_raw"))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("cur_end_time",
+        F.when(F.col("cur_end_time_raw").isNotNull(), F.col("cur_end_time_raw"))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    
+    # Fill previous start time
+    .withColumn("prev_start_time",
+        F.when(F.col("prev_start_time_raw").isNotNull(), F.col("prev_start_time_raw"))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev_end_time_raw").isNotNull(), F.col("prev_end_time_raw"))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    
+    # Combine times with dates and handle overnight shifts
+    .withColumn("cur_start_datetime", 
+        F.when(F.col("cur_start_time") != F.lit(ZERO_TIME),
+            F.to_timestamp(F.concat_ws(" ", F.col("cal_date"), F.col("cur_start_time")))
+         .otherwise(F.lit(None))
+    ) \
+    .withColumn("cur_end_datetime", 
+        F.when(F.col("cur_end_time") != F.lit(ZERO_TIME),
+            F.when(F.col("cur_start_time") < F.col("cur_end_time"),
+                F.to_timestamp(F.concat_ws(" ", F.col("cal_date"), F.col("cur_end_time")))
+            ).otherwise(
+                F.to_timestamp(F.concat_ws(" ", F.date_add(F.col("cal_date"), 1), F.col("cur_end_time")))
+            )
+         ).otherwise(F.lit(None))
+    ) \
+    .withColumn("prev_start_datetime", 
+        F.when(F.col("prev_start_time") != F.lit(ZERO_TIME),
+            F.to_timestamp(F.concat_ws(" ", F.col("prev_date"), F.col("prev_start_time")))
+         ).otherwise(F.lit(None))
+    ) \
+    .withColumn("prev_end_datetime", 
+        F.when(F.col("prev_end_time") != F.lit(ZERO_TIME),
+            F.when(F.col("prev_start_time") < F.col("prev_end_time"),
+                F.to_timestamp(F.concat_ws(" ", F.col("prev_date"), F.col("prev_end_time")))
+            ).otherwise(
+                F.to_timestamp(F.concat_ws(" ", F.date_add(F.col("prev_date"), 1), F.col("prev_end_time")))
+            )
+         ).otherwise(F.lit(None))
+    ) \
+    
+    # Final selection
+    .select(
+        "emp_id",
+        "cal_date",
+        "cur_start_time",
+        "cur_end_time",
+        "prev_start_time",
+        "prev_end_time",
+        "cur_start_datetime",
+        "cur_end_datetime",
+        "prev_start_datetime",
+        "prev_end_datetime",
+        "is_week_off"
+    )
+
+
+
 
 from pyspark.sql import functions as F
 from datetime import datetime, timedelta
