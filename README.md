@@ -1,4 +1,99 @@
 
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.types import TimestampType
+from datetime import datetime, timedelta
+
+# --- Config ---
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 6820
+
+# --- Step 1: Get recent distinct emp_id and cal_date from activity ---
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+activity_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date") \
+    .distinct()
+
+# --- Step 2: Prepare current and previous date columns ---
+activity_with_prev_df = activity_df \
+    .withColumn("prev_cal_date", F.date_sub("cal_date", 1)) \
+    .withColumn("dow", F.date_format("cal_date", "u").cast("int")) \
+    .withColumn("prev_dow", F.date_format("prev_cal_date", "u").cast("int"))
+
+# --- Step 3: Load Shift Table ---
+shift_df = spark.table("emp_shift_table")  # replace with actual table name
+# Columns: emp_id, shift_date, start_time, end_time, is_week_off
+
+# --- Step 4: Join Current and Previous Shifts ---
+shift_join_df = activity_with_prev_df.alias("act") \
+    .join(shift_df.alias("curr"),
+          (F.col("act.emp_id") == F.col("curr.emp_id")) &
+          (F.col("act.cal_date") == F.col("curr.shift_date")),
+          "left") \
+    .join(shift_df.alias("prev"),
+          (F.col("act.emp_id") == F.col("prev.emp_id")) &
+          (F.col("act.prev_cal_date") == F.col("prev.shift_date")),
+          "left")
+
+# --- Step 5: Determine current and previous shift start/end time ---
+def get_shift_ts_expr(date_col, time_col):
+    return F.to_timestamp(F.concat_ws(" ", F.col(date_col), F.col(time_col)))
+
+def compute_shift_ts(date_col, start_col, end_col):
+    start_ts = get_shift_ts_expr(date_col, start_col)
+    end_ts = F.when(F.col(start_col) > F.col(end_col),
+                    get_shift_ts_expr(F.date_add(F.col(date_col), 1), end_col)) \
+             .otherwise(get_shift_ts_expr(date_col, end_col))
+    return start_ts.alias(f"{date_col}_shift_start_ts"), end_ts.alias(f"{date_col}_shift_end_ts")
+
+# Assign raw start/end times with fallback for missing shift
+result_df = shift_join_df \
+    .withColumn("curr_start_time",
+        F.when(F.col("curr.start_time").isNotNull(), F.col("curr.start_time"))
+         .when(F.col("dow").isin(6, 7), F.lit(ZERO_TIME))  # Saturday/Sunday
+         .otherwise(F.lit(DEFAULT_START))) \
+    .withColumn("curr_end_time",
+        F.when(F.col("curr.end_time").isNotNull(), F.col("curr.end_time"))
+         .when(F.col("dow").isin(6, 7), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))) \
+    .withColumn("prev_start_time",
+        F.when(F.col("prev.start_time").isNotNull(), F.col("prev.start_time"))
+         .when(F.col("prev_dow").isin(6, 7), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev.end_time").isNotNull(), F.col("prev.end_time"))
+         .when(F.col("prev_dow").isin(6, 7), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END)))
+
+# Compute timestamps
+result_df = result_df \
+    .withColumn("shift_start_ts", get_shift_ts_expr("cal_date", "curr_start_time")) \
+    .withColumn("shift_end_ts",
+        F.when(F.col("curr_start_time") > F.col("curr_end_time"),
+               get_shift_ts_expr(F.date_add(F.col("cal_date"), 1), "curr_end_time"))
+         .otherwise(get_shift_ts_expr("cal_date", "curr_end_time"))) \
+    .withColumn("prev_shift_start_ts", get_shift_ts_expr("prev_cal_date", "prev_start_time")) \
+    .withColumn("prev_shift_end_ts",
+        F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+               get_shift_ts_expr(F.date_add(F.col("prev_cal_date"), 1), "prev_end_time"))
+         .otherwise(get_shift_ts_expr("prev_cal_date", "prev_end_time")))
+
+# --- Final Columns ---
+final_df = result_df.select(
+    "emp_id", "cal_date",
+    "shift_start_ts", "shift_end_ts",
+    "prev_shift_start_ts", "prev_shift_end_ts"
+)
+
+
+
+
+
 from pyspark.sql.functions import col, concat_ws, to_timestamp, when, date_add, date_sub
 
 # 1. Get distinct (emp_id, cal_date)
