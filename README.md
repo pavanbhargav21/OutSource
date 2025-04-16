@@ -1,4 +1,107 @@
 
+
+from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+
+# Config
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 6820
+
+# Get current and threshold ingestion time
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# Step 1: Load recent distinct activity records
+activities_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date") \
+    .distinct()
+
+# Add previous day
+emp_dates_df = activities_df.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# Step 2: Load shift data
+shifts_df = spark.table("emp_shift_table") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# Step 3: Join current and previous day shift data
+cur_join = emp_dates_df.alias("a").join(
+    shifts_df.alias("b"),
+    (F.col("a.emp_id") == F.col("b.emp_id")) & (F.col("a.cal_date") == F.col("b.shift_date")),
+    "left"
+).select(
+    F.col("a.emp_id"),
+    F.col("a.cal_date"),
+    F.col("a.prev_date"),
+    F.col("b.start_time").alias("cur_start_time"),
+    F.col("b.end_time").alias("cur_end_time"),
+    F.col("b.is_week_off").alias("is_week_off")
+)
+
+prev_join = cur_join.alias("c").join(
+    shifts_df.alias("d"),
+    (F.col("c.emp_id") == F.col("d.emp_id")) & (F.col("c.prev_date") == F.col("d.shift_date")),
+    "left"
+).select(
+    F.col("c.emp_id"),
+    F.col("c.cal_date"),
+    F.col("c.cur_start_time"),
+    F.col("c.cur_end_time"),
+    F.col("c.is_week_off"),
+    F.col("d.start_time").alias("prev_start_time"),
+    F.col("d.end_time").alias("prev_end_time"),
+    F.col("d.is_week_off").alias("prev_is_week_off")
+)
+
+# Step 4: Add default values if null
+final_df = prev_join.withColumn(
+    "cur_start_time", F.when(F.col("cur_start_time").isNull(),
+        F.when(F.dayofweek("cal_date").isin(1, 7), ZERO_TIME).otherwise(DEFAULT_START)
+    ).otherwise(F.col("cur_start_time"))
+).withColumn(
+    "cur_end_time", F.when(F.col("cur_end_time").isNull(),
+        F.when(F.dayofweek("cal_date").isin(1, 7), ZERO_TIME).otherwise(DEFAULT_END)
+    ).otherwise(F.col("cur_end_time"))
+).withColumn(
+    "prev_start_time", F.when(F.col("prev_start_time").isNull(),
+        F.when(F.dayofweek(F.col("cal_date") - F.expr("INTERVAL 1 DAY")).isin(1, 7), ZERO_TIME).otherwise(DEFAULT_START)
+    ).otherwise(F.col("prev_start_time"))
+).withColumn(
+    "prev_end_time", F.when(F.col("prev_end_time").isNull(),
+        F.when(F.dayofweek(F.col("cal_date") - F.expr("INTERVAL 1 DAY")).isin(1, 7), ZERO_TIME).otherwise(DEFAULT_END)
+    ).otherwise(F.col("prev_end_time"))
+)
+
+# Step 5: Construct proper timestamps
+def build_ts(date_col, time_col, is_end=False):
+    """If end and start > end, add 1 day to date."""
+    cond = F.unix_timestamp(time_col, "HH:mm:ss") < F.unix_timestamp(DEFAULT_START, "HH:mm:ss")
+    base = F.to_timestamp(F.concat_ws(' ', date_col, time_col))
+    return F.when(
+        (F.col(time_col) != ZERO_TIME) & is_end & (F.col("cur_start_time") > F.col("cur_end_time")),
+        F.to_timestamp(F.concat_ws(' ', F.date_add(date_col, 1), time_col))
+    ).when(F.col(time_col) != ZERO_TIME, base).otherwise(F.lit(None))
+
+final_df = final_df \
+    .withColumn("cur_start_ts", build_ts(F.col("cal_date"), F.col("cur_start_time"))) \
+    .withColumn("cur_end_ts", build_ts(F.col("cal_date"), F.col("cur_end_time"), is_end=True)) \
+    .withColumn("prev_start_ts", build_ts(F.date_sub(F.col("cal_date"), 1), F.col("prev_start_time"))) \
+    .withColumn("prev_end_ts", build_ts(F.date_sub(F.col("cal_date"), 1), F.col("prev_end_time"), is_end=True))
+
+# Step 6: Final select (no prev_date or extra fields)
+final_df = final_df.select(
+    "emp_id", "cal_date", "is_week_off",
+    "cur_start_time", "cur_end_time",
+    "prev_start_time", "prev_end_time",
+    "cur_start_ts", "cur_end_ts",
+    "prev_start_ts", "prev_end_ts"
+)
+
+
+
+
 from pyspark.sql import functions as F
 from datetime import datetime, timedelta
 
