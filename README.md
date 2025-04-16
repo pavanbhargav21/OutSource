@@ -1,5 +1,91 @@
 
 from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+
+# Config
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 6820
+
+# Time setup
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# Step 1: Get recent distinct (emp_id, cal_date)
+activities_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date") \
+    .distinct()
+
+# Add previous day column
+emp_dates_df = activities_df.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# Step 2: Load shift data
+shift_df = spark.table("emp_shift_table") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# Step 3: Join for current shift
+cur_join = emp_dates_df.join(
+    shift_df,
+    (activities_df.emp_id == shift_df.emp_id) & (activities_df.cal_date == shift_df.shift_date),
+    "left"
+).select(
+    activities_df.emp_id,
+    activities_df.cal_date,
+    F.col("start_time").alias("cur_start"),
+    F.col("end_time").alias("cur_end"),
+    F.col("is_week_off").alias("cur_week_off")
+)
+
+# Step 4: Join for previous shift
+final_df = cur_join.join(
+    shift_df,
+    (cur_join.emp_id == shift_df.emp_id) & (cur_join.prev_date == shift_df.shift_date),
+    "left"
+).select(
+    cur_join.emp_id,
+    cur_join.cal_date,
+    cur_join.prev_date,
+    F.col("cur_start"),
+    F.col("cur_end"),
+    F.col("cur_week_off"),
+    F.col("start_time").alias("prev_start"),
+    F.col("end_time").alias("prev_end"),
+    F.col("is_week_off").alias("prev_week_off")
+)
+
+# Step 5: Determine shift times with logic
+def resolve_times(date_col, start_col, end_col, week_off_col):
+    return (
+        F.when(start_col.isNotNull(), F.concat_ws(" ", F.col(date_col), start_col))
+         .when((F.dayofweek(date_col).isin([1, 7])), F.concat_ws(" ", F.col(date_col), F.lit(ZERO_TIME)))
+         .otherwise(F.concat_ws(" ", F.col(date_col), F.lit(DEFAULT_START)))
+    ), (
+        F.when(end_col.isNotNull() & (start_col < end_col), F.concat_ws(" ", F.col(date_col), end_col))
+         .when(end_col.isNotNull(), F.date_format(F.expr(f"timestampadd(DAY, 1, timestamp('{date_col} {end_col}'))"), "yyyy-MM-dd HH:mm:ss"))
+         .when((F.dayofweek(date_col).isin([1, 7])), F.concat_ws(" ", F.col(date_col), F.lit(ZERO_TIME)))
+         .otherwise(F.concat_ws(" ", F.col(date_col), F.lit(DEFAULT_END)))
+    )
+
+cur_start_ts, cur_end_ts = resolve_times("cal_date", F.col("cur_start"), F.col("cur_end"), F.col("cur_week_off"))
+prev_start_ts, prev_end_ts = resolve_times("prev_date", F.col("prev_start"), F.col("prev_end"), F.col("prev_week_off"))
+
+result_df = final_df.withColumn("shift_start_ts", cur_start_ts) \
+                    .withColumn("shift_end_ts", cur_end_ts) \
+                    .withColumn("prev_shift_start_ts", prev_start_ts) \
+                    .withColumn("prev_shift_end_ts", prev_end_ts)
+
+# Final Columns
+result_df = result_df.select(
+    "emp_id", "cal_date",
+    "shift_start_ts", "shift_end_ts",
+    "prev_shift_start_ts", "prev_shift_end_ts"
+)
+
+
+
+from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import TimestampType
 from datetime import datetime, timedelta
