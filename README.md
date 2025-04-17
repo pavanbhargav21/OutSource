@@ -1,4 +1,228 @@
 
+
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# 1. Prepare shift data with previous day info
+window_spec = Window.partitionBy("emp_id").orderBy("cal_date")
+final_with_prev = final_df.withColumn(
+    "prev_shift_end", F.lag("curr_shift_end").over(window_spec)
+).withColumn(
+    "prev_cal_date", F.lag("cal_date").over(window_spec)
+).withColumn(
+    "prev_is_week_off", F.lag("is_week_off").over(window_spec)
+)
+
+# 2. Join with activities
+joined_df = activities_df.join(
+    final_with_prev, ["emp_id", "cal_date"], "inner"
+)
+
+# 3. Define time windows with special handling for week-offs
+df_with_windows = joined_df.withColumn(
+    "current_window_start", 
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, -4, curr_shift_start)"))
+).withColumn(
+    "current_window_end",
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, 8, curr_shift_end)"))
+).withColumn(
+    "prev_window_start",
+    F.when(
+        (F.col("prev_cal_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.col("prev_shift_end")
+    )
+).withColumn(
+    "prev_window_end",
+    F.when(
+        (F.col("prev_cal_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.expr("timestampadd(HOUR, 8, prev_shift_end)")
+    )
+)
+
+# 4. Classify activities with priority to current day
+classified_df = df_with_windows.withColumn(
+    "is_current_login",
+    ~F.col("is_week_off") &
+    (F.col("start_time") >= F.col("current_window_start")) &
+    (F.col("start_time") <= F.col("current_window_end")) &
+    (F.col("app_name") != "WindowLock")  # Exclude WindowLock activities
+).withColumn(
+    "is_prev_logout",
+    F.col("prev_window_start").isNotNull() &
+    (F.col("start_time") >= F.col("prev_window_start")) &
+    (F.col("start_time") <= F.col("prev_window_end")) &
+    (F.col("start_time") < F.col("current_window_start"))
+).withColumn(
+    "is_week_off_activity",
+    F.col("is_week_off") &
+    (F.col("prev_window_start").isNull() | 
+     (F.col("start_time") > F.col("prev_window_end")))
+)
+
+# 5. Calculate all potential times
+result_df = classified_df.groupBy("emp_id", "cal_date").agg(
+    # Current day candidates
+    F.min(F.when(F.col("is_current_login"), F.col("start_time"))).alias("current_login"),
+    F.max("start_time").alias("last_activity"),
+    
+    # Previous day candidates
+    F.min(F.when(F.col("is_prev_logout"), F.col("start_time"))).alias("prev_logout_candidate"),
+    F.max(F.when(F.col("is_prev_logout"), F.col("start_time"))).alias("prev_logout_update"),
+    
+    # Week-off candidates
+    F.min(F.when(F.col("is_week_off_activity"), F.col("start_time"))).alias("week_off_login"),
+    F.max(F.when(F.col("is_week_off_activity"), F.col("start_time"))).alias("week_off_logout"),
+    
+    # Shift info
+    F.first("curr_shift_start").alias("shift_start_time"),
+    F.first("curr_shift_end").alias("shift_end_time"),
+    F.first("is_week_off").alias("is_week_off"),
+    F.first("prev_cal_date").alias("prev_cal_date")
+)
+
+# 6. Determine final times with priority rules
+final_result = result_df.withColumn(
+    "emp_login_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_login"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("current_login"), F.col("last_activity"))
+ )
+).withColumn(
+    "emp_logout_time", 
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_logout"), F.col("last_activity"))
+    ).otherwise(F.col("last_activity"))
+)
+
+# 7. Generate previous day updates (only if valid)
+prev_day_updates = final_result.filter(
+    F.col("prev_logout_update").isNotNull()
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.col("prev_cal_date").alias("update_date"),
+    F.col("prev_logout_update").alias("new_logout_time")
+)
+
+# 8. Final output
+final_output = final_result.select(
+    "emp_id",
+    "cal_date",
+    "emp_login_time",
+    "emp_logout_time",
+    "shift_start_time",
+    "shift_end_time",
+    "is_week_off"
+).orderBy("emp_id", "cal_date")
+
+-----------
+
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# 1. Prepare shift data with previous day info
+window_spec = Window.partitionBy("emp_id").orderBy("cal_date")
+final_with_prev = final_df.withColumn(
+    "prev_shift_end", F.lag("curr_shift_end").over(window_spec)
+).withColumn(
+    "prev_cal_date", F.lag("cal_date").over(window_spec)
+).withColumn(
+    "prev_is_week_off", F.lag("is_week_off").over(window_spec)
+)
+
+# 2. Join with activities
+joined_df = activities_df.join(
+    final_with_prev, ["emp_id", "cal_date"], "inner"
+)
+
+# 3. Define time windows
+df_with_windows = joined_df.withColumn(
+    "current_window_start", F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, -4, curr_shift_start)"))
+).withColumn(
+    "current_window_end", F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, 8, curr_shift_end)"))
+).withColumn(
+    "previous_window_start", F.col("prev_shift_end")
+).withColumn(
+    "previous_window_end", F.expr("timestampadd(HOUR, 8, prev_shift_end)")
+)
+
+# 4. Filter activity data to current and previous windows
+activities_with_window = activities_df.alias("a").join(
+    df_with_windows.select("emp_id", "cal_date", "current_window_start", "current_window_end", 
+                           "previous_window_start", "previous_window_end"),
+    on=["emp_id", "cal_date"],
+    how="inner"
+)
+
+# 5. Current window activities
+current_acts = activities_with_window.filter(
+    (F.col("a.start_time") >= F.col("current_window_start")) & 
+    (F.col("a.start_time") <= F.col("current_window_end"))
+)
+
+# 6. Get login (first non-WindowLock) and logout (last activity) in current window
+login_window = Window.partitionBy("emp_id", "cal_date").orderBy("start_time")
+logout_window = Window.partitionBy("emp_id", "cal_date").orderBy(F.col("start_time").desc())
+
+current_logins = current_acts.filter(F.col("a.app_name") != "WindowLock") \
+    .withColumn("login_rank", F.row_number().over(login_window)) \
+    .filter(F.col("login_rank") == 1) \
+    .select("emp_id", "cal_date", F.col("start_time").alias("CurrentEMPLoginTime"))
+
+current_logouts = current_acts.withColumn("logout_rank", F.row_number().over(logout_window)) \
+    .filter(F.col("logout_rank") == 1) \
+    .select("emp_id", "cal_date", F.col("start_time").alias("EMPLogoutTime"))
+
+# 7. Previous window activities
+previous_acts = activities_with_window.filter(
+    (F.col("a.start_time") >= F.col("previous_window_start")) &
+    (F.col("a.start_time") <= F.col("previous_window_end"))
+)
+
+# 8. Get previous login and logout (only if previous login exists)
+previous_login = previous_acts.filter(F.col("a.app_name") != "WindowLock") \
+    .withColumn("login_rank", F.row_number().over(login_window)) \
+    .filter(F.col("login_rank") == 1) \
+    .select("emp_id", "cal_date", F.col("start_time").alias("PreviousEMPLoginTime"))
+
+previous_logout = previous_acts.withColumn("logout_rank", F.row_number().over(logout_window)) \
+    .filter(F.col("logout_rank") == 1) \
+    .select("emp_id", "cal_date", F.col("start_time").alias("PreviousEMPLogoutTime"))
+
+# 9. Final assembly
+final_df = df_with_windows \
+    .join(current_logins, ["emp_id", "cal_date"], "left") \
+    .join(current_logouts, ["emp_id", "cal_date"], "left")
+
+# Only join PreviousEMPLogoutTime if previous login exists
+final_df = final_df.join(
+    previous_login.select("emp_id", "cal_date").alias("pl"), 
+    on=["emp_id", "cal_date"], how="left_semi"
+).join(
+    previous_logout, ["emp_id", "cal_date"], "left"
+)
+
+# Now final_df has:
+# - CurrentEMPLoginTime
+# - EMPLogoutTime (only if login exists)
+# - PreviousEMPLogoutTime (only if previous login exists)
+
+
+
+
+
+
+
+
+
+
+
 from pyspark.sql import functions as F
 from datetime import datetime, timedelta
 
