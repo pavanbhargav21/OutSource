@@ -1,4 +1,89 @@
+# Step-9. Calculate all potential times
+result_df = classified_df.groupBy("emp_id", "cal_date").agg(
+    # Current login: Minimum start time where start_time is within the current window and app_name is not "Window Lock"
+    F.min(F.when(
+        (F.col("is_current_login") & 
+         (F.col("start_time") >= F.col("current_window_start")) & 
+         (F.col("start_time") <= F.col("current_window_end")) & 
+         (F.col("app_name") != "Window Lock")),
+        F.col("start_time")
+    )).alias("current_login"),
+    
+    # Last activity: Maximum start time where start_time is within the current window
+    F.max(F.when(
+        (F.col("start_time") >= F.col("current_window_start")) & 
+        (F.col("start_time") <= F.col("current_window_end")),
+        F.col("start_time")
+    )).alias("last_activity"),
+    
+    # Previous logout candidate: Maximum start time where start_time is within the previous window
+    F.max(F.when(
+        (F.col("prev_window_start").isNotNull()) & 
+        (F.col("start_time") >= F.col("prev_window_start")) & 
+        (F.col("start_time") <= F.col("prev_window_end")) & 
+        (F.col("start_time") < F.col("current_window_start")),
+        F.col("start_time")
+    )).alias("prev_logout_update"),
+    
+    # Week-off login: Minimum start time where is_week_off_activity is true
+    F.min(F.when(F.col("is_week_off_activity"), F.col("start_time"))).alias("week_off_login"),
+    
+    # Week-off logout: Maximum start time where is_week_off_activity is true
+    F.max(F.when(F.col("is_week_off_activity"), F.col("start_time"))).alias("week_off_logout"),
+    
+    # Shift info
+    F.first("cur_start_time_ts").alias("shift_start_time"),
+    F.first("cur_end_time_ts").alias("shift_end_time"),
+    F.first("is_week_off").alias("is_week_off"),
+    F.first("prev_date").alias("prev_cal_date")
+)
 
+display(result_df)
+
+
+
+# Step-10. Determine final times with priority rules
+final_result = result_df.withColumn(
+    "emp_login_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_login"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("current_login"), F.col("last_activity"))
+    )
+).withColumn(
+    "emp_logout_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_logout"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("last_activity"), F.col("current_login"))
+    )
+)
+
+
+# Step-11. Generate previous day updates (only if valid)
+prev_day_updates = final_result.filter(
+    F.col("prev_logout_update").isNotNull()
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.col("prev_cal_date").alias("update_date"),
+    F.col("prev_logout_update").alias("new_logout_time")
+)
+
+
+# Final output
+final_output = final_result.select(
+    "emp_id",
+    "cal_date",
+    "emp_login_time",
+    "emp_logout_time",
+    "shift_start_time",
+    "shift_end_time",
+    "is_week_off"
+).orderBy("emp_id", "cal_date")
+
+display(final_output)
 
 
 from pyspark.sql import functions as F
