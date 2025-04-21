@@ -1,4 +1,191 @@
 
+
+
+Perfect — here's a well-structured and easy-to-understand explanation of how application usage averages are calculated, covering both employee-level averages and team-level averages, using a real-time example from April 14th to April 20th, 2025.
+
+
+---
+
+Application Usage Average: Explanation with Example
+
+During the period from April 14th to April 20th, 2025, the team used various applications. Two such applications were:
+
+Chrome
+
+Zoom
+
+
+> Note: Not all employees used all applications. So when calculating application averages, we consider only those employees and days where that particular application was actually used.
+
+
+
+
+---
+
+1. Employee-Level Application Average
+
+This average is calculated per employee for each application they used.
+We consider only the days the employee actually used the application.
+
+Formula:
+
+Employee App Average = Total time the employee used the app / Number of days the employee used the app
+
+
+---
+
+2. Team-Level Application Average
+
+This average is calculated at the team level per application, based on all entries from any employee who used the app.
+
+Formula:
+
+Team App Average = Total usage time of app by all employees / Total number of usage entries (across dates and users)
+
+
+---
+
+Example: Chrome and Zoom Usage
+
+Team: 4 Employees — Emp1, Emp2, Emp3, Emp4
+Period: April 14 to April 20, 2025
+
+
+---
+
+Chrome Usage
+
+April 14
+
+Emp1 used Chrome for 2 hours
+
+Emp2 used Chrome for 1.5 hours
+
+
+April 15
+
+Emp1 used Chrome for 1 hour
+
+Emp4 used Chrome for 2 hours
+
+
+April 17
+
+Emp2 used Chrome for 1 hour
+
+
+
+Emp1’s Chrome Average
+
+Total time: 2 + 1 = 3 hours
+
+Days used: 2
+
+Average = 3 / 2 = 1.5 hours
+
+
+Emp2’s Chrome Average
+
+Total time: 1.5 + 1 = 2.5 hours
+
+Days used: 2
+
+Average = 2.5 / 2 = 1.25 hours
+
+
+Emp4’s Chrome Average
+
+Total time: 2 hours
+
+Days used: 1
+
+Average = 2 / 1 = 2 hours
+
+
+Team Chrome Average
+
+Total usage: 3 (Emp1) + 2.5 (Emp2) + 2 (Emp4) = 7.5 hours
+
+Total entries: 5 (2 for Emp1, 2 for Emp2, 1 for Emp4)
+
+Average = 7.5 / 5 = 1.5 hours
+
+
+
+---
+
+Zoom Usage
+
+April 14
+
+Emp3 used Zoom for 1 hour
+
+
+April 15
+
+Emp2 used Zoom for 1.5 hours
+
+
+April 16
+
+Emp3 used Zoom for 2 hours
+
+
+
+Emp2’s Zoom Average
+
+Total time: 1.5 hours
+
+Days used: 1
+
+Average = 1.5 / 1 = 1.5 hours
+
+
+Emp3’s Zoom Average
+
+Total time: 1 + 2 = 3 hours
+
+Days used: 2
+
+Average = 3 / 2 = 1.5 hours
+
+
+Team Zoom Average
+
+Total usage: 1.5 (Emp2) + 3 (Emp3) = 4.5 hours
+
+Total entries: 3
+
+Average = 4.5 / 3 = 1.5 hours
+
+
+
+---
+
+Summary
+
+We calculate employee-level averages only for days when they actually used the app.
+
+We calculate team-level averages based on all usage entries, regardless of date or user.
+
+This ensures accuracy without being skewed by inactive days or non-users.
+
+
+Let me know if you'd like a visual summary or chart too!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Absolutely! Here's how you can present the formula to the team in a clear and professional way:
 
 
