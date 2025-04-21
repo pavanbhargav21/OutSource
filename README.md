@@ -1,3 +1,215 @@
+
+Absolutely! Here's how you can present the formula to the team in a clear and professional way:
+
+
+---
+
+Team Average Logged Time – Formula
+
+To calculate the average working (logged) hours of a team over a selected period, we use the following formula:
+
+\textbf{Team Average Time} = \frac{\sum \text{Total Logged Time of All Employees}}{\text{Total Number of Logged Entries}}
+
+
+---
+
+Explanation of Terms:
+
+Total Logged Time of All Employees:
+The sum of all individual logged-in hours by employees during the selected period.
+
+Total Number of Logged Entries:
+The count of individual employee-day records where login activity was actually recorded.
+
+
+
+---
+
+Example Calculation (April 14–16, 2025):
+
+\text{Team Average Time} = \frac{66.5}{9} = 7.39 \text{ hours (approx.)}
+
+
+---
+
+Why This Method?
+
+This approach ensures fairness by:
+
+Ignoring days where an employee didn’t work (e.g., leave or week-off).
+
+Avoiding skewed averages that would happen if we divided by total days × total employees.
+
+
+Let me know if you want this drafted as a slide or PDF too.
+
+
+
+
+Sure! Here's a clear and professional draft of your explanation, suitable for sharing with your business or analytics team:
+
+
+---
+
+How Team Average is Calculated for Selected Period (Example: April 14 to April 16, 2025)
+
+To ensure a more accurate and fair representation of team productivity, we calculate the average based on actual available entries, rather than the total number of days or expected entries. This method helps account for employees who may not have logged any time on certain days due to week-offs, leave, or other reasons.
+
+Scenario:
+
+Period Selected: April 14 to April 16, 2025 (3 days)
+
+Total Team Size: 4 employees
+
+Expected Entries: 3 days × 4 employees = 12 entries
+
+
+Actual Entries Logged:
+
+Average Calculation:
+
+Instead of averaging over total days or total expected entries, we compute:
+
+Team Average Time = Total Logged Hours / Number of Entries
+
+= 65.0 hours / 9 entries = ~7.22 hours per employee
+
+Why This Method?
+
+This method avoids misleading averages that could be affected by missing data (e.g., non-working days, absences).
+
+It ensures that only actual contributing data is considered.
+
+It's especially useful when evaluating effort and utilization without penalizing employees for approved absences or days off.
+
+
+
+---
+
+Let me know if you want this tailored for a slide or report format too!
+
+
+
+
+
+
+
+
+
+
+
+
+
+Great question — and it’s awesome that you’re thinking about how to communicate metrics clearly to your business team.
+
+Let me help you with a simple yet clear explanation you can use to describe how you're calculating team average activity over a selected period (like a week):
+
+
+---
+
+Business-Friendly Explanation:
+
+"To represent the team’s average activity for the selected week, we calculate the total activity of each employee per day, but instead of averaging it over all days uniformly, we only include days where there was actual activity recorded. This avoids skewing the average due to days when some employees were off, on leave, or didn't generate any activity data.
+
+For example, if we have 5 employees and:
+
+Day 1: 3 employees worked
+
+Day 2: 5 employees worked
+
+Day 3: 3 employees worked
+
+Day 4: 4 employees worked
+
+
+Then the total number of valid activity entries = 3 + 5 + 3 + 4 = 15 entries.
+
+We take the total activity count across all these 15 entries and divide it by 15, rather than by (5 employees × 4 days = 20), because that would incorrectly assume everyone worked every day.
+
+This gives us a more accurate average per active employee, ensuring we represent actual participation instead of penalizing the team for leaves, holidays, or off days."
+
+
+---
+
+You can also visualize this with a bar chart showing the count of active users per day, and then how the average was computed from only those bars — this really helps business folks relate.
+
+Would you like a sample SQL/PySpark snippet that implements this logic as well?
+
+
+
+
+
+Absolutely! Here's the same table data in copyable plain text format, so you can easily copy and paste it into Excel, a CSV, or a text editor:
+
+Date        | Employee | Hours Logged
+------------|----------|--------------
+2025-04-14  | Emp1     | 7.5
+2025-04-14  | Emp2     | 8.0
+2025-04-14  | Emp3     | 7.0
+2025-04-15  | Emp1     | 8.0
+2025-04-15  | Emp2     | 7.5
+2025-04-15  | Emp3     | 6.5
+2025-04-15  | Emp4     | 8.0
+2025-04-15  | Emp5     | 7.0
+2025-04-16  | Emp2     | 7.5
+2025-04-16  | Emp3     | 7.0
+2025-04-16  | Emp5     | 6.0
+2025-04-17  | Emp1     | 7.0
+2025-04-17  | Emp2     | 7.5
+2025-04-17  | Emp3     | 7.0
+2025-04-17  | Emp4     | 8.0
+2025-04-18  | Emp3     | 6.5
+
+
+---
+
+How to Present the Average:
+
+Instead of computing the average per employee per day, you're averaging the total hours logged over the number of actual records (i.e., total log entries):
+
+Step-by-Step:
+
+1. Total Entries = 16
+
+
+2. Sum of Hours Logged:
+
+7.5 + 8.0 + 7.0 + 8.0 + 7.5 + 6.5 + 8.0 + 7.0 +
+7.5 + 7.0 + 6.0 + 7.0 + 7.5 + 7.0 + 8.0 + 6.5 = 112.0 hours
+
+
+3. Team Average (overall period) =
+Total Hours Logged / Number of Entries =
+112.0 / 16 = 7.0 hours
+
+
+
+
+---
+
+How to Explain to Business Team:
+
+> “We calculate the average based on actual working entries for the selected period. So instead of diluting the metric across all 5 employees for every single day, we compute it based on who actually logged in and worked. This gives us a true measure of team activity during that time, especially when some team members may have been on leave or inactive.”
+
+
+
+Would you like this as a downloadable CSV or Excel file as well?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Step-9. Calculate all potential times
 result_df = classified_df.groupBy("emp_id", "cal_date").agg(
     # Current login: Minimum start time where start_time is within the current window and app_name is not "Window Lock"
