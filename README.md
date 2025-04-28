@@ -1,4 +1,120 @@
 
+WITH current_period_employees AS (
+    SELECT DISTINCT app_name, emp_id
+    FROM EmployeeActivity
+    WHERE cal_date BETWEEN '{start_date}' AND '{end_date}'
+),
+
+app_metrics AS (
+    SELECT
+        a.app_name AS application_name,
+        -- Current period metrics
+        ROUND(AVG(CASE WHEN a.cal_date BETWEEN '{start_date}' AND '{end_date}' THEN a.total_active_time END), 0) AS active_time,
+        ROUND(AVG(CASE 
+                WHEN a.cal_date BETWEEN '{start_date}' AND '{end_date}' AND a.app_name = 'Window Lock' 
+                THEN a.total_window_lock_time
+                WHEN a.cal_date BETWEEN '{start_date}' AND '{end_date}'
+                THEN a.total_idle_time
+            END), 0) AS idle_time,
+        ROUND(AVG(CASE WHEN a.cal_date BETWEEN '{start_date}' AND '{end_date}' THEN a.total_mouse_clicks END), 0) AS mouse_clicks,
+        ROUND(AVG(CASE WHEN a.cal_date BETWEEN '{start_date}' AND '{end_date}' THEN a.total_key_strokes END), 0) AS key_strokes,
+        
+        -- Previous period metrics for trends
+        AVG(CASE WHEN a.cal_date BETWEEN '{prev_start_date}' AND '{prev_end_date}' THEN a.total_active_time END) AS prev_active,
+        AVG(CASE 
+                WHEN a.cal_date BETWEEN '{prev_start_date}' AND '{prev_end_date}' AND a.app_name = 'Window Lock' 
+                THEN a.total_window_lock_time
+                WHEN a.cal_date BETWEEN '{prev_start_date}' AND '{prev_end_date}'
+                THEN a.total_idle_time
+            END) AS prev_idle,
+        
+        -- Employee details (pre-aggregated before collect_list)
+        COLLECT_LIST(
+            NAMED_STRUCT(
+                'employee_id', e.emp_id,
+                'active_time', ROUND(e.avg_active_time, 0),
+                'idle_time', ROUND(e.avg_idle_time, 0),
+                'mouse_clicks', ROUND(e.avg_mouse_clicks, 0),
+                'key_strokes', ROUND(e.avg_key_strokes, 0)
+            )
+        ) AS empSummary
+    FROM EmployeeActivity a
+    JOIN (
+        SELECT
+            app_name,
+            emp_id,
+            AVG(CASE WHEN cal_date BETWEEN '{start_date}' AND '{end_date}' THEN total_active_time END) AS avg_active_time,
+            AVG(CASE 
+                WHEN cal_date BETWEEN '{start_date}' AND '{end_date}' AND app_name = 'Window Lock' 
+                THEN total_window_lock_time
+                WHEN cal_date BETWEEN '{start_date}' AND '{end_date}'
+                THEN total_idle_time
+            END) AS avg_idle_time,
+            AVG(CASE WHEN cal_date BETWEEN '{start_date}' AND '{end_date}' THEN total_mouse_clicks END) AS avg_mouse_clicks,
+            AVG(CASE WHEN cal_date BETWEEN '{start_date}' AND '{end_date}' THEN total_key_strokes END) AS avg_key_strokes
+        FROM EmployeeActivity
+        WHERE cal_date BETWEEN '{start_date}' AND '{end_date}'
+        GROUP BY app_name, emp_id
+    ) e ON a.app_name = e.app_name
+    WHERE a.cal_date BETWEEN '{prev_start_date}' AND '{end_date}'
+      AND a.app_name IN (SELECT app_name FROM current_period_employees)
+    GROUP BY a.app_name
+)
+
+SELECT TO_JSON(
+    NAMED_STRUCT(
+        'teamSummary',
+        (SELECT named_struct(
+            'activeavginsec', ROUND(activeavginsec, 0),
+            'lastactiveavginsec', ROUND(lastactiveavginsec, 0),
+            'isactivetrendup', isactivetrendup,
+            'active_change', ABS(ROUND(active_change, 0)),
+            'totalavginsec', ROUND(totalavginsec, 0),
+            'lasttotalavginsec', ROUND(lasttotalavginsec, 0),
+            'istotaltrendup', istotaltrendup,
+            'total_change', ABS(ROUND(total_change, 0))
+        ) FROM TeamSummary),
+        'graphData',
+        (SELECT COLLECT_LIST(
+            NAMED_STRUCT(
+                'application_name', 
+                CASE 
+                    WHEN LOWER(RIGHT(application_name, 4)) = '.exe' 
+                    THEN LEFT(application_name, LENGTH(application_name)-4)
+                    ELSE application_name 
+                END,
+                'active_time', active_time,
+                'idle_time', idle_time,
+                'total_time', active_time + idle_time,
+                'mouse_clicks', mouse_clicks,
+                'key_strokes', key_strokes,
+                'active_trend', 
+                    CASE 
+                        WHEN active_time > prev_active THEN 'Up'
+                        WHEN active_time < prev_active THEN 'Down'
+                        ELSE 'NoChange'
+                    END,
+                'idle_trend', 
+                    CASE 
+                        WHEN idle_time > prev_idle THEN 'Up'
+                        WHEN idle_time < prev_idle THEN 'Down'
+                        ELSE 'NoChange'
+                    END,
+                'total_trend', 
+                    CASE 
+                        WHEN (active_time + idle_time) > (prev_active + prev_idle) THEN 'Up'
+                        WHEN (active_time + idle_time) < (prev_active + prev_idle) THEN 'Down'
+                        ELSE 'NoChange'
+                    END,
+                'empSummary', empSummary
+            )
+        ) FROM app_metrics)
+    )
+) AS json_result;
+
+
+
+
 WITH app_metrics AS (
     SELECT
         app_name AS application_name,
