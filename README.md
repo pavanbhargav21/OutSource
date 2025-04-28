@@ -1,3 +1,54 @@
+WITH TeamSummary AS (
+    SELECT
+        -- Current period averages
+        AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' 
+             THEN daily_active_time END) AS activeavginsec,
+        
+        -- Previous period averages
+        AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21')
+             THEN daily_active_time END) AS lastactiveavginsec,
+        
+        -- Current vs previous comparison
+        CASE WHEN 
+            AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' THEN daily_active_time END) >
+            AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+                 THEN daily_active_time END)
+        THEN 1 ELSE 0 END AS isactivetrendup,
+        
+        -- Percentage change calculation
+        (AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' THEN daily_active_time END) -
+         AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+              THEN daily_active_time END)) /
+        NULLIF(AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+                   THEN daily_active_time END), 0) * 100 AS active_change,
+        
+        -- Repeat for total time metrics
+        AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' 
+             THEN daily_total_time END) AS totalavginsec,
+        
+        AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21')
+             THEN daily_total_time END) AS lasttotalavginsec,
+        
+        CASE WHEN 
+            AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' THEN daily_total_time END) >
+            AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+                 THEN daily_total_time END)
+        THEN 1 ELSE 0 END AS istotaltrendup,
+        
+        (AVG(CASE WHEN cal_date BETWEEN '2025-03-21' AND '2025-04-21' THEN daily_total_time END) -
+         AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+              THEN daily_total_time END)) /
+        NULLIF(AVG(CASE WHEN cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND DATEADD(DAY, -31, '2025-04-21') 
+                   THEN daily_total_time END), 0) * 100 AS total_change
+    FROM PerDayEmployeeSummary
+    WHERE cal_date BETWEEN DATEADD(DAY, -31, '2025-03-21') AND '2025-04-21'
+)
+
+
+
+
+
+
 
 
 
