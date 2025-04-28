@@ -1,5 +1,177 @@
 
 
+
+WITH date_ranges AS (
+    SELECT 
+        CAST('{start_date}' AS DATE) AS current_start,
+        CAST('{end_date}' AS DATE) AS current_end,
+        CAST('{prev_start_date}' AS DATE) AS prev_start,
+        CAST('{prev_end_date}' AS DATE) AS prev_end
+),
+
+-- Materialize current apps first for faster filtering
+current_apps AS MATERIALIZED (
+    SELECT DISTINCT app_name
+    FROM EmployeeActivity
+    WHERE cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                      AND (SELECT current_end FROM date_ranges)
+),
+
+-- Single-pass aggregation with all needed metrics
+app_activity AS (
+    SELECT
+        app_name,
+        emp_id,
+        -- Current period
+        SUM(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN total_active_time END) AS curr_active,
+        SUM(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) AND app_name = 'Window Lock' 
+                 THEN total_window_lock_time 
+                 WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) 
+                 THEN total_idle_time END) AS curr_idle,
+        SUM(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN total_mouse_clicks END) AS curr_clicks,
+        SUM(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN total_key_strokes END) AS curr_keys,
+        -- Previous period
+        SUM(CASE WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) THEN total_active_time END) AS prev_active,
+        SUM(CASE WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) AND app_name = 'Window Lock' 
+                 THEN total_window_lock_time 
+                 WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) 
+                 THEN total_idle_time END) AS prev_idle,
+        -- Employee presence flags
+        MAX(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN 1 ELSE 0 END) AS in_current,
+        MAX(CASE WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) THEN 1 ELSE 0 END) AS in_previous
+    FROM EmployeeActivity
+    WHERE cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                      AND (SELECT current_end FROM date_ranges)
+      AND app_name IN (SELECT app_name FROM current_apps)
+    GROUP BY app_name, emp_id
+),
+
+-- Calculate employee counts per app
+employee_counts AS (
+    SELECT
+        app_name,
+        SUM(in_current) AS curr_emp_count,
+        SUM(in_previous) AS prev_emp_count
+    FROM app_activity
+    GROUP BY app_name
+),
+
+-- Final app metrics with proper employee averages
+app_metrics AS (
+    SELECT
+        a.app_name AS application_name,
+        -- Current metrics
+        ROUND(SUM(a.curr_active) / NULLIF(ec.curr_emp_count, 0), 0) AS active_time,
+        ROUND(SUM(a.curr_idle) / NULLIF(ec.curr_emp_count, 0), 0) AS idle_time,
+        ROUND((SUM(a.curr_active) + SUM(a.curr_idle)) / NULLIF(ec.curr_emp_count, 0), 0) AS total_time,
+        ROUND(SUM(a.curr_clicks) / NULLIF(ec.curr_emp_count, 0), 0) AS mouse_clicks,
+        ROUND(SUM(a.curr_keys) / NULLIF(ec.curr_emp_count, 0), 0) AS key_strokes,
+        -- Trends
+        CASE WHEN SUM(a.curr_active)/NULLIF(ec.curr_emp_count, 0) > 
+                  SUM(a.prev_active)/NULLIF(ec.prev_emp_count, 0) THEN 'Up'
+             WHEN SUM(a.curr_active)/NULLIF(ec.curr_emp_count, 0) < 
+                  SUM(a.prev_active)/NULLIF(ec.prev_emp_count, 0) THEN 'Down'
+             ELSE 'NoChange' END AS active_trend,
+        CASE WHEN SUM(a.curr_idle)/NULLIF(ec.curr_emp_count, 0) > 
+                  SUM(a.prev_idle)/NULLIF(ec.prev_emp_count, 0) THEN 'Up'
+             WHEN SUM(a.curr_idle)/NULLIF(ec.curr_emp_count, 0) < 
+                  SUM(a.prev_idle)/NULLIF(ec.prev_emp_count, 0) THEN 'Down'
+             ELSE 'NoChange' END AS idle_trend,
+        CASE WHEN (SUM(a.curr_active)+SUM(a.curr_idle))/NULLIF(ec.curr_emp_count, 0) > 
+                  (SUM(a.prev_active)+SUM(a.prev_idle))/NULLIF(ec.prev_emp_count, 0) THEN 'Up'
+             WHEN (SUM(a.curr_active)+SUM(a.curr_idle))/NULLIF(ec.curr_emp_count, 0) < 
+                  (SUM(a.prev_active)+SUM(a.prev_idle))/NULLIF(ec.prev_emp_count, 0) THEN 'Down'
+             ELSE 'NoChange' END AS total_trend,
+        -- Employee details
+        COLLECT_LIST(
+            NAMED_STRUCT(
+                'employee_id', a.emp_id,
+                'active_time', ROUND(a.curr_active / NULLIF(COUNT(CASE WHEN a.curr_active IS NOT NULL THEN 1 END) OVER (PARTITION BY a.app_name, a.emp_id), 0),
+                'idle_time', ROUND(a.curr_idle / NULLIF(COUNT(CASE WHEN a.curr_idle IS NOT NULL THEN 1 END) OVER (PARTITION BY a.app_name, a.emp_id), 0),
+                'mouse_clicks', ROUND(a.curr_clicks / NULLIF(COUNT(CASE WHEN a.curr_clicks IS NOT NULL THEN 1 END) OVER (PARTITION BY a.app_name, a.emp_id), 0),
+                'key_strokes', ROUND(a.curr_keys / NULLIF(COUNT(CASE WHEN a.curr_keys IS NOT NULL THEN 1 END) OVER (PARTITION BY a.app_name, a.emp_id), 0)
+            )
+        ) AS empSummary
+    FROM app_activity a
+    JOIN employee_counts ec ON a.app_name = ec.app_name
+    GROUP BY a.app_name, ec.curr_emp_count, ec.prev_emp_count
+),
+
+-- Optimized team metrics
+team_metrics AS (
+    SELECT
+        AVG(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN daily_active_time END) AS activeavginsec,
+        AVG(CASE WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) THEN daily_active_time END) AS lastactiveavginsec,
+        AVG(CASE WHEN cal_date BETWEEN (SELECT current_start FROM date_ranges) 
+                 AND (SELECT current_end FROM date_ranges) THEN daily_total_time END) AS totalavginsec,
+        AVG(CASE WHEN cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                 AND (SELECT prev_end FROM date_ranges) THEN daily_total_time END) AS lasttotalavginsec
+    FROM PerDayEmployeeSummary
+    WHERE cal_date BETWEEN (SELECT prev_start FROM date_ranges) 
+                      AND (SELECT current_end FROM date_ranges)
+)
+
+-- Final JSON output
+SELECT TO_JSON(
+    NAMED_STRUCT(
+        'teamSummary',
+        NAMED_STRUCT(
+            'activeavginsec', ROUND(activeavginsec, 0),
+            'lastactiveavginsec', ROUND(lastactiveavginsec, 0),
+            'isactivetrendup', CASE WHEN activeavginsec > lastactiveavginsec THEN 1 ELSE 0 END,
+            'active_change', ABS(ROUND(
+                (activeavginsec - lastactiveavginsec) / NULLIF(lastactiveavginsec, 0) * 100, 
+                0
+            )),
+            'totalavginsec', ROUND(totalavginsec, 0),
+            'lasttotalavginsec', ROUND(lasttotalavginsec, 0),
+            'istotaltrendup', CASE WHEN totalavginsec > lasttotalavginsec THEN 1 ELSE 0 END,
+            'total_change', ABS(ROUND(
+                (totalavginsec - lasttotalavginsec) / NULLIF(lasttotalavginsec, 0) * 100, 
+                0
+            ))
+        ),
+        'graphData',
+        (SELECT COLLECT_LIST(
+            NAMED_STRUCT(
+                'application_name', 
+                CASE 
+                    WHEN LOWER(RIGHT(application_name, 4)) = '.exe' 
+                    THEN LEFT(application_name, LENGTH(application_name)-4)
+                    ELSE application_name 
+                END,
+                'active_time', active_time,
+                'idle_time', idle_time,
+                'total_time', total_time,
+                'mouse_clicks', mouse_clicks,
+                'key_strokes', key_strokes,
+                'active_trend', active_trend,
+                'idle_trend', idle_trend,
+                'total_trend', total_trend,
+                'empSummary', empSummary
+            )
+        ) FROM app_metrics)
+    )
+) AS json_result
+FROM team_metrics;
+
+
+
+
+___----*-----
+
 WITH date_params AS (
     SELECT 
         '{start_date}' AS current_start,
