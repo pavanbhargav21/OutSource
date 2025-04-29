@@ -1,6 +1,60 @@
 
 
 
+
+
+WITH FilteredEmployees AS (
+    SELECT emplid 
+    FROM inbound.hr_employee_central 
+    WHERE func_mgr_id = '{manager_id}' 
+      AND termination_dt IS NULL
+),
+
+CombinedClicks AS (
+    SELECT
+        COALESCE(m.app_name, k.app_name) AS app_name,
+        SUM(COALESCE(m.total_mouse_count, 0) + COALESCE(k.total_keyboard_events, 0)) AS total_clicks
+    FROM 
+        (SELECT emp_id, cal_date, app_name, total_mouse_count, interval 
+         FROM gold_dashboard.analytics_emp_mouseclicks
+         WHERE cal_date BETWEEN '{start_date}' AND '{end_date}'
+           AND emp_id IN (SELECT emplid FROM FilteredEmployees)) m
+    FULL OUTER JOIN
+        (SELECT emp_id, cal_date, app_name, total_keyboard_events, interval 
+         FROM gold_dashboard.analytics_emp_keystrokes
+         WHERE cal_date BETWEEN '{start_date}' AND '{end_date}'
+           AND emp_id IN (SELECT emplid FROM FilteredEmployees)) k
+    ON m.emp_id = k.emp_id 
+       AND m.cal_date = k.cal_date 
+       AND m.app_name = k.app_name 
+       AND m.interval = k.interval
+    GROUP BY COALESCE(m.app_name, k.app_name)
+)
+
+SELECT TO_JSON(
+    NAMED_STRUCT(
+        'employee_time_spent_data',
+        (SELECT COLLECT_LIST(
+            NAMED_STRUCT(
+                'app_name', 
+                CASE 
+                    WHEN LOWER(RIGHT(app_name, 4)) = '.exe' 
+                    THEN LEFT(app_name, LENGTH(app_name)-4)
+                    ELSE app_name 
+                END,
+                'total_clicks', total_clicks
+            )
+        ) FROM CombinedClicks
+        WHERE total_clicks > 0  -- Exclude apps with zero clicks
+        ORDER BY total_clicks DESC)
+    )
+) AS json_result;
+
+
+
+
+
+
 WITH employee_metrics AS (
     SELECT
         -- Current period team metrics
