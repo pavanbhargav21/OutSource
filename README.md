@@ -1,3 +1,30 @@
+import asyncio import aiohttp from datetime import datetime, timedelta
+
+API_URL = "https://your-api-endpoint.com/data"
+
+AUTH_TOKENS = [ "Bearer token_employee_1", "Bearer token_employee_2", "Bearer token_employee_3" ]
+
+Generate all unique (start_date, end_date) pairs
+
+start = datetime(2025, 3, 1) end = datetime(2025, 5, 31)
+
+date_pairs = [] current_start = start while current_start < end: current_end = current_start + timedelta(days=1) while current_end <= end: date_pairs.append((current_start.strftime('%Y-%m-%d'), current_end.strftime('%Y-%m-%d'))) current_end += timedelta(days=1) current_start += timedelta(days=1)
+
+Prepare requests for each employee (auth token)
+
+requests = [] for token in AUTH_TOKENS: for start_date, end_date in date_pairs: requests.append({ "start_date": start_date, "end_date": end_date, "auth": token })
+
+Asynchronous request sender
+
+async def fetch(session, params): headers = {"Authorization": params["auth"]} query_params = {"start_date": params["start_date"], "end_date": params["end_date"]} async with session.get(API_URL, headers=headers, params=query_params) as response: resp_text = await response.text() print(f"{response.status} | {query_params} -> {resp_text[:50]}")  # Truncate output
+
+async def main(): connector = aiohttp.TCPConnector(limit=1000) async with aiohttp.ClientSession(connector=connector) as session: tasks = [fetch(session, req) for req in requests] await asyncio.gather(*tasks)
+
+if name == "main": asyncio.run(main())
+
+
+
+
 
 
 import requests
