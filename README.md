@@ -1,5 +1,61 @@
 
 
+import requests
+from datetime import datetime, timedelta
+
+# API base URL
+BASE_URL = "https://your-api-endpoint.com/data"
+
+# Authorization token
+BEARER_TOKEN = "your_bearer_token_here"
+
+# Headers including Authorization
+headers = {
+    "Authorization": f"Bearer {BEARER_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# Define your date range
+start_range = datetime(2024, 1, 1)
+end_range = datetime(2024, 1, 5)
+
+# Generate all valid start_date and end_date combinations
+date_list = [start_range + timedelta(days=i) for i in range((end_range - start_range).days + 1)]
+
+# Store responses
+responses = []
+
+# Loop over all start-end date combinations
+for start_date in date_list:
+    for end_date in date_list:
+        if start_date <= end_date:
+            params = {
+                "start_date": start_date.strftime("%Y-%m-%d"),
+                "end_date": end_date.strftime("%Y-%m-%d")
+            }
+            try:
+                response = requests.get(BASE_URL, headers=headers, params=params)
+                print(f"GET {response.url} => Status: {response.status_code}")
+                responses.append({
+                    "url": response.url,
+                    "status_code": response.status_code,
+                    "body": response.json() if response.headers.get('Content-Type', '').startswith('application/json') else response.text
+                })
+            except Exception as e:
+                print(f"Error for {params}: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+
 Yes, you're correct! If you are receiving the data as a payload from the frontend (e.g., JSON data in the request body), you can dynamically insert the values from the payload into your SQL queries.
 
 Let me update the examples to show how you can process the incoming payload and use it for bulk insert and bulk update operations.
