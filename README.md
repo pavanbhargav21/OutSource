@@ -1,4 +1,29 @@
 
+
+
+
+{
+  "tag_data": [
+    {
+      "tag_name": "Productivity",
+      "tag_color": "#FF5733",
+      "user_id": "USR123456",
+      "user_type": "MGR"
+    },
+    {
+      "tag_id": 102,
+      "tag_name": "Communication",
+      "tag_color": "#33C3FF",
+      "user_id": "USR123456",
+      "user_type": "MGR"
+    }
+  ]
+}
+
+
+
+
+
 from flask import request, jsonify
 from flask_cors import cross_origin
 from your_auth_utils import decode_token  # assume your token logic
