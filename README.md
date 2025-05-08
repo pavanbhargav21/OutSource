@@ -1,4 +1,67 @@
 
+
+from flask import request, jsonify
+from flask_cors import cross_origin
+from your_db_utils import get_db_connection  # Replace with actual connection util
+from your_auth_utils import decode_token     # Replace with your actual token decoder
+
+@cross_origin()
+def delete(self):
+    try:
+        # Step 1: Extract and validate the Authorization token
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_token = decode_token(token)
+        user_id = int(decoded_token.get("user_id"))
+
+        if not user_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        # Step 2: Get user_type from query parameter
+        user_type = request.args.get('type')
+        if not user_type:
+            return jsonify({"message": "Missing user_type"}), 400
+
+        # Step 3: Get tag_ids from payload
+        data = request.get_json()
+        tag_ids = data.get("tag_ids", [])
+
+        if not tag_ids or not isinstance(tag_ids, list):
+            return jsonify({"message": "tag_ids must be a non-empty list"}), 400
+
+        # Step 4: Perform deletion using IN clause
+        placeholders = ','.join(['?'] * len(tag_ids))  # for parameterized query
+        query = f"""
+            DELETE FROM app_tagging
+            WHERE user_type = ?
+              AND user_id = ?
+              AND tag_id IN ({placeholders})
+        """
+
+        params = [user_type, user_id] + tag_ids
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            conn.commit()
+
+        return jsonify({"message": f"Successfully deleted {cursor.rowcount} tag(s)"}), 200
+
+    except Exception as e:
+        return jsonify({"message": "Internal Server Error", "error": str(e)}), 500
+
+
+
+
+
+
+
+
+
+
 {
   "message": "Tags inserted/updated successfully",
   "tag_data": [
