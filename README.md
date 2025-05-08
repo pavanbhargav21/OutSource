@@ -1,5 +1,23 @@
 
-
+{
+  "message": "Tags inserted/updated successfully",
+  "tag_data": [
+    {
+      "tag_id": 201,                   // Newly inserted tag ID (auto-generated)
+      "tag_name": "Productivity",
+      "tag_color": "#FF5733",
+      "user_id": "USR123456",
+      "user_type": "MGR"
+    },
+    {
+      "tag_id": 102,                   // Existing tag, just updated
+      "tag_name": "Communication",
+      "tag_color": "#33C3FF",
+      "user_id": "USR123456",
+      "user_type": "MGR"
+    }
+  ]
+}
 
 
 {
