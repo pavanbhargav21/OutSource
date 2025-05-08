@@ -1,4 +1,102 @@
 
+from flask import request, jsonify
+from flask_cors import cross_origin
+from your_auth_utils import decode_token  # assume your token logic
+from databricks import sql  # make sure you use the right connector
+from your_connection_utils import get_db_connection
+
+@cross_origin()
+def post(self):
+    try:
+        # 1. Auth
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_tkn = decode_token(token)
+        manager_id = int(decoded_tkn.get("user_id"))
+
+        if not manager_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        # 2. Get Request Data
+        user_type = request.args.get('type')  # 'MGR' or 'EMP'
+        data = request.get_json()
+        tag_data = data.get("tag_data", [])
+
+        if not tag_data:
+            return jsonify({"message": "No tag data provided"}), 400
+
+        # 3. Separate Inserts and Updates
+        inserts = [tag for tag in tag_data if not tag.get("tag_id")]
+        updates = [tag for tag in tag_data if tag.get("tag_id")]
+
+        inserted_tags = []
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # 4. Insert New Tags (Bulk Insert, Returns IDs)
+            if inserts:
+                insert_values = [(tag['tag_name'], tag['tag_color'], manager_id, user_type) for tag in inserts]
+                cursor.executemany("""
+                    INSERT INTO silver_dashboard.app_tagging (tag_name, tag_color, user_id, user_type)
+                    VALUES (?, ?, ?, ?)
+                """, insert_values)
+
+                # Fetch inserted rows
+                cursor.execute("""
+                    SELECT tag_id, tag_name, tag_color
+                    FROM silver_dashboard.app_tagging
+                    WHERE user_id = ? AND user_type = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (manager_id, user_type, len(inserts)))
+                inserted_tags = cursor.fetchall()
+
+            # 5. Update Existing Tags
+            if updates:
+                for tag in updates:
+                    cursor.execute("""
+                        UPDATE silver_dashboard.app_tagging
+                        SET tag_name = ?, tag_color = ?
+                        WHERE tag_id = ? AND user_id = ? AND user_type = ?
+                    """, (
+                        tag['tag_name'], tag['tag_color'],
+                        tag['tag_id'], manager_id, user_type
+                    ))
+
+            # 6. Combine All Tags for Response
+            all_tag_ids = [t['tag_id'] for t in updates] + [row[0] for row in inserted_tags]
+            if all_tag_ids:
+                format_ids = "(" + ",".join(["?"] * len(all_tag_ids)) + ")"
+                cursor.execute(f"""
+                    SELECT tag_id, tag_name, tag_color
+                    FROM silver_dashboard.app_tagging
+                    WHERE tag_id IN {format_ids}
+                """, all_tag_ids)
+                final_tags = cursor.fetchall()
+            else:
+                final_tags = []
+
+        # 7. Response
+        return jsonify({
+            "tag_data": [
+                {"tag_id": row[0], "tag_name": row[1], "tag_color": row[2]}
+                for row in final_tags
+            ],
+            "message": "Tags inserted/updated successfully"
+        })
+
+    except Exception as e:
+        return jsonify({"message": str(e)}), 500
+
+
+
+
+
+
 import asyncio
 import aiohttp
 from datetime import datetime, timedelta
