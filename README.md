@@ -1,4 +1,15 @@
 
+
+{
+  "AppData": [
+    { "app_name": "zoom", "mapped_app_name": "Caller1", "tag_id": null },
+    { "app_name": "Chrome", "mapped_app_name": "browser1", "tag_id": 4 },
+    { "app_name": "Vscode", "mapped_app_name": "Vscode", "tag_id": 14 }
+  ]
+}
+
+
+
 from flask import request, jsonify
 from flask_cors import cross_origin
 
