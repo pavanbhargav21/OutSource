@@ -1,4 +1,82 @@
 
+from flask import request, jsonify
+from your_db_utils import DatabricksSession  # adjust as needed
+
+@your_blueprint.route("/your-endpoint", methods=["POST"])
+def get_tag_and_app_data():
+    user_type = request.args.get("type")
+    user_id = request.args.get("user_id")
+    data = request.get_json()
+    mapped_apps = data.get("mapped_app_names", [])
+
+    if not user_type or not user_id or not mapped_apps:
+        return jsonify({"message": "Missing required input"}), 400
+
+    placeholders = ','.join(['?'] * len(mapped_apps))
+
+    query = f"""
+    WITH filtered_tags AS (
+        SELECT tag_id, tag_name, tag_color
+        FROM silver_dashboard.tag_table
+        WHERE user_type = ? AND user_id = ? AND is_active = TRUE
+    ),
+    mapped_apps AS (
+        SELECT app_name, mapped_app_name, tag_id
+        FROM silver_dashboard.app_mapping
+        WHERE user_type = ? AND user_id = ?
+          AND mapped_app_name IN ({placeholders})
+    )
+    SELECT f.tag_id, f.tag_name, f.tag_color,
+           m.app_name, m.mapped_app_name, m.tag_id AS mapped_tag_id
+    FROM filtered_tags f
+    LEFT JOIN mapped_apps m ON f.tag_id = m.tag_id
+    """
+
+    params = [user_type, user_id, user_type, user_id] + mapped_apps
+
+    with DatabricksSession() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+    # Prepare sets for unique tag data and for existing mapped apps
+    tag_data = {}
+    app_data_dict = {}
+
+    for row in rows:
+        tag_id, tag_name, tag_color, app_name, mapped_app_name, mapped_tag_id = row
+
+        if tag_id not in tag_data:
+            tag_data[tag_id] = {
+                "tag_id": tag_id,
+                "tag_name": tag_name,
+                "tag_color": tag_color,
+                "app_count": 0
+            }
+
+        if mapped_app_name:
+            tag_data[tag_id]["app_count"] += 1
+            app_data_dict[mapped_app_name] = {
+                "app_name": app_name,
+                "mapped_app_name": mapped_app_name,
+                "tag_id": mapped_tag_id
+            }
+
+    # Fill in missing apps from input (not returned in SQL)
+    for app in mapped_apps:
+        if app not in app_data_dict:
+            app_data_dict[app] = {
+                "app_name": app,
+                "mapped_app_name": app,
+                "tag_id": None
+            }
+
+    return jsonify({
+        "TagData": list(tag_data.values()),
+        "AppDataList": list(app_data_dict.values())
+    }), 200
+
+
 
 from flask import request, jsonify
 from flask_cors import cross_origin
