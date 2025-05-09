@@ -1,4 +1,94 @@
 
+
+
+
+from flask import request, jsonify
+from flask_cors import cross_origin
+
+@cross_origin()
+def post(self):
+    try:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_token = decode_token(token)
+        user_id = int(decoded_token.get("user_id"))
+        if not user_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        user_type = request.args.get('type')  # "MGR" or "EMP"
+        data = request.get_json()
+        tag_data = data.get("tag_data", [])
+
+        if not tag_data:
+            return jsonify({"message": "No tag data provided"}), 400
+
+        # Prepare records
+        records = []
+        for tag in tag_data:
+            records.append((
+                tag.get("tag_id"),
+                tag.get("tag_name"),
+                tag.get("tag_color"),
+                user_type,
+                user_id
+            ))
+
+        # Create temp view from records
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+
+            # Create a temp view for the incoming data
+            cursor.execute("""
+                CREATE OR REPLACE TEMP VIEW incoming_tags (tag_id, tag_name, tag_color, user_type, user_id) AS
+                SELECT * FROM VALUES {}
+            """.format(
+                ", ".join([
+                    f"({tag_id if tag_id else 'NULL'}, '{tag_name}', '{tag_color}', '{user_type}', {user_id})"
+                    for tag_id, tag_name, tag_color, user_type, user_id in records
+                ])
+            ))
+
+            # Merge: insert if tag_id is NULL, else update
+            merge_query = """
+                MERGE INTO silver_dashboard.refined_app_tagging_test AS target
+                USING incoming_tags AS source
+                ON target.tag_id = source.tag_id
+
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        tag_name = source.tag_name,
+                        tag_color = source.tag_color,
+                        updated_at = current_timestamp()
+
+                WHEN NOT MATCHED THEN
+                    INSERT (tag_name, tag_color, user_type, user_id)
+                    VALUES (source.tag_name, source.tag_color, source.user_type, source.user_id);
+            """
+            cursor.execute(merge_query)
+
+            # Get newly inserted tags (i.e., where tag_id was originally NULL)
+            fetch_new_tags_query = """
+                SELECT tag_id, tag_name, tag_color
+                FROM silver_dashboard.refined_app_tagging_test
+                WHERE user_type = '{}' AND user_id = {}
+                ORDER BY created_at DESC
+                LIMIT {}
+            """.format(user_type, user_id, len([t for t in tag_data if not t.get("tag_id")]))
+
+            cursor.execute(fetch_new_tags_query)
+            inserted_tags = [dict(zip(["tag_id", "tag_name", "tag_color"], row)) for row in cursor.fetchall()]
+
+        return jsonify({"message": "Tags processed successfully", "inserted_tags": inserted_tags}), 200
+
+    except Exception as e:
+        return jsonify({"message": "Internal Server Error", "error": str(e)}), 500
+
+
+
+
 from flask import request, jsonify
 from your_db_utils import DatabricksSession  # adjust as needed
 
