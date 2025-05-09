@@ -1,5 +1,62 @@
 
+from flask import request, jsonify
+from flask_cors import cross_origin
 
+@cross_origin()
+def post(self):
+    try:
+        # Authorization & token validation
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_token = decode_token(token)
+        user_id = int(decoded_token.get("user_id"))
+        if not user_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        user_type = request.args.get('type')  # "MGR" or "EMP"
+        data = request.get_json()
+        app_data = data.get("app_data", [])
+
+        if not app_data:
+            return jsonify({"message": "No app data provided"}), 400
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+
+            # Construct VALUES clause for MERGE
+            values_clause = ", ".join([
+                f"('{app['app_name']}', '{app['mapped_app_name']}', {app['tag_id'] if app['tag_id'] is not None else 'NULL'}, '{user_type}', {user_id})"
+                for app in app_data
+            ])
+
+            # Single MERGE query (no temp view needed)
+            merge_query = f"""
+                MERGE INTO app_mapping_test AS target
+                USING (
+                    SELECT * FROM VALUES {values_clause}
+                    AS source_data(app_name, mapped_app_name, tag_id, user_type, user_id)
+                ) AS source
+                ON target.app_name = source.app_name
+
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        app_map_name = source.mapped_app_name,
+                        tag_id = source.tag_id,
+                        updated_at = current_timestamp()
+
+                WHEN NOT MATCHED THEN
+                    INSERT (app_name, app_map_name, tag_id, user_type, user_id)
+                    VALUES (source.app_name, source.mapped_app_name, source.tag_id, source.user_type, source.user_id)
+            """
+            cursor.execute(merge_query)
+
+        return jsonify({"message": "App mappings processed successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"message": "Internal Server Error", "error": str(e)}), 500
 
 
 from flask import request, jsonify
