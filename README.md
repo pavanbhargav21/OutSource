@@ -1,6 +1,47 @@
 
 def delete(self):
     try:
+        # [Previous auth/validation code remains the same...]
+        
+        tag_ids = [int(tid) for tid in data.get("tag_ids", [])]
+        id_list = ','.join(map(str, tag_ids))  # "1,4,5" format
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            
+            # 1. MERGE to nullify tag_ids (proper Databricks syntax)
+            merge_query = f"""
+                MERGE INTO silver_dashboard.refined_app_mapping_test AS target
+                USING (
+                    SELECT * FROM (VALUES {','.join([f"({tid})" for tid in tag_ids]}) 
+                    AS source(tag_id_to_null)
+                ) AS source
+                ON target.tag_id = source.tag_id_to_null
+                   AND target.user_type = '{user_type}'
+                   AND target.user_id = {user_id}
+                WHEN MATCHED THEN
+                    UPDATE SET tag_id = NULL
+            """
+            cursor.execute(merge_query)
+            
+            # 2. Separate DELETE operation
+            delete_query = f"""
+                DELETE FROM silver_dashboard.refined_app_tagging_test
+                WHERE user_type = '{user_type}'
+                  AND user_id = {user_id}
+                  AND tag_id IN ({id_list})
+            """
+            cursor.execute(delete_query)
+            
+            return jsonify({"message": "Tags cleaned successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+def delete(self):
+    try:
         # 1. Authorization & Validation
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
