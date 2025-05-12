@@ -1,4 +1,119 @@
 
+
+def post(self):
+    try:
+        # [Previous auth/validation code...]
+
+        placeholders = ','.join(['%s'] * len(mapped_apps))
+
+        query = f"""
+            WITH 
+            -- Get ALL tags for this user
+            all_tags AS (
+                SELECT 
+                    t.tag_id, 
+                    t.tag_name, 
+                    t.tag_color,
+                    COUNT(m.app_name) AS app_count
+                FROM silver_dashboard.refined_app_tagging_test t
+                LEFT JOIN silver_dashboard.refined_app_mapping_test m
+                    ON t.tag_id = m.tag_id
+                    AND t.user_type = m.user_type
+                    AND t.user_id = m.user_id
+                WHERE t.user_type = %s 
+                  AND t.user_id = %s
+                  AND t.is_active = TRUE
+                GROUP BY t.tag_id, t.tag_name, t.tag_color
+            ),
+            -- Get requested app mappings (including NULL tag_id cases)
+            requested_apps AS (
+                SELECT 
+                    app_name, 
+                    mapped_app_name, 
+                    tag_id
+                FROM silver_dashboard.refined_app_mapping_test
+                WHERE user_type = %s
+                  AND user_id = %s
+                  AND app_name IN ({placeholders})
+            )
+            -- Main query combining results
+            SELECT 
+                'tag' AS data_type,
+                tag_id,
+                tag_name,
+                tag_color,
+                app_count,
+                NULL AS app_name,
+                NULL AS mapped_app_name
+            FROM all_tags
+            UNION ALL
+            SELECT 
+                'app' AS data_type,
+                NULL AS tag_id,
+                NULL AS tag_name,
+                NULL AS tag_color,
+                NULL AS app_count,
+                app_name,
+                mapped_app_name
+            FROM requested_apps
+        """
+
+        params = [user_type, user_id, user_type, user_id] + mapped_apps
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            # Process results
+            tag_data = []
+            app_data = []
+            
+            for row in rows:
+                data_type = row[0]
+                if data_type == 'tag':
+                    tag_data.append({
+                        "tag_id": row[1],
+                        "tag_name": row[2],
+                        "tag_color": row[3],
+                        "app_count": row[4]
+                    })
+                else:
+                    app_data.append({
+                        "app_name": row[5],
+                        "mapped_app_name": row[6] if row[6] else row[5],
+                        "tag_id": None  # Will be updated in next pass
+                    })
+
+            # Second pass to get tag_id for apps
+            if app_data:
+                app_names = [app['app_name'] for app in app_data]
+                placeholders = ','.join(['%s'] * len(app_names))
+                cursor.execute(f"""
+                    SELECT app_name, tag_id 
+                    FROM silver_dashboard.refined_app_mapping_test
+                    WHERE user_type = %s
+                      AND user_id = %s
+                      AND app_name IN ({placeholders})
+                """, [user_type, user_id] + app_names)
+                
+                for app_name, tag_id in cursor.fetchall():
+                    for app in app_data:
+                        if app['app_name'] == app_name:
+                            app['tag_id'] = tag_id
+                            break
+
+            return jsonify({
+                "TagData": tag_data,
+                "AppData": app_data
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
 def delete(self):
     try:
         # [Previous auth/user validation code...]
