@@ -1,4 +1,60 @@
 
+def delete(self):
+    try:
+        # 1. Authorization & Validation
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_token = decode_token(token)
+        user_id = int(decoded_token.get("user_id"))
+        if not user_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        # 2. Get required parameters
+        user_type = request.args.get('type')
+        if not user_type:
+            return jsonify({"message": "Missing user_type"}), 400
+
+        data = request.get_json()
+        tag_ids = [int(tid) for tid in data.get("tag_ids", [])]
+        if not tag_ids:
+            return jsonify({"message": "tag_ids must be a non-empty list of integers"}), 400
+
+        # 3. Single MERGE operation for both updates and deletes
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                -- First MERGE to nullify tag_ids in mapping table
+                MERGE INTO silver_dashboard.refined_app_mapping_test AS target
+                USING (
+                    SELECT explode(array({','.join(map(str, tag_ids))})) AS tag_id_to_null
+                ) AS source
+                ON target.tag_id = source.tag_id_to_null
+                   AND target.user_type = '{user_type}'
+                   AND target.user_id = {user_id}
+                WHEN MATCHED THEN
+                    UPDATE SET tag_id = NULL;
+                
+                -- Second operation to delete from tagging table
+                DELETE FROM silver_dashboard.refined_app_tagging_test
+                WHERE user_type = '{user_type}'
+                  AND user_id = {user_id}
+                  AND tag_id IN ({','.join(map(str, tag_ids))});
+            """)
+            
+            return jsonify({"message": "Tags cleaned up successfully"}), 200
+
+    except ValueError:
+        return jsonify({"message": "All tag_ids must be integers"}), 400
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
 
 def delete(self):
     try:
