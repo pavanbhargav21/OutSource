@@ -1,4 +1,80 @@
 
+def delete(self):
+    try:
+        # 1. Authorization & Validation (same as before)
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Missing or Invalid Authorization"}), 401
+
+        token = auth_header.split(" ")[1]
+        decoded_token = decode_token(token)
+        user_id = int(decoded_token.get("user_id"))
+        if not user_id:
+            return jsonify({"message": "Invalid Token Claims"}), 401
+
+        # 2. Get user_type and tag_ids
+        user_type = request.args.get('type')
+        if not user_type:
+            return jsonify({"message": "Missing user_type"}), 400
+
+        data = request.get_json()
+        tag_ids = data.get("tag_ids", [])
+        if not tag_ids or not isinstance(tag_ids, list):
+            return jsonify({"message": "tag_ids must be a non-empty list"}), 400
+
+        # 3. Atomic MERGE + DELETE operation
+        query = f"""
+            -- Phase 1: NULL out references in mapping table
+            MERGE INTO silver_dashboard.refined_app_mapping_test AS target
+            USING (
+                SELECT explode(array({','.join([str(tid) for tid in tag_ids]})) AS tag_id_to_null
+            ) AS source
+            ON target.tag_id = source.tag_id_to_null
+               AND target.user_type = '{user_type}'
+               AND target.user_id = {user_id}
+            WHEN MATCHED THEN
+                UPDATE SET tag_id = NULL;
+            
+            -- Phase 2: Delete tags
+            DELETE FROM silver_dashboard.refined_app_tagging_test
+            WHERE user_type = '{user_type}'
+              AND user_id = {user_id}
+              AND tag_id IN ({','.join([str(tid) for tid in tag_ids]});
+        """
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            
+            # Get affected rows (Databricks-specific approach)
+            update_count = cursor.rowcount  # For MERGE (may vary by Databricks version)
+            
+            # For DELETE count, we need a separate query if needed
+            count_query = f"""
+                SELECT COUNT(*) 
+                FROM silver_dashboard.refined_app_tagging_test
+                WHERE user_type = '{user_type}'
+                  AND user_id = {user_id}
+                  AND tag_id IN ({','.join([str(tid) for tid in tag_ids]})
+                BEFORE DELETE;
+            """
+            cursor.execute(count_query)
+            delete_count = cursor.fetchone()[0]
+
+            return jsonify({
+                "message": "Atomic cleanup completed",
+                "stats": {
+                    "tags_nullified": update_count,
+                    "tags_deleted": delete_count
+                }
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
 
 {
   "AppData": [
