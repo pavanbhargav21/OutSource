@@ -1,4 +1,55 @@
 
+
+def delete(self):
+    try:
+        # [Previous auth/user validation code...]
+        
+        # Convert tag_ids to quoted strings if they're not numeric
+        is_numeric = all(isinstance(tid, (int, float)) for tid in tag_ids)
+        tag_ids_sql = (
+            ",".join([str(tid) for tid in tag_ids]) if is_numeric 
+            else ",".join([f"'{tid}'" for tid in tag_ids])
+        )
+
+        query = f"""
+            -- Phase 1: NULLify references
+            MERGE INTO silver_dashboard.refined_app_mapping_test AS target
+            USING (
+                SELECT explode(array({tag_ids_sql})) AS tag_id_to_null
+            ) AS source
+            ON target.tag_id = source.tag_id_to_null
+               AND target.user_type = '{user_type}'
+               AND target.user_id = {user_id}
+            WHEN MATCHED THEN
+                UPDATE SET tag_id = NULL;
+            
+            -- Phase 2: Delete tags
+            DELETE FROM silver_dashboard.refined_app_tagging_test
+            WHERE user_type = '{user_type}'
+              AND user_id = {user_id}
+              AND tag_id IN ({tag_ids_sql});
+        """
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            
+            return jsonify({
+                "message": f"Atomic cleanup completed for {len(tag_ids)} tags",
+                "details": {
+                    "operation": "MERGE+DELETE",
+                    "tag_id_type": "numeric" if is_numeric else "string"
+                }
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
+
+
 def delete(self):
     try:
         # 1. Authorization & Validation (same as before)
