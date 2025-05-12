@@ -1,4 +1,100 @@
 
+def post(self):
+    try:
+        # [Previous auth/validation code...]
+
+        placeholders = ','.join(['%s'] * len(mapped_apps))
+
+        query = f"""
+            WITH 
+            -- Get ALL tags for this user with counts
+            all_tags AS (
+                SELECT 
+                    t.tag_id, 
+                    t.tag_name, 
+                    t.tag_color,
+                    COUNT(m.app_name) AS app_count
+                FROM silver_dashboard.refined_app_tagging_test t
+                LEFT JOIN silver_dashboard.refined_app_mapping_test m
+                    ON t.tag_id = m.tag_id
+                    AND t.user_type = m.user_type
+                    AND t.user_id = m.user_id
+                WHERE t.user_type = %s 
+                  AND t.user_id = %s
+                  AND t.is_active = TRUE
+                GROUP BY t.tag_id, t.tag_name, t.tag_color
+            ),
+            -- Get requested app mappings with their tag_ids
+            requested_apps AS (
+                SELECT 
+                    app_name, 
+                    mapped_app_name, 
+                    tag_id
+                FROM silver_dashboard.refined_app_mapping_test
+                WHERE user_type = %s
+                  AND user_id = %s
+                  AND app_name IN ({placeholders})
+            )
+            -- Combined results in single pass
+            SELECT 
+                'tag' AS data_type,
+                tag_id,
+                tag_name,
+                tag_color,
+                app_count,
+                NULL AS app_name,
+                NULL AS mapped_app_name,
+                NULL AS app_tag_id
+            FROM all_tags
+            UNION ALL
+            SELECT 
+                'app' AS data_type,
+                NULL AS tag_id,
+                NULL AS tag_name,
+                NULL AS tag_color,
+                NULL AS app_count,
+                app_name,
+                COALESCE(mapped_app_name, app_name) AS mapped_app_name,
+                tag_id AS app_tag_id
+            FROM requested_apps
+        """
+
+        params = [user_type, user_id, user_type, user_id] + mapped_apps
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            # Single-pass processing
+            tag_data = []
+            app_data = []
+            
+            for row in rows:
+                if row[0] == 'tag':  # Tag data
+                    tag_data.append({
+                        "tag_id": row[1],
+                        "tag_name": row[2],
+                        "tag_color": row[3],
+                        "app_count": row[4]
+                    })
+                else:  # App data
+                    app_data.append({
+                        "app_name": row[5],
+                        "mapped_app_name": row[6],
+                        "tag_id": row[7]  # Directly from query
+                    })
+
+            return jsonify({
+                "TagData": tag_data,
+                "AppData": app_data
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
 
 def post(self):
     try:
