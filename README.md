@@ -1,6 +1,44 @@
 
 def delete(self):
     try:
+        # [Previous auth/user validation code...]
+
+        # Convert tag_ids to comma-separated string
+        tag_ids = [int(tid) for tid in data.get("tag_ids", [])]
+        id_list = ','.join(map(str, tag_ids))  # "1,4,5" format
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            
+            # 1. First NULL out references in mapping table
+            cursor.execute(f"""
+                UPDATE silver_dashboard.refined_app_mapping_test
+                SET tag_id = NULL
+                WHERE user_type = '{user_type}'
+                AND user_id = {user_id}
+                AND tag_id IN ({id_list})
+            """)
+            
+            # 2. Then delete from tagging table
+            cursor.execute(f"""
+                DELETE FROM silver_dashboard.refined_app_tagging_test
+                WHERE user_type = '{user_type}'
+                AND user_id = {user_id}
+                AND tag_id IN ({id_list})
+            """)
+            
+            return jsonify({"message": "Tags and mappings cleaned successfully"}), 200
+
+    except ValueError:
+        return jsonify({"message": "All tag_ids must be integers"}), 400
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
+def delete(self):
+    try:
         # [Previous auth/validation code remains the same...]
         
         tag_ids = [int(tid) for tid in data.get("tag_ids", [])]
