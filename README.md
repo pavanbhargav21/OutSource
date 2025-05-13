@@ -1,3 +1,94 @@
+def post(self):
+    try:
+        # [Previous auth/validation code...]
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+
+            # Prepare values safely, escaping single quotes to avoid SQL errors
+            values = ','.join([
+                f"('{tag['tag_name'].replace(\"'\", \"''\")}', '{tag['tag_color'].replace(\"'\", \"''\")}', "
+                f"{tag.get('tag_id') if tag.get('tag_id') is not None else 'NULL'}, "
+                f"'{user_type}', {user_id})"
+                for tag in tag_data
+            ])
+
+            # Prepare list of new insert tag_names from input data to filter inserted rows after merge
+            new_insert_names_list = [tag['tag_name'].replace("'", "''") for tag in tag_data if not tag.get('tag_id')]
+
+            if not new_insert_names_list:
+                # No new inserts, so only perform the update
+                query_update_only = f"""
+                UPDATE silver_dashboard.refined_app_tagging_test
+                SET tag_name = source.tag_name,
+                    tag_color = source.tag_color
+                FROM (VALUES
+                    {values}
+                ) AS source(tag_name, tag_color, tag_id, user_type, user_id)
+                WHERE silver_dashboard.refined_app_tagging_test.user_type = source.user_type
+                  AND silver_dashboard.refined_app_tagging_test.user_id = source.user_id
+                  AND silver_dashboard.refined_app_tagging_test.tag_id = source.tag_id
+                """
+                cursor.execute(query_update_only)
+                inserted_tags = []  # No new tags to return
+            else:
+                # There are new inserts; do all in one multi-statement query
+                new_insert_names = ','.join([f"'{name}'" for name in new_insert_names_list])
+
+                query = f"""
+                WITH incoming_tags AS (
+                    SELECT
+                      tag_name,
+                      tag_color,
+                      tag_id,
+                      user_type,
+                      user_id,
+                      CASE WHEN tag_id IS NULL THEN TRUE ELSE FALSE END AS is_new
+                    FROM VALUES
+                      {values}
+                    AS t(tag_name, tag_color, tag_id, user_type, user_id)
+                ),
+                merge_operation AS (
+                    MERGE INTO silver_dashboard.refined_app_tagging_test target
+                    USING incoming_tags source
+                    ON target.tag_id = source.tag_id
+                       AND target.user_type = source.user_type
+                       AND target.user_id = source.user_id
+                    WHEN MATCHED THEN
+                        UPDATE SET
+                            tag_name = source.tag_name,
+                            tag_color = source.tag_color
+                    WHEN NOT MATCHED THEN
+                        INSERT (tag_name, tag_color, user_type, user_id)
+                        VALUES (source.tag_name, source.tag_color, source.user_type, source.user_id)
+                    SELECT 1 as dummy
+                )
+                SELECT 
+                    t.tag_id,
+                    t.tag_name
+                FROM silver_dashboard.refined_app_tagging_test t
+                JOIN incoming_tags i
+                  ON t.tag_name = i.tag_name
+                  AND t.user_type = i.user_type
+                  AND t.user_id = i.user_id
+                WHERE i.is_new = TRUE
+                  AND t.tag_name IN ({new_insert_names})
+                """
+
+                cursor.execute(query)
+                inserted_tags = [
+                    {"tag_id": row[0], "tag_name": row[1]}
+                    for row in cursor.fetchall()
+                ]
+
+            return jsonify({
+                "message": "Tag operations completed",
+                "inserted_tags": inserted_tags,
+                "insert_count": len(inserted_tags)
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
 
 
 def post(self):
