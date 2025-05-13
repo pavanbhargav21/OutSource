@@ -1,4 +1,76 @@
 
+
+def post(self):
+    try:
+        # [Previous auth/validation code...]
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+
+            # Create temp view (NULL tag_id for new tags)
+            values = []
+            for tag in tag_data:
+                values.append(
+                    f"({'NULL' if tag.get('tag_id') is None else tag['tag_id']}, "
+                    f"'{tag['tag_name']}', "
+                    f"'{tag['tag_color']}', "
+                    f"'{user_type}', {user_id}, "
+                    f"{'TRUE' if tag.get('is_active', True) else 'FALSE'})"
+                )
+
+            cursor.execute(f"""
+                CREATE OR REPLACE TEMP VIEW incoming_tags AS
+                SELECT * FROM VALUES 
+                {','.join(values)}
+                AS temp(tag_id, tag_name, tag_color, user_type, user_id, is_active)
+            """)
+
+            # MERGE operation
+            cursor.execute(f"""
+                MERGE INTO silver_dashboard.refined_app_tagging_test target
+                USING incoming_tags source
+                ON (target.tag_id = source.tag_id OR 
+                   (target.tag_name = source.tag_name 
+                    AND target.user_type = source.user_type 
+                    AND target.user_id = source.user_id))
+                WHEN MATCHED AND source.tag_id IS NOT NULL THEN
+                    UPDATE SET
+                        tag_color = source.tag_color,
+                        is_active = source.is_active,
+                        updated_at = current_timestamp()
+                WHEN NOT MATCHED THEN
+                    INSERT (tag_name, tag_color, user_type, user_id, is_active)
+                    VALUES (source.tag_name, source.tag_color, 
+                            source.user_type, source.user_id, source.is_active)
+                OUTPUT 
+                    $action AS operation,
+                    INSERTED.tag_id AS tag_id,
+                    INSERTED.tag_name AS tag_name
+            """)
+
+            # Process results
+            results = cursor.fetchall()
+            operations = {
+                'inserted': [{'tag_id': r[1], 'tag_name': r[2]} for r in results if r[0] == 'INSERT'],
+                'updated': [{'tag_id': r[1], 'tag_name': r[2]} for r in results if r[0] == 'UPDATE']
+            }
+
+            return jsonify({
+                "message": "Tag operations completed",
+                "operations": operations,
+                "stats": {
+                    "inserted": len(operations['inserted']),
+                    "updated": len(operations['updated'])
+                }
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
+
 def post(self):
     try:
         # [Previous auth/validation code...]
