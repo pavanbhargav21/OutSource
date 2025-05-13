@@ -1,4 +1,100 @@
 
+def post(self):
+    try:
+        # [Previous auth/validation code...]
+
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+
+            values = ','.join([
+                f"('{tag['tag_name'].replace(\"'\", \"''\")}', '{tag['tag_color'].replace(\"'\", \"''\")}', "
+                f"{tag.get('tag_id') if tag.get('tag_id') is not None else 'NULL'}, "
+                f"'{user_type}', {user_id})"
+                for tag in tag_data
+            ])
+
+            # Single multi-statement SQL query combining CTE, merge, and select of inserted rows
+            query = f"""
+            WITH incoming_tags AS (
+                SELECT *
+                FROM VALUES 
+                    {values}
+                AS t(tag_name, tag_color, tag_id, user_type, user_id)
+                -- Mark potential inserts
+                -- We add is_new column here with CASE WHEN tag_id IS NULL THEN true ELSE false END
+                SELECT
+                  tag_name,
+                  tag_color,
+                  tag_id,
+                  user_type,
+                  user_id,
+                  CASE WHEN tag_id IS NULL THEN true ELSE false END AS is_new
+                FROM t
+            )
+            -- Actually, Databricks SQL syntax requires a single SELECT in CTE.
+            -- We'll merge the is_new computation inline in the CTE via SELECT from VALUES with alias.
+            WITH incoming_tags AS (
+                SELECT 
+                  tag_name,
+                  tag_color,
+                  tag_id,
+                  user_type,
+                  user_id,
+                  CASE WHEN tag_id IS NULL THEN TRUE ELSE FALSE END AS is_new
+                FROM VALUES 
+                  {values}
+                AS t(tag_name, tag_color, tag_id, user_type, user_id)
+            ),
+            merge_operation AS (
+                MERGE INTO silver_dashboard.refined_app_tagging_test target
+                USING incoming_tags source
+                ON target.tag_id = source.tag_id
+                   AND target.user_type = source.user_type
+                   AND target.user_id = source.user_id
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        tag_name = source.tag_name,
+                        tag_color = source.tag_color
+                WHEN NOT MATCHED THEN
+                    INSERT (tag_name, tag_color, user_type, user_id)
+                    VALUES (source.tag_name, source.tag_color, source.user_type, source.user_id)
+                -- Databricks MERGE does not return rows, so just move on
+                SELECT 1 as dummy -- To satisfy CTE syntax
+            )
+            SELECT 
+                t.tag_id,
+                t.tag_name
+            FROM silver_dashboard.refined_app_tagging_test t
+            JOIN incoming_tags i
+              ON t.tag_name = i.tag_name
+              AND t.user_type = i.user_type
+              AND t.user_id = i.user_id
+            WHERE i.is_new = TRUE
+              AND t.created_at >= CURRENT_TIMESTAMP - INTERVAL 5 MINUTES
+            """
+
+            cursor.execute(query)
+            inserted_tags = [
+                {"tag_id": row[0], "tag_name": row[1]} 
+                for row in cursor.fetchall()
+            ]
+
+            return jsonify({
+                "message": "Tag operations completed",
+                "inserted_tags": inserted_tags,
+                "insert_count": len(inserted_tags)
+            }), 200
+
+    except Exception as e:
+        return jsonify({"status": "fail", "message": str(e)}), 500
+
+
+
+
+
+
+
+
 
 def post(self):
     try:
