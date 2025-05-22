@@ -1,3 +1,80 @@
+# Example Python script to run the EMP analytics query in Apache Spark using dynamic date parameters
+
+def get_emp_app_info_query(start_date: str, end_date: str) -> str:
+    """
+    Returns the SQL query with given start_date and end_date parameters,
+    properly formatted for Spark SQL.
+    """
+    query = f"""
+    WITH LoginLogout AS (
+        SELECT 
+            emp_id,
+            shift_date,
+            emp_login_time,
+            emp_logout_time
+        FROM 
+            gold_dashboard.analytics_emp_login_logout
+        WHERE 
+            shift_date BETWEEN DATE('{start_date}') AND DATE('{end_date}')
+    ),
+    FilteredIntervals AS (
+        SELECT 
+            i.cal_date,
+            i.app_name,
+            i.empid,
+            i.total_time_interval,
+            l.emp_login_time,
+            l.emp_logout_time,
+            CASE 
+                WHEN l.emp_logout_time IS NOT NULL 
+                     AND l.emp_logout_time >= TO_TIMESTAMP(CONCAT(DATE_ADD(DATE('{start_date}'), 1), ' ', SUBSTRING(i.total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+                THEN DATE_ADD(i.cal_date, 1)
+                ELSE i.cal_date
+            END AS cal_date,
+            DATE('{start_date}') AS effective_cal_date
+        FROM 
+            gold_dashboard.analytics_emp_app_info i
+        LEFT JOIN 
+            LoginLogout l
+        ON 
+            i.empid = l.emp_id
+        WHERE 
+            l.emp_login_time IS NOT NULL 
+            AND l.emp_logout_time IS NOT NULL
+            AND (
+                (l.emp_login_time <= TO_TIMESTAMP(CONCAT(DATE('{start_date}'), ' 23:59:59'), 'yyyy-MM-dd HH:mm:ss') 
+                 AND l.emp_logout_time >= TO_TIMESTAMP(CONCAT(DATE('{start_date}'), ' 00:00:00'), 'yyyy-MM-dd HH:mm:ss'))
+            )
+    )
+    SELECT 
+        cal_date,
+        app_name,
+        empid,
+        total_time_interval,
+        effective_cal_date
+    FROM 
+        FilteredIntervals
+    WHERE 
+        (cal_date = DATE_ADD(DATE('{start_date}'), 1) AND 
+         (
+           TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss') <= TO_TIMESTAMP(CONCAT(cal_date, ' ', SUBSTRING(total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') 
+           AND TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss') >= TO_TIMESTAMP(CONCAT(cal_date, ' ', SUBSTRING(total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+         )
+        )
+    ORDER BY 
+        cal_date, empid
+    """
+    return query
+
+# Usage example:
+# from pyspark.sql import SparkSession
+# spark = SparkSession.builder.getOrCreate()
+# start_date = '2025-05-07'
+# end_date = '2025-05-07'
+# query = get_emp_app_info_query(start_date, end_date)
+# result_df = spark.sql(query)
+# result_df.show()
+
 
 
 WITH LoginLogout AS (
