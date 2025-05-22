@@ -1,3 +1,66 @@
+
+
+WITH LoginLogout AS (
+    SELECT 
+        emp_id,
+        shift_date,
+        emp_login_time,
+        emp_logout_time
+    FROM 
+        gold_dashboard.analytics_emp_login_logout
+    WHERE 
+        shift_date BETWEEN '2025-05-07' AND '2025-05-08'
+),
+FilteredIntervals AS (
+    SELECT 
+        i.cal_date,
+        i.app_name,
+        i.empid,
+        i.total_time_interval,
+        l.emp_login_time,
+        l.emp_logout_time,
+        CASE 
+            WHEN l.emp_logout_time IS NOT NULL AND 
+                 l.emp_logout_time >= TO_TIMESTAMP(CONCAT('2025-05-08', ' ', SUBSTRING(i.total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+            THEN '2025-05-08'
+            ELSE i.cal_date
+        END AS cal_date,
+        '2025-05-07' AS effective_cal_date
+    FROM 
+        gold_dashboard.analytics_emp_app_info i
+    LEFT JOIN 
+        LoginLogout l
+    ON 
+        i.empid = l.emp_id
+    WHERE 
+        (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NOT NULL)
+        AND (
+            (l.emp_login_time <= TO_TIMESTAMP('2025-05-07 09:00:00', 'yyyy-MM-dd HH:mm:ss') 
+             AND l.emp_logout_time >= TO_TIMESTAMP('2025-05-08 00:00:00', 'yyyy-MM-dd HH:mm:ss'))
+        )
+)
+SELECT 
+    cal_date,
+    app_name,
+    empid,
+    total_time_interval,
+    effective_cal_date
+FROM 
+    FilteredIntervals
+WHERE 
+    (cal_date = '2025-05-08' AND 
+     (TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss') <= 
+      TO_TIMESTAMP(CONCAT(cal_date, ' ', SUBSTRING(total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') 
+      AND 
+      TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss') >= 
+      TO_TIMESTAMP(CONCAT(cal_date, ' ', SUBSTRING(total_time_interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')))
+ORDER BY 
+    cal_date, empid;
+
+
+
+
+
 def post(self):
     try:
         # [Previous auth/validation code...]
