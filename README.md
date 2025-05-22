@@ -1,3 +1,67 @@
+
+
+WITH SessionIntervals AS (
+    -- Get all possible intervals that overlap with each login session
+    SELECT 
+        l.emp_id,
+        l.shift_date,
+        i.cal_date,
+        i.interval,
+        i.app_name,
+        i.total_time,
+        -- Flag indicating if this interval should be included for this session
+        CASE 
+            WHEN (
+                -- Interval starts after login but before logout
+                TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') 
+                >= TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss')
+                AND TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), 'yyyy-MM-dd HH:mm') 
+                < TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss')
+            ) OR (
+                -- Handle case where logout is NULL (still logged in)
+                l.emp_logout_time IS NULL 
+                AND TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') 
+                >= TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss')
+            )
+            THEN 1 ELSE 0 
+        END AS include_interval
+    FROM 
+        gold_dashboard.analytics_emp_login_logout l
+    CROSS JOIN 
+        gold_dashboard.analytics_emp_app_info i
+    WHERE 
+        l.emp_id = i.emp_id
+        AND l.shift_date BETWEEN '2025-05-07' AND '2025-05-07'
+        AND l.emp_id IN (SELECT emplid FROM FilteredEmployees)
+)
+
+-- Final result with all intervals properly associated with shift_date
+SELECT 
+    l.emp_id,
+    l.shift_date AS cal_date,  -- Using shift_date as the reference date
+    i.interval,
+    i.app_name,
+    i.total_time,
+    l.emp_login_time,
+    l.emp_logout_time
+FROM 
+    gold_dashboard.analytics_emp_login_logout l
+JOIN 
+    SessionIntervals si ON l.emp_id = si.emp_id AND l.shift_date = si.shift_date
+JOIN
+    gold_dashboard.analytics_emp_app_info i ON i.emp_id = si.emp_id 
+        AND i.cal_date = si.cal_date 
+        AND i.interval = si.interval
+WHERE 
+    si.include_interval = 1
+ORDER BY 
+    l.shift_date, l.emp_id, i.interval;
+
+
+
+
+
+
 # Example Python script to run the EMP analytics query in Apache Spark using dynamic date parameters
 
 def get_emp_app_info_query(start_date: str, end_date: str) -> str:
