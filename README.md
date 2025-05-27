@@ -1,4 +1,80 @@
 
+with DatabricksSession() as conn:
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+
+    # Initialize data structures
+    tag_data = []
+    app_data = []
+    found_apps = set()
+    
+    # Default configuration
+    default_tags = {
+        "Analytics": ["app1", "app2", "app3"],
+        "Security": ["app4", "app5"]
+    }
+    
+    # Create reverse mapping and initialize counts in one pass
+    default_app_map = {app: tag for tag, apps in default_tags.items() for app in apps}
+    default_tag_counts = {tag: 0 for tag in default_tags}
+
+    # Process all rows in single loop
+    for row in rows:
+        if row[0] == 'tag':
+            tag_data.append({
+                "tag_id": row[1],
+                "tag_name": row[2],
+                "tag_color": row[3],
+                "app_count": row[4],
+                "is_default": False
+            })
+        else:
+            app_name = row[5]
+            is_default = app_name in default_app_map
+            app_data.append({
+                "app_name": app_name,
+                "mapped_app_name": row[6],
+                "tag_id": None if is_default else row[7],
+                "is_default": is_default
+            })
+            found_apps.add(app_name)
+            if is_default:
+                default_tag_counts[default_app_map[app_name]] += 1
+
+    # Process mapped_app_names and update counts in one loop
+    for app in mapped_app_names:
+        if app not in found_apps:
+            is_default = app in default_app_map
+            app_data.append({
+                "app_name": app,
+                "mapped_app_name": app,
+                "tag_id": None,
+                "is_default": is_default
+            })
+            if is_default:
+                default_tag_counts[default_app_map[app]] += 1
+
+    # Add default tags with counts > 0
+    tag_data.extend({
+        "tag_id": None,
+        "tag_name": tag,
+        "tag_color": "#FFFFFF",
+        "app_count": count,
+        "is_default": True
+    } for tag, count in default_tag_counts.items() if count > 0)
+
+    return jsonify({
+        "TagData": tag_data,
+        "AppData": app_data
+    }), 200
+
+except Exception as e:
+    return jsonify({"error": str(e)}), 500
+
+
+
+
 
 WITH SessionIntervals AS (
     -- Get all possible intervals that overlap with each login session
