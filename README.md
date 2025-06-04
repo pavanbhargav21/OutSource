@@ -1,4 +1,68 @@
 
+# app/utils/azure_auth.py
+import httpx
+import socket
+from fastapi import HTTPException
+
+async def get_token_from_code(auth_code: str, redirect_uri: str):
+    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    
+    # Verify DNS resolution first
+    try:
+        socket.gethostbyname('login.microsoftonline.com')
+    except socket.gaierror:
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot resolve Microsoft login endpoint. Check your network connection."
+        )
+
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "code": auth_code,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+        "scope": "openid email profile User.Read"
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # Test connection before token exchange
+            try:
+                await client.get("https://login.microsoftonline.com", timeout=5.0)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot connect to Microsoft servers: {str(e)}"
+                )
+
+            # Proceed with token exchange
+            response = await client.post(
+                token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10.0
+            )
+            
+            if response.status_code != 200:
+                error = response.json()
+                raise HTTPException(
+                    status_code=400,
+                    detail=error.get('error_description', "Authentication failed")
+                )
+                
+            return response.json()
+
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Network error during token exchange: {str(e)}"
+        )
+
+
+
+
+
 with DatabricksSession() as conn:
     cursor = conn.cursor()
     cursor.execute(query, params)
