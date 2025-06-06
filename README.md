@@ -5,6 +5,136 @@ WITH date_params AS (
     45125667 AS emp_id,
     DATE '2025-05-26' AS start_date,
     DATE '2025-06-01' AS end_date,
+    YEAR(DATE '2025-05-26') AS year,
+    WEEKOFYEAR(DATE '2025-05-26') AS week
+),
+
+app_mappings AS (
+  SELECT 
+    m.app_name,
+    m.mapped_app_name,
+    m.tag_name,
+    t.tag_color
+  FROM gold_dashboard.analytics_app_mapping m
+  LEFT JOIN gold_dashboard.analytics_app_tagging t
+    ON m.user_type = t.user_type
+    AND m.user_id = t.user_id
+    AND m.tag_id = t.tag_id
+    AND t.is_active = TRUE
+  WHERE m.user_type = 'EMP'
+    AND m.user_id = (SELECT emp_id FROM date_params)
+),
+
+default_tags AS (
+  SELECT 
+    tmp.col1 AS app_name, 
+    tmp.col2 AS mapped_app_name, 
+    tmp.col3 AS tag_name, 
+    tmp.col4 AS tag_color 
+  FROM (VALUES 
+    ('dwm', 'Desktop Window Manager', 'System', '#808080'),
+    ('OfficeClickToRun', 'Microsoft Office', 'Productivity', '#2B579A'),
+    ('msinfo32', 'System Information', 'System', '#808080'),
+    ('PGProgramsUtil', 'Program Utility', 'System', '#808080'),
+    ('ApplicationFrameHost', 'Windows App Host', 'System', '#808080'),
+    ('LSU', 'Lenovo System Update', 'System', '#808080'),
+    ('Snipping Tool', 'Snipping Tool', 'Productivity', '#2B579A'),
+    ('notepad++', 'Notepad++', 'Development', '#4EC9B0'),
+    ('Tricentis Tosca 16.0 Patch9 LTS', 'Tosca', 'Testing', '#A4A4A4'),
+    ('ShellExperienceHost', 'Windows Shell', 'System', '#808080'),
+    ('OUTLOOK', 'Outlook', 'Productivity', '#2B579A'),
+    ('Zoom', 'Zoom', 'Communication', '#2D8CFF')
+  ) AS tmp(col1, col2, col3, col4)
+),
+
+combined_mappings AS (
+  SELECT * FROM app_mappings
+  UNION ALL
+  SELECT * FROM default_tags
+  WHERE NOT EXISTS (
+    SELECT 1 FROM app_mappings
+    WHERE app_mappings.app_name = default_tags.app_name
+  )
+),
+
+employee_data AS (
+  SELECT 
+    team_summary_json,
+    employee_summary_json,
+    graph_data_employee,
+    emp_id,
+    year,
+    week,
+    type
+  FROM your_table_name
+  WHERE emp_id = (SELECT emp_id FROM date_params)
+    AND year = (SELECT year FROM date_params)
+    AND week = (SELECT week FROM date_params)
+    AND type = 'employee'
+  LIMIT 1
+),
+
+graph_data_expanded AS (
+  SELECT
+    app.value:application_name::STRING AS application_name,
+    TRY_CAST(app.value:active_time::STRING AS DOUBLE) AS active_time,
+    TRY_CAST(app.value:idle_time::STRING AS DOUBLE) AS idle_time,
+    TRY_CAST(app.value:total_time::STRING AS DOUBLE) AS total_time,
+    TRY_CAST(app.value:mouse_clicks::STRING AS DOUBLE) AS mouse_clicks,
+    TRY_CAST(app.value:key_strokes::STRING AS DOUBLE) AS key_strokes,
+    app.value:active_trend::STRING AS active_trend,
+    app.value:idle_trend::STRING AS idle_trend,
+    app.value:total_trend::STRING AS total_trend
+  FROM employee_data,
+  LATERAL EXPLODE(FROM_JSON(graph_data_employee, 'ARRAY<STRUCT<application_name:STRING,active_time:STRING,idle_time:STRING,total_time:STRING,mouse_clicks:STRING,key_strokes:STRING,active_trend:STRING,idle_trend:STRING,total_trend:STRING>>')) AS app
+),
+
+graph_data_mapped AS (
+  SELECT
+    gd.*,
+    COALESCE(cm.mapped_app_name, gd.application_name) AS mapped_app_name,
+    cm.tag_name,
+    cm.tag_color
+  FROM graph_data_expanded gd
+  LEFT JOIN combined_mappings cm ON gd.application_name = cm.app_name
+)
+
+SELECT TO_JSON(
+  NAMED_STRUCT(
+    'teamSummary', 
+    FROM_JSON((SELECT team_summary_json FROM employee_data), 'MAP<STRING,STRING>'),
+    
+    'empSummary', 
+    FROM_JSON((SELECT employee_summary_json FROM employee_data), 'MAP<STRING,STRING>'),
+    
+    'graphData',
+    (SELECT COLLECT_LIST(
+      NAMED_STRUCT(
+        'application_name', application_name,
+        'mapped_app_name', mapped_app_name,
+        'tag_name', tag_name,
+        'tag_color', tag_color,
+        'active_time', active_time,
+        'idle_time', idle_time,
+        'total_time', total_time,
+        'mouse_clicks', mouse_clicks,
+        'key_strokes', key_strokes,
+        'active_trend', active_trend,
+        'idle_trend', idle_trend,
+        'total_trend', total_trend
+      )
+    ) FROM graph_data_mapped)
+  )
+) AS json_result
+FROM employee_data;
+
+
+
+WITH date_params AS (
+  SELECT 
+    45125667 AS emp_id,
+    DATE '2025-05-26' AS start_date,
+    DATE '2025-06-01' AS end_date,
     EXTRACT(YEAR FROM DATE '2025-05-26') AS year,
     EXTRACT(WEEK FROM DATE '2025-05-26') AS week
 ),
