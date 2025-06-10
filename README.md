@@ -1,4 +1,165 @@
+from fastapi import APIRouter, Header, Query, status
+from fastapi.responses import JSONResponse
+from fastapi_jwt_auth import AuthJWT
+import time
+import random
+from typing import List
+from dataclasses import dataclass
+from contextlib import contextmanager
 
+router = APIRouter()
+
+# Configuration
+MAX_RETRIES = 3
+BASE_RETRY_DELAY = 0.1  # seconds
+MAX_RETRY_DELAY = 1.0    # seconds
+
+@dataclass
+class TagItem:
+    tag_name: str
+    tag_color: str
+    tag_id: int = None
+
+@dataclass
+class TagDataPayload:
+    tag_data: List[TagItem]
+
+@contextmanager
+def DatabricksSession():
+    """Context manager for Databricks connection"""
+    conn = None
+    try:
+        # Initialize your Databricks connection here
+        # conn = create_databricks_connection()
+        yield conn
+    finally:
+        if conn:
+            conn.close()
+
+def exponential_backoff(retry_count):
+    """Calculate delay with jitter"""
+    delay = min(BASE_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_DELAY)
+    return delay * (1 + random.random() * 0.1)  # Add 10% jitter
+
+@router.post("/tag_create")
+async def tag_create(
+    payload: TagDataPayload, 
+    Authorize: AuthJWT = Depends(),
+    authorization: str = Header(None),
+    user_type: str = Query(...)
+):
+    if not authorization or not authorization.startswith("Bearer"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"msg": "Authorization Token Missing"}
+        )
+
+    try:
+        Authorize.jwt_required()
+        user_identity = Authorize.get_jwt_subject()  # gets identity/user_email
+        claims = Authorize.get_raw_jwt()  # gets all claims including user_id
+        user_id = claims.get("user_id")
+
+        if not user_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"message": "Invalid Token Claims"}
+            )
+
+        user_type = user_type
+        tag_data = [item.dict() for item in payload.tag_data]
+
+        if not tag_data:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "No Tag data provided."}
+            )
+
+        inserts = [tag['tag_name'] for tag in tag_data if not tag.get("tag_id")]
+        last_exception = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                with DatabricksSession() as conn:
+                    cursor = conn.cursor()
+
+                    # Build VALUES clause with parameterized queries for security
+                    values_placeholders = []
+                    values_params = []
+                    for tag in tag_data:
+                        values_placeholders.append("(?, ?, ?, ?, ?)")
+                        values_params.extend([
+                            tag['tag_name'],
+                            tag['tag_color'],
+                            tag.get('tag_id'),
+                            user_type,
+                            user_id
+                        ])
+
+                    merge_sql = f"""
+                    MERGE INTO gold_dashboard.analytics_app_tagging target
+                    USING (
+                        SELECT * FROM VALUES {','.join(values_placeholders)}
+                        AS source_data(tag_name, tag_color, tag_id, user_type, user_id)
+                    ) AS source
+                    ON target.user_type = source.user_type
+                    AND target.user_id = source.user_id
+                    AND (target.tag_id = source.tag_id OR (source.tag_id IS NULL AND target.tag_id IS NULL))
+                    WHEN MATCHED AND source.tag_id IS NOT NULL THEN
+                        UPDATE SET
+                            tag_name = source.tag_name,
+                            tag_color = source.tag_color,
+                            updated_at = current_timestamp()
+                    WHEN NOT MATCHED AND source.tag_id IS NULL THEN
+                        INSERT (tag_name, tag_color, user_type, user_id, created_at)
+                        VALUES (source.tag_name, source.tag_color, source.user_type, source.user_id, current_timestamp())
+                    """
+
+                    cursor.execute(merge_sql, values_params)
+                    conn.commit()
+
+                    # If we got here, the merge succeeded
+                    if not inserts:
+                        return JSONResponse(
+                            status_code=201,
+                            content={
+                                "tag_data": 0,
+                                "message": "Tags updated successfully"
+                            }
+                        )
+                    else:
+                        cursor.execute("""
+                            SELECT tag_id, tag_name
+                            FROM gold_dashboard.analytics_app_tagging
+                            WHERE user_type = ? AND user_id = ?
+                            ORDER BY created_at DESC
+                            LIMIT ?
+                        """, (user_type, user_id, len(inserts)))
+                        
+                        return JSONResponse(
+                            status_code=201,
+                            content={
+                                "tag_data": {row[1]: row[0] for row in cursor.fetchall()},
+                                "message": "Tags inserted/updated successfully"
+                            }
+                        )
+
+            except Exception as e:
+                last_exception = e
+                if "ConcurrentModificationException" in str(e) and attempt < MAX_RETRIES - 1:
+                    # Exponential backoff with jitter
+                    time.sleep(exponential_backoff(attempt))
+                    continue
+                raise
+
+        # If we exhausted all retries
+        raise last_exception if last_exception else Exception("Unknown error occurred")
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Error: {str(e)}"}
+        )
 
 WITH date_params AS (
   SELECT 
