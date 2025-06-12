@@ -1,3 +1,50 @@
+from datetime import datetime
+
+def generate_unique_ids(manager_id: int, count: int) -> list:
+    ids = []
+    timestamp = int(datetime.utcnow().timestamp() * 1000)  # Current timestamp in milliseconds
+    
+    for i in range(count):
+        # Combine timestamp, manager_id, and the loop index to create a unique ID
+        unique_id = (timestamp % 100000000) * 1000000 + manager_id * 100 + i
+        ids.append(unique_id)
+    
+    return ids
+
+
+
+CREATE TABLE employees (
+    eid INTEGER PRIMARY KEY,  -- Unique employee ID
+    psid STRING NOT NULL,
+    full_name STRING NOT NULL,
+    manager_id STRING NOT NULL,
+    current_team_id INTEGER,  -- Foreign key reference to teams
+    recent_team_ids ARRAY<STRING>,
+    last_tag_change TIMESTAMP,
+    change_type STRING CHECK (change_type IN ('MANUAL', 'AUTO')),
+    is_active BOOLEAN NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) USING DELTA;
+
+
+
+
+CREATE TABLE teams (
+    team_id INTEGER PRIMARY KEY,  -- Unique team ID
+    team_name STRING NOT NULL,
+    color_code STRING CHECK (color_code LIKE '#______'),
+    manager_id STRING NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_default BOOLEAN,
+    UNIQUE (manager_id, team_name)  -- Unique constraint on team name per manager
+) USING DELTA;
+
+
+
+
+
+
 from fastapi import APIRouter, Header, Query, status
 from fastapi.responses import JSONResponse
 from fastapi_jwt_auth import AuthJWT
