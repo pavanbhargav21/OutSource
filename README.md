@@ -1,3 +1,16 @@
+✅ Improvements After Migrating to FastAPI
+
+1. Non-blocking Server Framework (ASGI-based)
+FastAPI (using Uvicorn, not Gunicorn) supports asynchronous request handling by design — unlike Flask, which is synchronous. This makes your API more responsive for non-DB tasks (like JSON processing, compression, logging, etc.).
+
+
+2. Faster API Response over Network
+With Gzip compression implemented now, large JSON payloads (e.g., 2MB → ~20KB) are much faster to transfer to the frontend.
+👉 This improves download time and front-end render speed.
+
+
+3. Better Baseline Performance and Modern Stack
+FastAPI is generally faster and more efficient at handling API requests, even in non-async scenarios.
 
 
 Sure! Here's a polished version of your explanation, suitable for documentation or communication (e.g., email, update report, or release note):
