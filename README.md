@@ -1,4 +1,113 @@
+WITH 
+-- 1. Get ALL employees for the manager from HR table
+hr_employees AS (
+  SELECT 
+    emp_id,
+    full_name
+  FROM hr_employee_central
+  WHERE func_manager_id = ${manager_id}
+),
 
+-- 2. Get all custom teams for this manager
+custom_teams AS (
+  SELECT 
+    team_id,
+    team_name,
+    color_code
+  FROM analytics_team_tagging
+  WHERE manager_id = ${manager_id}
+),
+
+-- 3. Get employee counts per team in one pass
+team_counts AS (
+  SELECT
+    COALESCE(em.current_team_id, 1) AS team_id,
+    COUNT(*) AS employee_count
+  FROM hr_employees he
+  LEFT JOIN analytics_emp_mapping em ON he.emp_id = em.emp_id
+  GROUP BY COALESCE(em.current_team_id, 1)
+),
+
+-- 4. Single CTE for all employee data
+all_employees AS (
+  SELECT 
+    he.emp_id,
+    he.full_name,
+    COALESCE(em.current_team_id, 1) AS current_team_id,
+    em.last_team_id,
+    em.last_tag_change,
+    em.next_tag_change,
+    CASE
+      WHEN em.emp_id IS NULL THEN 'IMPLICIT_DEFAULT'
+      WHEN COALESCE(em.current_team_id, 1) = 1 AND em.change_type = 'MANUAL' THEN 'MANUAL_DEFAULT'
+      WHEN COALESCE(em.current_team_id, 1) = 1 THEN 'AUTO_DEFAULT'
+      ELSE 'CUSTOM'
+    END AS change_type,
+    CASE
+      WHEN em.emp_id IS NULL THEN NULL
+      WHEN COALESCE(em.current_team_id, 1) = 1 AND em.change_type = 'AUTO' THEN em.change_reason
+      ELSE NULL
+    END AS change_reason
+  FROM hr_employees he
+  LEFT JOIN analytics_emp_mapping em ON he.emp_id = em.emp_id
+)
+
+-- Final optimized output
+SELECT
+  -- Teams with pre-calculated counts
+  (
+    SELECT COLLECT_LIST(
+      NAMED_STRUCT(
+        'team_id', CAST(t.team_id AS STRING),
+        'team_name', t.team_name,
+        'color_code', t.color_code,
+        'is_default', (t.team_id = 1),
+        'employee_count', CAST(COALESCE(tc.employee_count, 0) AS STRING)
+      )
+    )
+    FROM (
+      SELECT * FROM custom_teams
+      UNION ALL
+      SELECT 1 AS team_id, 'Default Team' AS team_name, '#CCCCCC' AS color_code
+    ) t
+    LEFT JOIN team_counts tc ON t.team_id = tc.team_id
+  ) AS teams,
+  
+  -- Employees with team info
+  (
+    SELECT COLLECT_LIST(
+      NAMED_STRUCT(
+        'emp_id', CAST(ae.emp_id AS STRING),
+        'full_name', ae.full_name,
+        'team', NAMED_STRUCT(
+          'team_id', CAST(ae.current_team_id AS STRING),
+          'team_name', CASE 
+            WHEN ae.current_team_id = 1 THEN 'Default Team'
+            ELSE (SELECT ct.team_name FROM custom_teams ct WHERE ct.team_id = ae.current_team_id LIMIT 1)
+          END,
+          'color_code', CASE
+            WHEN ae.current_team_id = 1 THEN '#CCCCCC'
+            ELSE (SELECT ct.color_code FROM custom_teams ct WHERE ct.team_id = ae.current_team_id LIMIT 1)
+          END,
+          'is_default', (ae.current_team_id = 1)
+        ),
+        'change_type', ae.change_type,
+        'change_reason', ae.change_reason,
+        'last_tag_change', CAST(ae.last_tag_change AS STRING),
+        'next_tag_change', CAST(ae.next_tag_change AS STRING),
+        'previous_team', CASE
+          WHEN ae.change_type = 'AUTO_DEFAULT' AND ae.last_team_id IS NOT NULL THEN
+            NAMED_STRUCT(
+              'team_id', CAST(ae.last_team_id AS STRING),
+              'team_name', (SELECT ct.team_name FROM custom_teams ct WHERE ct.team_id = ae.last_team_id LIMIT 1),
+              'color_code', (SELECT ct.color_code FROM custom_teams ct WHERE ct.team_id = ae.last_team_id LIMIT 1)
+            )
+          ELSE NULL
+        END
+      )
+    )
+    FROM all_employees ae
+  ) AS employees
 
 
 WITH 
