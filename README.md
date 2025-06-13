@@ -1,4 +1,271 @@
-from datetime import datetime
+
+
+
+WITH 
+-- 1. Get ALL employees for the manager from HR table
+hr_employees AS (
+  SELECT 
+    emp_id,
+    full_name,
+    func_manager_id AS manager_id
+  FROM hr_employee_central
+  WHERE func_manager_id = ${manager_id}
+),
+
+-- 2. Get employees with existing mappings (manual/auto transfers)
+mapped_employees AS (
+  SELECT 
+    e.emp_id,
+    e.full_name,
+    m.current_team_id,
+    m.last_team_id,
+    m.last_tag_change,
+    m.next_tag_change,
+    m.change_type,
+    m.change_reason,
+    m.created_at AS mapping_created_at
+  FROM hr_employees e
+  LEFT JOIN analytics_emp_mapping m ON e.emp_id = m.emp_id
+),
+
+-- 3. Get all custom teams for this manager
+custom_teams AS (
+  SELECT 
+    team_id,
+    team_name,
+    color_code,
+    manager_id,
+    FALSE AS is_default
+  FROM analytics_team_tagging
+  WHERE manager_id = ${manager_id}
+),
+
+-- 4. Categorize employees into: custom teams / explicit default / implicit default
+categorized_employees AS (
+  SELECT
+    e.*,
+    CASE
+      -- Employees in custom teams
+      WHEN EXISTS (
+        SELECT 1 FROM custom_teams t 
+        WHERE t.team_id = e.current_team_id
+      ) THEN (
+        SELECT AS STRUCT 
+          t.team_id,
+          t.team_name,
+          t.color_code,
+          FALSE AS is_default,
+          'CUSTOM' AS assignment_type
+        FROM custom_teams t 
+        WHERE t.team_id = e.current_team_id
+      )
+      -- Explicitly assigned to default team (team_id=1)
+      WHEN e.current_team_id = 1 THEN (
+        SELECT AS STRUCT 
+          1 AS team_id,
+          'Default Team' AS team_name,
+          '#CCCCCC' AS color_code,
+          TRUE AS is_default,
+          CASE 
+            WHEN e.change_type = 'MANUAL' THEN 'MANUAL_DEFAULT'
+            ELSE 'AUTO_DEFAULT'
+          END AS assignment_type
+      )
+      -- Implicit default (no mapping exists)
+      WHEN e.current_team_id IS NULL THEN (
+        SELECT AS STRUCT 
+          1 AS team_id,
+          'Default Team' AS team_name,
+          '#CCCCCC' AS color_code,
+          TRUE AS is_default,
+          'IMPLICIT_DEFAULT' AS assignment_type
+      )
+      -- Previously assigned to deleted team (fallback to default)
+      ELSE (
+        SELECT AS STRUCT 
+          1 AS team_id,
+          'Default Team' AS team_name,
+          '#CCCCCC' AS color_code,
+          TRUE AS is_default,
+          'AUTO_DEFAULT' AS assignment_type
+      )
+    END AS team_info,
+    -- Preserve last team info for auto-transfers
+    CASE
+      WHEN e.change_type = 'AUTO' AND e.last_team_id IS NOT NULL THEN (
+        SELECT AS STRUCT 
+          t.team_id,
+          t.team_name,
+          t.color_code
+        FROM custom_teams t 
+        WHERE t.team_id = e.last_team_id
+      )
+      ELSE NULL
+    END AS previous_team_info
+  FROM mapped_employees e
+)
+
+-- 5. Final JSON output
+SELECT
+  -- Teams array (custom + default)
+  (
+    SELECT ARRAY_AGG(
+      STRUCT(
+        t.team_id,
+        t.team_name,
+        t.color_code,
+        t.is_default,
+        (SELECT COUNT(*) FROM categorized_employees e WHERE e.team_info.team_id = t.team_id) AS employee_count
+      )
+    )
+    FROM (
+      SELECT * FROM custom_teams
+      UNION ALL
+      SELECT 
+        1 AS team_id, 
+        'Default Team' AS team_name, 
+        '#CCCCCC' AS color_code, 
+        TRUE AS is_default
+    ) t
+  ) AS teams,
+  
+  -- Employees array with full details
+  (
+    SELECT ARRAY_AGG(
+      STRUCT(
+        emp_id,
+        full_name,
+        -- Current team details
+        team_info.team_id,
+        team_info.team_name,
+        team_info.color_code,
+        team_info.is_default,
+        team_info.assignment_type,
+        -- Transfer history
+        last_tag_change,
+        next_tag_change,
+        change_type,
+        change_reason,
+        -- Previous team (only for auto-transfers to default)
+        CASE
+          WHEN team_info.is_default = TRUE AND change_type = 'AUTO' THEN previous_team_info
+          ELSE NULL
+        END AS previous_team
+      )
+    )
+    FROM categorized_employees
+  ) AS employees
+
+
+
+
+
+
+
+
+
+
+
+
+
+WITH 
+-- 1. Get all employees for the manager
+emp_data AS (
+  SELECT 
+    emp_id,
+    full_name,
+    current_team_id,
+    last_tag_change,
+    next_tag_change,
+    change_type,
+    change_reason
+  FROM analytics_emp_mapping
+  WHERE manager_id = ${manager_id}
+),
+
+-- 2. Get all custom teams for the manager
+custom_teams AS (
+  SELECT 
+    team_id,
+    team_name,
+    color_code,
+    FALSE AS is_default
+  FROM analytics_team_tagging
+  WHERE manager_id = ${manager_id}
+),
+
+-- 3. Identify default team assignments
+employee_assignments AS (
+  SELECT
+    e.*,
+    CASE
+      -- Explicitly assigned to default team (ID 1)
+      WHEN e.current_team_id = 1 THEN 
+        STRUCT(1 AS team_id, 'Default Team' AS team_name, '#CCCCCC' AS color_code, TRUE AS is_default)
+      -- Not assigned to any custom team (fallback to default)
+      WHEN NOT EXISTS (
+        SELECT 1 FROM custom_teams t 
+        WHERE t.team_id = e.current_team_id
+      ) THEN 
+        STRUCT(1 AS team_id, 'Default Team' AS team_name, '#CCCCCC' AS color_code, TRUE AS is_default)
+      -- Assigned to custom team
+      ELSE (
+        SELECT AS STRUCT t.team_id, t.team_name, t.color_code, t.is_default
+        FROM custom_teams t
+        WHERE t.team_id = e.current_team_id
+      )
+    END AS team_info
+  FROM emp_data e
+)
+
+-- 4. Final JSON output
+SELECT
+  -- Teams array (custom + default)
+  (
+    SELECT ARRAY_AGG(
+      STRUCT(
+        t.team_id,
+        t.team_name,
+        t.color_code,
+        t.is_default,
+        (SELECT COUNT(*) FROM emp_data e WHERE e.current_team_id = t.team_id) AS employee_count
+      )
+    )
+    FROM (
+      SELECT * FROM custom_teams
+      UNION ALL
+      SELECT 1 AS team_id, 'Default Team' AS team_name, '#CCCCCC' AS color_code, TRUE AS is_default
+    ) t
+  ) AS teams,
+  
+  -- Employees array with detailed team info
+  (
+    SELECT ARRAY_AGG(
+      STRUCT(
+        emp_id,
+        full_name,
+        last_tag_change,
+        next_tag_change,
+        change_type,
+        -- Show change reason only for auto-transfers to default
+        CASE 
+          WHEN team_info.is_default = TRUE AND change_type = 'AUTO' THEN change_reason
+          ELSE NULL
+        END AS default_change_reason,
+        team_info.*  -- Includes team_id, name, color, is_default
+      )
+    )
+    FROM employee_assignments
+  ) AS employees
+
+
+
+
+
+
+
+
+rom datetime import datetime
 
 def generate_unique_ids(manager_id: int, count: int) -> list:
     ids = []
