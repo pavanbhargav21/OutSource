@@ -1,4 +1,74 @@
 
+from fastapi import Depends, HTTPException, status
+from pydantic import BaseModel
+
+class TagReassignmentPayload(BaseModel):
+    old_tag_id: int
+    old_tag_name: str  # Get this from frontend/API call
+    new_tag_id: int
+
+def delete_and_reassign_team(
+    payload: TagReassignmentPayload,
+    user_type: str,
+    user_id: str,
+    authorize: AuthJWT = Depends()
+):
+    if payload.old_tag_id == payload.new_tag_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reassign to the same team"
+        )
+
+    try:
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            
+            # SINGLE UPDATE QUERY with team name from payload
+            cursor.execute(f"""
+                UPDATE gold_dashboard.analytics_emp_mapping
+                SET 
+                    current_team_id = {payload.new_tag_id},
+                    last_team_id = current_team_id,
+                    last_tag_change = CURRENT_TIMESTAMP(),
+                    next_tag_change = {'NULL' if payload.new_tag_id == 1 else 'DATE_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 MONTH)'},
+                    change_type = {'"MANUAL_DEFAULT"' if payload.new_tag_id == 1 else '"CUSTOM"'},
+                    change_reason = 'Team {payload.old_tag_name.replace("'", "''")} removal',
+                    updated_at = CURRENT_TIMESTAMP()
+                WHERE user_type = '{user_type}'
+                  AND user_id = '{user_id}'
+                  AND current_team_id = {payload.old_tag_id}
+            """)
+            
+            # SINGLE DELETE QUERY
+            cursor.execute(f"""
+                DELETE FROM gold_dashboard.analytics_team_tagging
+                WHERE user_type = '{user_type}'
+                  AND user_id = '{user_id}'
+                  AND tag_id = {payload.old_tag_id}
+            """)
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": f"Team '{payload.old_tag_name}' deleted",
+                    "details": {
+                        "old_team_id": payload.old_tag_id,
+                        "new_team_id": payload.new_tag_id,
+                        "affected_employees": cursor.rowcount
+                    }
+                }
+            )
+            
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Operation failed: {str(e)}"}
+        )
+
+
+
+
+
 MERGE INTO analytics_emp_mapping AS target
 USING (
   WITH understaffed_employees AS (
