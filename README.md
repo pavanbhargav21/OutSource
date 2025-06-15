@@ -1,3 +1,39 @@
+
+MERGE INTO analytics_emp_mapping AS target
+USING (
+  WITH understaffed_employees AS (
+    SELECT 
+      emp_id,
+      current_team_id,
+      COUNT(*) OVER (PARTITION BY current_team_id) AS team_size
+    FROM analytics_emp_mapping
+    WHERE current_team_id != 1  -- Exclude default team
+      AND manager_id = ${manager_id}
+  )
+  SELECT
+    emp_id,
+    1 AS new_team_id,           -- Default team ID
+    current_team_id             -- Original team ID for last_team_id
+  FROM understaffed_employees
+  WHERE team_size < 4           -- Understaffed threshold
+) AS source
+ON target.emp_id = source.emp_id
+WHEN MATCHED THEN
+  UPDATE SET
+    target.current_team_id = source.new_team_id,
+    target.last_team_id = source.current_team_id,  -- Preserve original team
+    target.last_tag_change = CURRENT_TIMESTAMP(),
+    target.next_tag_change = NULL,                 -- Bypass time restrictions
+    target.change_type = 'AUTO_DEFAULT',
+    target.change_reason = 'ATTRITION',
+    target.updated_at = CURRENT_TIMESTAMP()
+
+
+
+
+
+
+
 ✅ Improvements After Migrating to FastAPI
 
 1. Non-blocking Server Framework (ASGI-based)
