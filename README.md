@@ -1,4 +1,104 @@
 
+
+from collections import defaultdict
+from fastapi import Depends
+from pydantic import BaseModel
+from typing import List
+
+class EmpTagUpdate(BaseModel):
+    emp_id: str
+    old_team_id: int  # Current team ID before change
+    new_team_id: int  # New team ID (1 for default)
+
+class EmpTagUpdatePayload(BaseModel):
+    updates: List[EmpTagUpdate]
+    user_type: str
+    user_id: str
+
+def update_emp_tags(
+    payload: EmpTagUpdatePayload,
+    authorize: AuthJWT = Depends()
+):
+    try:
+        with DatabricksSession() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Calculate team changes before executing MERGE
+            team_changes = defaultdict(lambda: {"added": 0, "removed": 0})
+            
+            for update in payload.updates:
+                if update.old_team_id != update.new_team_id:
+                    team_changes[update.old_team_id]["removed"] += 1
+                    team_changes[update.new_team_id]["added"] += 1
+            
+            # 2. Prepare and execute MERGE
+            values_clause = ",".join([
+                f"('{update.emp_id}', {update.new_team_id}, '{payload.user_type}', '{payload.user_id}')"
+                for update in payload.updates
+            ])
+            
+            cursor.execute(f"""
+                MERGE INTO gold_dashboard.analytics_emp_mapping AS target
+                USING (
+                    SELECT * FROM VALUES {values_clause}
+                    AS source_data(emp_id, tag_id, user_type, user_id)
+                ) AS source
+                ON target.emp_id = source.emp_id
+                  AND target.user_type = source.user_type
+                  AND target.user_id = source.user_id
+                WHEN MATCHED THEN
+                  UPDATE SET
+                    current_team_id = source.tag_id,
+                    last_team_id = target.current_team_id,
+                    last_tag_change = CURRENT_TIMESTAMP(),
+                    next_tag_change = CASE 
+                      WHEN source.tag_id = 1 THEN NULL 
+                      ELSE DATE_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 MONTH)
+                    END,
+                    change_type = CASE
+                      WHEN source.tag_id = 1 THEN 'MANUAL_DEFAULT'
+                      ELSE 'CUSTOM'
+                    END,
+                    change_reason = 'MANUAL_REASSIGNMENT',
+                    updated_at = CURRENT_TIMESTAMP()
+                WHEN NOT MATCHED THEN
+                  INSERT (emp_id, current_team_id, user_type, user_id, 
+                          created_at, updated_at, change_type, change_reason)
+                  VALUES (source.emp_id, source.tag_id, source.user_type, 
+                          source.user_id, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(),
+                          CASE WHEN source.tag_id = 1 THEN 'MANUAL_DEFAULT' ELSE 'CUSTOM' END,
+                          'INITIAL_ASSIGNMENT')
+            """)
+            
+            # 3. Format the response
+            result = [
+                {
+                    "team_id": team_id,
+                    "employees_added": changes["added"],
+                    "employees_removed": changes["removed"],
+                    "net_change": changes["added"] - changes["removed"]
+                }
+                for team_id, changes in team_changes.items()
+                if changes["added"] > 0 or changes["removed"] > 0
+            ]
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "team_changes": result,
+                    "message": f"Updated {len(payload.updates)} employees across {len(result)} teams"
+                }
+            )
+            
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Batch update failed: {str(e)}"}
+        )
+
+
+
+
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel
 
