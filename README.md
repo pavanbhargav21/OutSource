@@ -1,5 +1,115 @@
 
 
+# Databricks notebook source
+# Define the attrition processing function
+def process_manager_attrition(manager_id):
+    try:
+        # 1. Delete departed employees for this manager
+        delete_query = f"""
+            DELETE FROM gold_dashboard.analytics_emp_mapping
+            WHERE emp_id IN (
+                SELECT aem.emp_id
+                FROM gold_dashboard.analytics_emp_mapping aem
+                LEFT JOIN (
+                    SELECT emplid 
+                    FROM inbound.hr_employee_central
+                    WHERE func_mgr_id = '{manager_id}' 
+                      AND (TERMINATION_DT > CURRENT_TIMESTAMP() OR TERMINATION_DT IS NULL)
+                ) hec ON aem.emp_id = hec.emplid
+                WHERE hec.emplid IS NULL
+                  AND aem.user_id = '{manager_id}'
+            )
+        """
+        deleted_count = spark.sql(delete_query).count()
+        
+        # 2. Process understaffed teams if departures occurred
+        updated_count = 0
+        if deleted_count > 0:
+            merge_query = f"""
+                MERGE INTO gold_dashboard.analytics_emp_mapping AS target
+                USING (
+                    WITH understaffed_employees AS (
+                        SELECT
+                            emp_id,
+                            current_team_id,
+                            COUNT(*) OVER (PARTITION BY current_team_id) AS team_size
+                        FROM gold_dashboard.analytics_emp_mapping
+                        WHERE current_team_id != 1
+                          AND user_id = '{manager_id}'
+                    )
+                    SELECT
+                        emp_id,
+                        1 AS new_team_id,
+                        current_team_id
+                    FROM understaffed_employees
+                    WHERE team_size < 4
+                ) AS source
+                ON target.emp_id = source.emp_id
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        current_team_id = source.new_team_id,
+                        last_team_id = source.current_team_id,
+                        last_change_date = CURRENT_TIMESTAMP(),
+                        next_change_date = NULL,
+                        assignment_type = 'AUTO_DEFAULT',
+                        moved_reason = 'ATTRITION',
+                        updated_at = CURRENT_TIMESTAMP()
+            """
+            updated_count = spark.sql(merge_query).count()
+        
+        return (manager_id, deleted_count, updated_count)
+    
+    except Exception as e:
+        print(f"Failed processing manager {manager_id}: {str(e)}")
+        return (manager_id, -1, -1)  # Using -1 to indicate error
+
+# COMMAND ----------
+
+# Main execution logic
+
+# Get all distinct manager IDs from emp_mapping table
+manager_ids = spark.sql("""
+    SELECT DISTINCT user_id 
+    FROM gold_dashboard.analytics_emp_mapping
+    WHERE user_type = 'manager'
+""").collect()
+
+# Process each manager in parallel
+from multiprocessing.pool import ThreadPool
+results = []
+
+with ThreadPool(8) as pool:  # Adjust thread count based on your cluster
+    results = pool.map(process_manager_attrition, [row.user_id for row in manager_ids])
+
+# COMMAND ----------
+
+# Generate and save the report
+import pandas as pd
+
+report_df = pd.DataFrame(results, columns=['manager_id', 'deleted_count', 'moved_to_default'])
+display(report_df)
+
+# Save to Delta table for audit
+spark.createDataFrame(report_df).write.mode("append").saveAsTable("gold_dashboard.attrition_processing_log")
+
+# COMMAND ----------
+
+# Summary statistics
+total_deleted = report_df[report_df.deleted_count > 0].deleted_count.sum()
+total_moved = report_df[report_df.moved_to_default > 0].moved_to_default.sum()
+
+print(f"""
+=== ATTRITION PROCESSING COMPLETE ===
+Total managers processed: {len(manager_ids)}
+Managers with departures: {(report_df.deleted_count > 0).sum()}
+Total employees departed: {total_deleted}
+Total employees moved to default: {total_moved}
+""")
+
+
+
+
+
 from collections import defaultdict
 from fastapi import Depends
 from pydantic import BaseModel
