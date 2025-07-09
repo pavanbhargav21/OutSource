@@ -1,5 +1,9 @@
 
+Currently, login and logout time calculations are being derived from the AppTraceRaw table. However, this approach only provides the application start times, which causes us to miss the actual active time for the last used application. As a result, we are unable to accurately determine the user's logout time.
 
+To address this, we propose enhancing the calculation logic by leveraging the SysTrace data — specifically from the KeyboardActivity and MouseClicks tables. Since SysTrace runs continuously in the background, it provides a more accurate view of user activity. By analyzing periods of inactivity or the last recorded input event, we can more reliably estimate the user's actual logout time.
+
+This ticket is to implement and test this improved logic based on SysTrace, replacing or supplementing the current logic that relies solely on AppTraceRaw.
 
 import psutil
 import win32api
