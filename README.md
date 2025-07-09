@@ -1,3 +1,70 @@
+The current logic for calculating login and logout times follows a multi-step process:
+
+1. Extract Unique Employee-Day Records:
+
+From the raw tracking tables, retrieve distinct combinations of EmployeeID and CalendarDate.
+
+
+
+2. Shift Mapping:
+
+For each unique employee-day combination, check if shift details exist in the Shift Table.
+
+If shift data is unavailable, default shift timings of 9:00 AM to 6:00 PM are applied.
+
+
+
+3. Buffer Calculations:
+
+Buffer periods are calculated based on shift start and end times, and these buffers also consider previous day's shift-end buffers.
+
+For each employee, we preserve:
+
+Previous day's shift end buffer
+
+Previous day's shift start buffer
+
+Current day's shift start buffer
+
+Current day's shift end buffer
+
+
+
+
+4. Logout Time Logic:
+
+If the last activity for a user is a Window Lock, then the application just before the lock event is considered for logout time.
+
+If not, the last application’s start time is taken as the logout time.
+
+
+
+
+
+---
+
+Current Issue:
+
+While the above approach captures the last application start time accurately, it fails to account for the active duration of that application — especially if the user remained idle or the application stayed active for some time post start.
+
+This leads to an underestimation of the actual logout time, since the application may still have been in use or remained open for a significant time.
+
+
+---
+
+Proposed Fix:
+
+To improve accuracy, we plan to revise the logout calculation logic to capture the actual end time or active duration of the last used application. This may include integrating signals like:
+
+System activity (keyboard/mouse events)
+
+Timestamps indicating when the application was no longer in use
+
+Application idle thresholds
+
+
+This will ensure the logout time reflects the full active period of the user, rather than just the last start time.
+
 
 
 Description:
