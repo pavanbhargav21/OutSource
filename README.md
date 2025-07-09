@@ -1,4 +1,61 @@
 
+
+Description:
+
+In the current app management implementation, we have multiple APIs interacting with the App-EMP Mapping and App Tagging tables. These tables use IDENTITY constraints for AppID and TagID, which handle auto-incrementation and uniqueness.
+
+However, in the Databricks environment, using IDENTITY columns causes issues during concurrent insert or update operations. Specifically, any change to AppID or TagID affects access metadata, leading to merge conflicts when multiple users interact with the APIs simultaneously.
+
+To resolve this, we propose replacing the IDENTITY constraint with a custom logic that ensures both uniqueness and auto-incrementation without relying on the database's IDENTITY feature.
+
+We already have a similar implementation in Team Management, where IDs are generated using a combination of current timestamp and user ID, ensuring uniqueness without metadata conflicts.
+
+The plan is as follows:
+
+Create new versions of the affected tables, replacing AppID and TagID from IDENTITY to BIGINT.
+
+Implement the custom ID generation logic (e.g., current_timestamp + user ID) in the respective APIs.
+
+Update the APIs to work with the new table structure.
+
+Eliminate the need for pre-insert SELECT queries, since IDs can now be generated prior to insert.
+
+
+
+---
+
+Acceptance Criteria:
+
+1. ✅ No Merge Conflicts:
+Simultaneous insert/update operations by multiple users should not result in merge conflicts in Databricks.
+
+
+2. ✅ Updated Table Structure:
+
+New or modified tables must replace IDENTITY columns with BIGINT.
+
+AppID and TagID should no longer rely on auto-increment via identity constraints.
+
+
+
+3. ✅ Unique and Auto-Incremented IDs:
+IDs should be generated using a deterministic method (e.g., timestamp + user ID) to maintain both uniqueness and order.
+
+
+4. ✅ Modified APIs:
+All APIs interacting with App-EMP Mapping and App Tagging tables must be updated to use the new ID generation logic and schema.
+
+
+5. ✅ Optimized Queries:
+Since IDs can now be pre-generated, there should be no need for SELECT queries before insert operations, reducing API overhead.
+
+
+6. ✅ Backward Compatibility / Data Migration (if needed):
+If existing data is to be preserved, appropriate migration and backward compatibility considerations should be handled.
+
+
+
+
 Currently, login and logout time calculations are being derived from the AppTraceRaw table. However, this approach only provides the application start times, which causes us to miss the actual active time for the last used application. As a result, we are unable to accurately determine the user's logout time.
 
 To address this, we propose enhancing the calculation logic by leveraging the SysTrace data — specifically from the KeyboardActivity and MouseClicks tables. Since SysTrace runs continuously in the background, it provides a more accurate view of user activity. By analyzing periods of inactivity or the last recorded input event, we can more reliably estimate the user's actual logout time.
