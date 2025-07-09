@@ -8,6 +8,184 @@ import win32evtlog
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 import re
+import os
+import sys
+
+# Configuration
+ns = {'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lid_closed_events.log")
+POLL_INTERVAL = 10  # seconds
+
+class LidMonitor:
+    def __init__(self):
+        self.last_record_id = 0
+        self.initial_run = True  # Flag to track first run
+        self.highest_seen_id = 0  # Track highest seen event ID
+        
+    def ensure_log_file_exists(self):
+        """Ensure the log file exists and is accessible"""
+        try:
+            if not os.path.exists(LOG_FILE):
+                with open(LOG_FILE, 'w') as f:
+                    f.write("Laptop Lid Closure Event Log\n")
+                    f.write(f"Created at: {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
+                    f.write("="*50 + "\n\n")
+            return True
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR: Failed to create log file: {e}")
+            return False
+
+    def parse_event_time(self, timestamp_str):
+        """Parse the event timestamp string into a datetime object"""
+        try:
+            if timestamp_str.endswith("Z"):
+                timestamp_str = timestamp_str[:-1] + "+00:00"
+            
+            match = re.match(r"(.*T\d+:\d+:\d+)\.(\d{6})\d+(\+\d+:\d+)", timestamp_str)
+            if match:
+                timestamp_str = f"{match.group(1)}.{match.group(2)}{match.group(3)}"
+            
+            dt_utc = datetime.fromisoformat(timestamp_str)
+            return dt_utc.astimezone()
+        except Exception as e:
+            print(f"[{datetime.now()}] WARNING: Failed to parse timestamp: {e}")
+            return None
+
+    def get_events(self, log_name="System", event_id=506):
+        """Generator function to yield events from the specified log"""
+        try:
+            server = None  # local machine
+            flags = win32evtlog.EvtQueryReverseDirection | win32evtlog.EvtQueryFilePath
+            query = f"*[System[EventID={event_id}]]"
+            
+            h = win32evtlog.EvtQuery(log_name, flags, query)
+            while True:
+                events = win32evtlog.EvtNext(h, 10)
+                if not events:
+                    break
+                for event in events:
+                    yield event
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR: Failed to access event log: {e}")
+            yield from []
+
+    def log_lid_event(self, event_time):
+        """Write the lid closed event to the log file"""
+        log_time = datetime.now().astimezone()
+        try:
+            with open(LOG_FILE, "a") as f:
+                log_entry = (
+                    f"Lid closed at (event time): {event_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                    f"Logged at (system time): {log_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                    f"{'-'*50}\n"
+                )
+                f.write(log_entry)
+            print(f"[{log_time}] INFO: Logged lid closure event from {event_time}")
+        except Exception as e:
+            print(f"[{log_time}] ERROR: Failed to write to log file: {e}")
+
+    def monitor_lid_events(self):
+        """Main monitoring function"""
+        if not self.ensure_log_file_exists():
+            print(f"[{datetime.now()}] CRITICAL: Cannot continue without log file")
+            return
+        
+        print(f"[{datetime.now()}] Starting monitor (polling every {POLL_INTERVAL}s)...")
+        print(f"[{datetime.now()}] Log file: {LOG_FILE}")
+        print(f"[{datetime.now()}] Initial run - will ignore first lid closure event")
+        
+        try:
+            with open(LOG_FILE, "a") as f:
+                f.write(f"\n=== Session started at {datetime.now().astimezone()} ===\n")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR: Failed to write session start: {e}")
+        
+        while True:
+            try:
+                current_time = datetime.now()
+                print(f"[{current_time}] Checking for events...")
+                
+                event_count = 0
+                for event in self.get_events():
+                    try:
+                        xml = win32evtlog.EvtRender(event, win32evtlog.EvtRenderEventXml)
+                        root = ET.fromstring(xml)
+                        
+                        # Get reason and record ID
+                        reason = None
+                        for data in root.findall(".//*[@Name='Reason']", ns):
+                            reason = data.text
+                        
+                        if reason in ("Lid", "15"):
+                            record_id = int(root.find(".//EventRecordID", ns).text)
+                            self.highest_seen_id = max(self.highest_seen_id, record_id)
+                            
+                            # Only process if this is a new event AND not the first run
+                            if record_id > self.last_record_id:
+                                time_created = root.find(".//TimeCreated", ns).attrib['SystemTime']
+                                event_time = self.parse_event_time(time_created)
+                                
+                                if event_time:
+                                    if not self.initial_run:
+                                        self.log_lid_event(event_time)
+                                        event_count += 1
+                                    self.last_record_id = record_id
+                            else:
+                                break
+                    
+                    except Exception as e:
+                        print(f"[{datetime.now()}] WARNING: Error processing event: {e}")
+                        continue
+                
+                # After first complete check, mark initial run as complete
+                if self.initial_run:
+                    print(f"[{datetime.now()}] Initial run complete. Next events will be logged.")
+                    self.initial_run = False
+                    # Set last_record_id to highest seen to ignore all previous events
+                    self.last_record_id = self.highest_seen_id
+                
+                if event_count:
+                    print(f"[{datetime.now()}] Processed {event_count} new events")
+                
+                time.sleep(POLL_INTERVAL)
+                
+            except KeyboardInterrupt:
+                print(f"\n[{datetime.now()}] Stopping monitor...")
+                break
+            except Exception as e:
+                print(f"[{datetime.now()}] ERROR: {e}")
+                time.sleep(POLL_INTERVAL)
+        
+        try:
+            with open(LOG_FILE, "a") as f:
+                f.write(f"\n=== Session ended at {datetime.now().astimezone()} ===\n")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR: Failed to write session end: {e}")
+
+if __name__ == "__main__":
+    try:
+        monitor = LidMonitor()
+        monitor.monitor_lid_events()
+    except Exception as e:
+        print(f"[{datetime.now()}] CRITICAL: {e}")
+        sys.exit(1)
+
+
+
+
+
+
+
+
+import psutil
+import win32api
+import win32com.client
+import win32con
+import time
+import win32evtlog
+from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
+import re
 
 # Configuration
 ns = {'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
