@@ -1,4 +1,120 @@
 
+import psutil
+import win32api
+import win32com.client
+import win32con
+import time
+import win32evtlog
+from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
+import re
+
+# Configuration
+ns = {'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
+last_record_id = 0
+LOG_FILE = "lid_closed_events.log"
+POLL_INTERVAL = 10  # seconds - change to 60 for 1-minute polling
+
+def parse_event_time(timestamp_str):
+    """Parse the event timestamp string into a datetime object"""
+    try:
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+        
+        match = re.match(r"(.*T\d+:\d+:\d+)\.(\d{6})\d+(\+\d+:\d+)", timestamp_str)
+        if match:
+            timestamp_str = f"{match.group(1)}.{match.group(2)}{match.group(3)}"
+        
+        dt_utc = datetime.fromisoformat(timestamp_str)
+        return dt_utc.astimezone()
+    except Exception as e:
+        print(f"[{datetime.now()}] Exception in parse_event_time:", e)
+        return None
+
+def get_events(log_name, event_id):
+    """Generator function to yield events from the specified log"""
+    server = None  # local machine
+    flags = win32evtlog.EvtQueryReverseDirection | win32evtlog.EvtQueryFilePath
+    query = f"*[System[EventID={event_id}]]"
+    
+    h = win32evtlog.EvtQuery(log_name, flags, query)
+    while True:
+        events = win32evtlog.EvtNext(h, 10)
+        if not events:
+            break
+        for event in events:
+            yield event
+
+def log_lid_event(event_time):
+    """Write the lid closed event to the log file with both event and logging times"""
+    log_time = datetime.now().astimezone()
+    try:
+        with open(LOG_FILE, "a") as f:
+            log_entry = (
+                f"Lid closed at (event time): {event_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                f"Logged at (system time): {log_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                f"{'-'*50}\n"
+            )
+            f.write(log_entry)
+        print(f"[{log_time}] Logged lid closure event from {event_time}")
+    except Exception as e:
+        print(f"[{log_time}] Error writing to log file: {e}")
+
+def monitor_lid_events():
+    """Monitor for new lid closure events"""
+    global last_record_id
+    
+    print(f"[{datetime.now()}] Starting lid closure monitor (polling every {POLL_INTERVAL} seconds)...")
+    print(f"[{datetime.now()}] Events will be logged to: {LOG_FILE}")
+    
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(f"\n\n=== New monitoring session started at {datetime.now().astimezone()} ===\n")
+    except Exception as e:
+        print(f"[{datetime.now()}] Could not write to log file: {e}")
+    
+    while True:
+        try:
+            current_time = datetime.now()
+            print(f"[{current_time}] Checking for new lid events...")
+            
+            for event in get_events("Microsoft-Windows-Kernel-Power", 506):
+                xml = win32evtlog.EvtRender(event, win32evtlog.EvtRenderEventXml)
+                root = ET.fromstring(xml)
+                
+                reason = None
+                for data in root.findall("e:EventData/e:Data", ns):
+                    if data.attrib.get("Name") == "Reason":
+                        reason = data.text
+                
+                if reason in ("Lid", "15"):
+                    record_id_node = root.find("e:System/e:EventRecordID", ns)
+                    record_id = int(record_id_node.text)
+                    
+                    if record_id > last_record_id:
+                        time_node = root.find("e:System/e:TimeCreated", ns)
+                        timestamp_str = time_node.attrib.get("SystemTime")
+                        event_time = parse_event_time(timestamp_str)
+                        
+                        if event_time:
+                            log_lid_event(event_time)
+                            last_record_id = record_id
+                    else:
+                        break  # Reached already processed events
+                
+            time.sleep(POLL_INTERVAL)
+        except KeyboardInterrupt:
+            print(f"\n[{datetime.now()}] Stopping monitor...")
+            break
+        except Exception as e:
+            print(f"[{datetime.now()}] Error in monitoring loop: {e}")
+            time.sleep(POLL_INTERVAL)
+
+if __name__ == "__main__":
+    monitor_lid_events()
+
+
+
 
 # Databricks notebook source
 # Define the attrition processing function
