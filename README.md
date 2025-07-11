@@ -1,3 +1,103 @@
+### 1. Configuration Setup
+- Sets default values for processing parameters
+- `dynamic_hours` configures the time window for recent activity (default 4 hours)
+- Defines standard shift times (9AM-6PM) and zero time placeholder
+- Calculates ingestion threshold based on current time minus processing window
+
+### 2. Data Preparation
+**Step 1: Recent Activity Filtering**
+- Loads employee activity data from `app_trace.emp_activity`
+- Filters for only recent activities (within processing window)
+- Extracts distinct employee-date combinations
+
+**Step 2: Shift Data Loading**
+- Loads shift information from `inbound.pulse_emp_shift_info`
+- Contains shift times and week-off indicators
+
+### 3. Shift Information Processing
+**Step 3: Current Shift Join**
+- Joins employee dates with their shift information
+- Gets raw start/end times for current day
+
+**Step 4: Previous Shift Join**
+- Joins with shift data again to get previous day's shift info
+- Renames columns to avoid conflicts
+
+**Step 5: Default Time Handling**
+- Applies business rules for shift times:
+  - Uses actual shift times when available
+  - Applies defaults (9AM-6PM) for weekdays
+  - Sets to 00:00:00 for weekends and week-off days
+- Handles overnight shifts (when start > end time)
+- Creates timestamp columns combining dates with times
+
+### 4. Activity Classification
+**Step 6-7: Window Definitions**
+- Defines time windows for:
+  - Current login window: 4 hours before shift start to 8 hours after shift end
+  - Previous logout window: previous shift end to 8 hours after
+- Special handling for week-off days
+
+**Step 8: Activity Classification**
+- Identifies:
+  - Current login candidates (within current window, not WindowLock)
+  - Previous logout candidates (within previous window)
+  - Week-off activities (outside normal windows)
+
+### 5. Time Calculation
+**Step 9: Aggregation**
+- Finds:
+  - Earliest valid login time
+  - Latest activity time (for logout)
+  - Latest previous logout candidate
+  - Earliest week-off login
+
+**Step 10: Final Time Assignment**
+- Determines final login time:
+  - For week-off: first activity after previous window or first of day
+  - For normal days: first activity in login window or first of day
+- Logout time is always the last activity
+
+### 6. Update Handling
+**Step 11: Previous Day Updates**
+- Identifies previous days that need logout time updates
+- Creates DataFrame with new logout times
+
+### 7. Output Processing
+- Combines all results into final output
+- Filters out invalid records
+- Merges into target Delta table:
+  - Updates existing records
+  - Inserts new records
+  - Updates previous day's logout times when needed
+
+### Key Business Rules Implemented:
+1. **Login Time Calculation**:
+   - Must be first activity in login window (-4 to +8 hours from shift)
+   - Excludes WindowLock activities
+   - Falls back to first activity if none in window
+
+2. **Logout Time Calculation**:
+   - Always the last activity of day
+   - Includes all activity types
+
+3. **Week-Off Handling**:
+   - Special windows for week-off days
+   - Different login calculation logic
+
+4. **Shift Edge Cases**:
+   - Overnight shifts handled properly
+   - Weekend defaults
+   - Missing shift data fallbacks
+
+5. **Data Freshness**:
+   - Only processes recent activities
+   - Configurable time window
+
+
+
+
+
 The current logic for calculating login and logout times follows a multi-step process:
 
 1. Extract Unique Employee-Day Records:
