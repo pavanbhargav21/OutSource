@@ -1,5 +1,403 @@
 
 
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta
+
+# Configs
+dynamic_hours = 4  # Default value if widget not available
+try:
+    dynamic_hours = int(dbutils.widgets.get("dynamic_hours"))
+except Exception as e:
+    print(f"Error parsing dynamic_hours: {e}, using default 4")
+    dynamic_hours = 4
+
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 60 * dynamic_hours
+
+print(f"Processing window: {PROCESSING_WINDOW_MINUTES} minutes")
+
+# Time setup
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# Step 1: Recent activity and distinct emp_id, cal_date
+act_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold))
+
+# Load mouse and keyboard data with same ingestion time filter
+mouse_df = spark.table("systrace.emp_mouse_data") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date", "event_time")
+
+keyboard_df = spark.table("systrace.emp_keyboard_data") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date", "event_time")
+
+# Union mouse and keyboard data
+mouse_key_df = mouse_df.union(keyboard_df)
+
+activities_df = act_df.select("emp_id", "cal_date") \
+    .distinct()
+
+# Add previous date
+emp_dates_df = activities_df.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# Step 2: Load shift data
+shift_df = spark.table("inbound.pulse_emp_shift_info") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# Step 3: Join current shift
+cur_shift = emp_dates_df.join(
+    shift_df,
+    (emp_dates_df.emp_id == shift_df.emp_id) & (emp_dates_df.cal_date == shift_df.shift_date),
+    how='left'
+).select(
+    emp_dates_df.emp_id,
+    emp_dates_df.cal_date,
+    emp_dates_df.prev_date,
+    shift_df.start_time.alias("cur_start_time_raw"),
+    shift_df.end_time.alias("cur_end_time_raw"),
+    shift_df.is_week_off
+)
+
+# Step 4: Join previous shift
+prev_shift = shift_df \
+    .withColumnRenamed("shift_date", "prev_cal_date") \
+    .withColumnRenamed("start_time", "prev_start_time_raw") \
+    .withColumnRenamed("end_time", "prev_end_time_raw") \
+    .withColumnRenamed("emp_id", "emp_id_prev") \
+    .withColumnRenamed("is_week_off", "prev_is_week_off")
+
+cur_with_prev = cur_shift.join(
+    prev_shift,
+    (cur_shift.emp_id == prev_shift.emp_id_prev) & (cur_shift.prev_date == prev_shift.prev_cal_date),
+    how="left"
+).drop("emp_id_prev", "prev_cal_date")
+
+# Step 5: Apply defaults based on missing data and day of week
+final_df = cur_with_prev \
+    .withColumn("dow", F.date_format("cal_date", "E")) \
+    .withColumn("prev_dow", F.date_format("prev_date", "E")) \
+    .withColumn("cur_start_time",
+        F.when(F.col("cur_start_time_raw").isNotNull(), F.col("cur_start_time_raw"))
+         .when(F.col("is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("cur_end_time",
+        F.when(F.col("cur_end_time_raw").isNotNull(), F.col("cur_end_time_raw"))
+         .when(F.col("is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    .withColumn("prev_start_time",
+        F.when(F.col("prev_start_time_raw").isNotNull(), F.col("prev_start_time_raw"))
+         .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev_end_time_raw").isNotNull(), F.col("prev_end_time_raw"))
+         .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    .withColumn("cur_end_time",
+        F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+               F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(cur_end_time))"), "HH:mm:ss")
+        ).otherwise(F.col("cur_end_time"))
+    ) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+               F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(prev_end_time))"), "HH:mm:ss")
+        ).otherwise(F.col("prev_end_time"))
+    ) \
+    .withColumn("cur_start_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_start_time"))) \
+    .withColumn("cur_end_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_end_time"))) \
+    .withColumn("prev_start_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_start_time"))) \
+    .withColumn("prev_end_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_end_time"))) \
+    .withColumn("cur_end_time_ts",
+        F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+               F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(cur_end_time_ts))"), "yyyy-MM-dd HH:mm:ss")
+        ).otherwise(F.col("cur_end_time_ts"))
+    ) \
+    .withColumn("prev_end_time_ts",
+        F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+               F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(prev_end_time_ts))"), "yyyy-MM-dd HH:mm:ss")
+        ).otherwise(F.col("prev_end_time_ts"))
+    ) \
+    .withColumn("is_week_off",
+        F.when(
+            (F.col("cur_start_time") == ZERO_TIME) & (F.col("cur_end_time") == ZERO_TIME),
+            F.lit(True)
+        ).otherwise(F.lit(False))
+    ) \
+    .withColumn("prev_is_week_off",
+        F.when(
+            (F.col("prev_start_time") == ZERO_TIME) & (F.col("prev_end_time") == ZERO_TIME),
+            F.lit(True)
+        ).otherwise(F.lit(False))
+    ) \
+    .select(
+        "emp_id",
+        "cal_date",
+        "prev_date",
+        "cur_start_time_ts",
+        "cur_end_time_ts",
+        "prev_start_time_ts",
+        "prev_end_time_ts",
+        "is_week_off",
+        "prev_is_week_off"
+    )
+
+# 6. Join with activities and mouse/keyboard data
+joined_df = act_df.join(
+    final_df,
+    ["emp_id", "cal_date"],
+    "left"
+)
+
+# Join mouse/keyboard data with final_df
+joined_mkdf = mouse_key_df.join(
+    final_df,
+    ["emp_id", "cal_date"],
+    "left"
+).withColumnRenamed("event_time", "start_time")  # Rename for consistency with classification logic
+
+# 7. Define time windows with special handling for week-offs
+df_with_windows = joined_df.withColumn(
+    "current_window_start",
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, -4, cur_start_time_ts)"))
+    .otherwise(F.col("cur_start_time_ts"))
+).withColumn(
+    "current_window_end",
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, 8, cur_end_time_ts)"))
+    .otherwise(F.col("cur_end_time_ts"))
+).withColumn(
+    "prev_window_start",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.col("prev_end_time_ts")
+    ).otherwise(F.col("prev_start_time_ts"))
+).withColumn(
+    "prev_window_end",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.expr("timestampadd(HOUR, 8, prev_end_time_ts)"))
+    ).otherwise(F.col("prev_end_time_ts"))
+)
+
+# Same window definitions for mouse/keyboard data
+mkdf_with_windows = joined_mkdf.withColumn(
+    "current_window_start",
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, -4, cur_start_time_ts)"))
+    .otherwise(F.col("cur_start_time_ts"))
+).withColumn(
+    "current_window_end",
+    F.when(~F.col("is_week_off"), F.expr("timestampadd(HOUR, 8, cur_end_time_ts)"))
+    .otherwise(F.col("cur_end_time_ts"))
+).withColumn(
+    "prev_window_start",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.col("prev_end_time_ts")
+    ).otherwise(F.col("prev_start_time_ts"))
+).withColumn(
+    "prev_window_end",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.expr("timestampadd(HOUR, 8, prev_end_time_ts)"))
+    ).otherwise(F.col("prev_end_time_ts"))
+)
+
+# 8. Classify activities with priority to current day
+classified_df = df_with_windows.withColumn(
+    "is_current_login",
+    ~F.col("is_week_off") &
+    (F.col("start_time") >= F.col("current_window_start")) &
+    (F.col("start_time") <= F.col("current_window_end")) &
+    (F.col("app_name") != "WindowLock")
+).withColumn(
+    "is_prev_logout",
+    F.col("prev_window_start").isNotNull() &
+    (F.col("start_time") >= F.col("prev_window_start")) &
+    (F.col("start_time") <= F.col("prev_window_end")) &
+    (F.col("start_time") < F.col("current_window_start"))
+).withColumn(
+    "is_week_off_activity",
+    F.col("is_week_off") &
+    (F.col("prev_window_start").isNull() | 
+     (F.col("start_time") > F.col("prev_window_end")))
+)
+
+# Classify mouse/keyboard events
+classified_mkdf = mkdf_with_windows.withColumn(
+    "is_current_login",
+    ~F.col("is_week_off") &
+    (F.col("start_time") >= F.col("current_window_start")) &
+    (F.col("start_time") <= F.col("current_window_end"))
+).withColumn(
+    "is_prev_logout",
+    F.col("prev_window_start").isNotNull() &
+    (F.col("start_time") >= F.col("prev_window_start")) &
+    (F.col("start_time") <= F.col("prev_window_end")) &
+    (F.col("start_time") < F.col("current_window_start"))
+).withColumn(
+    "is_week_off_activity",
+    F.col("is_week_off") &
+    (F.col("prev_window_start").isNull() | 
+     (F.col("start_time") > F.col("prev_window_end")))
+)
+
+# 9. Calculate all potential times
+result_df = classified_df.groupBy("emp_id", "cal_date").agg(
+    # Current login candidates
+    F.min(F.when(F.col("is_current_login"), F.col("start_time"))).alias("current_login"),
+    
+    # Last activity
+    F.max("start_time").alias("last_activity"),
+    
+    # Previous logout candidates
+    F.max(F.when(F.col("is_prev_logout"), F.col("start_time"))).alias("prev_logout_update"),
+    
+    # Week-off login candidates
+    F.min(F.when(F.col("is_week_off_activity"), F.col("start_time"))).alias("week_off_login"),
+    
+    # Shift info
+    F.first("cur_start_time_ts").alias("shift_start_time"),
+    F.first("cur_end_time_ts").alias("shift_end_time"),
+    F.first("is_week_off").alias("is_week_off"),
+    F.first("prev_date").alias("prev_cal_date")
+)
+
+# Calculate mouse/keyboard events
+result_mkdf = classified_mkdf.groupBy("emp_id", "cal_date").agg(
+    # Last activity from mouse/keyboard
+    F.max("start_time").alias("last_mk_activity"),
+    
+    # Previous logout candidates from mouse/keyboard
+    F.max(F.when(F.col("is_prev_logout"), F.col("start_time"))).alias("prev_logout_mk_update"),
+    
+    # Shift info
+    F.first("cur_start_time_ts").alias("shift_start_time"),
+    F.first("cur_end_time_ts").alias("shift_end_time"),
+    F.first("is_week_off").alias("is_week_off"),
+    F.first("prev_date").alias("prev_cal_date")
+)
+
+# 10. Determine final times with priority rules
+final_result = result_df.withColumn(
+    "emp_login_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_login"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("current_login"), F.col("last_activity"))
+    )
+).withColumn(
+    "emp_logout_time", 
+    F.col("last_activity")
+)
+
+# Create final result for mouse/keyboard data
+final_mkresult = result_mkdf.withColumn(
+    "emp_logout_time_mk",
+    F.col("last_mk_activity")
+)
+
+# Join the mouse/keyboard logout time with the main result
+final_result_with_mk = final_result.join(
+    final_mkresult.select("emp_id", "cal_date", "emp_logout_time_mk", "prev_logout_mk_update"),
+    ["emp_id", "cal_date"],
+    "left"
+)
+
+# 11. Generate previous day updates (only if valid) - consider both sources
+prev_day_updates = final_result_with_mk.filter(
+    F.col("prev_logout_update").isNotNull() | F.col("prev_logout_mk_update").isNotNull()
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.col("prev_cal_date").alias("update_date"),
+    # Prefer mouse/keyboard update if available, otherwise use app trace
+    F.coalesce(F.col("prev_logout_mk_update"), F.col("prev_logout_update")).alias("new_logout_time")
+)
+
+# Final output - use mouse/keyboard logout time if available, otherwise use app trace
+final_output = final_result_with_mk.select(
+    "emp_id",
+    "cal_date",
+    "emp_login_time",
+    F.coalesce(F.col("emp_logout_time_mk"), F.col("emp_logout_time")).alias("emp_logout_time"),
+    "shift_start_time",
+    "shift_end_time",
+    "is_week_off"
+).orderBy("emp_id", "cal_date")
+
+# Filter out null records
+filtered_login_logout = final_output.filter(
+    (F.col("emp_id").isNotNull()) &
+    (F.col("cal_date").isNotNull()) &
+    (F.col("emp_login_time").isNotNull()) &
+    (F.col("emp_logout_time").isNotNull())
+)
+
+# Write to Delta table (rest of the code remains the same)
+spark.sql("""
+CREATE TABLE IF NOT EXISTS gold_dashboard.analytics_emp_login_logout (
+    EMP_ID int,
+    EMP_CONTRACTED_HOURS string,
+    START_TIME string,
+    END_TIME string,
+    START_TIME_THRESHOLD string,
+    END_TIME_THRESHOLD string,
+    EMP_LOGIN_TIME string,
+    EMP_LOGOUT_TIME string,
+    SHIFT_DATE date,
+    SHIFT_COMPLETED string,
+    ATTENDENCE_STATUS string,
+    LOGIN_STATUS string,
+    LOGOUT_STATUS string,
+    WORKING_HOURS float
+) USING DELTA
+""")
+
+# Merge data into target table
+filtered_login_logout.createOrReplaceTempView("temp_filtered_login_logout")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING temp_filtered_login_logout AS source
+ON target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.cal_date
+WHEN MATCHED AND target.EMP_LOGIN_TIME IS NOT NULL THEN
+    UPDATE SET 
+        target.EMP_LOGOUT_TIME = source.emp_logout_time,
+        target.START_TIME = source.shift_start_time,
+        target.END_TIME = source.shift_end_time
+WHEN NOT MATCHED THEN
+    INSERT (EMP_ID, START_TIME, END_TIME, EMP_LOGIN_TIME, EMP_LOGOUT_TIME, SHIFT_DATE)
+    VALUES (source.emp_id, source.shift_start_time, source.shift_end_time,
+            source.emp_login_time, source.emp_logout_time, source.cal_date)
+""")
+
+# Update previous day's logout times if needed
+prev_day_updates.createOrReplaceTempView("temp_prev_day_updates")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING temp_prev_day_updates AS source
+ON target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date
+WHEN MATCHED THEN 
+    UPDATE SET target.EMP_LOGOUT_TIME = source.new_logout_time
+""")
+
+
+
+
 
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
