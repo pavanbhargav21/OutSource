@@ -1,4 +1,66 @@
+WITH EmployeeMigrationDates AS (
+    SELECT 
+        emp_id,
+        MIN(cal_date) AS FirstMigrationDate
+    FROM app_trace.emp_activity
+    WHERE FILE_DESCRIPTION IS NOT NULL
+    AND cal_date >= '2025-07-01'
+    GROUP BY emp_id
+),
+DailyAgentUsage AS (
+    SELECT
+        emp_id,
+        cal_date,
+        CASE WHEN FILE_DESCRIPTION IS NOT NULL THEN 1 ELSE 0 END AS IsNewAgent
+    FROM app_trace.emp_activity
+    WHERE cal_date >= '2025-07-01'
+),
+AgentDayCounts AS (
+    SELECT
+        e.emp_id,
+        e.FirstMigrationDate,
+        SUM(CASE WHEN d.cal_date > e.FirstMigrationDate AND d.IsNewAgent = 1 THEN 1 ELSE 0 END) AS DaysWithNewAgentAfterMigration,
+        SUM(CASE WHEN d.cal_date > e.FirstMigrationDate AND d.IsNewAgent = 0 THEN 1 ELSE 0 END) AS DaysWithOldAgentAfterMigration,
+        MAX(CASE WHEN d.IsNewAgent = 1 THEN d.cal_date END) AS LastNewAgentDate,
+        MAX(CASE WHEN d.IsNewAgent = 0 THEN d.cal_date END) AS LastOldAgentDate
+    FROM EmployeeMigrationDates e
+    JOIN DailyAgentUsage d ON e.emp_id = d.emp_id
+    GROUP BY e.emp_id, e.FirstMigrationDate
+),
+RecentStatus AS (
+    SELECT
+        emp_id,
+        cal_date AS MostRecentDate,
+        IsNewAgent
+    FROM (
+        SELECT
+            emp_id,
+            cal_date,
+            IsNewAgent,
+            ROW_NUMBER() OVER (PARTITION BY emp_id ORDER BY cal_date DESC) AS rn
+        FROM DailyAgentUsage
+    ) ranked
+    WHERE rn = 1
+)
 
+SELECT 
+    m.emp_id,
+    m.FirstMigrationDate,
+    r.MostRecentDate,
+    CASE WHEN r.IsNewAgent = 1 THEN 'Currently New Agent' ELSE 'Currently Old Agent' END AS CurrentStatus,
+    m.DaysWithNewAgentAfterMigration,
+    m.DaysWithOldAgentAfterMigration,
+    ROUND(100.0 * m.DaysWithNewAgentAfterMigration / 
+          NULLIF(m.DaysWithNewAgentAfterMigration + m.DaysWithOldAgentAfterMigration, 0), 1) AS NewAgentUsagePercentage,
+    m.LastNewAgentDate,
+    m.LastOldAgentDate
+FROM AgentDayCounts m
+JOIN RecentStatus r ON m.emp_id = r.emp_id
+WHERE m.DaysWithOldAgentAfterMigration > 0  -- Only include those with regression days
+ORDER BY 
+    NewAgentUsagePercentage ASC,  -- Show worst cases first
+    m.DaysWithOldAgentAfterMigration DESC,
+    m.emp_id;
 
 WITH EmployeeMigrationDates AS (
     -- First identify each employee's first migration date
