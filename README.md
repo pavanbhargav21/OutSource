@@ -1,4 +1,88 @@
 
+
+-- Part 1: Significant Dip Analysis
+WITH CPU_Time AS (
+    SELECT 
+        EMPID, 
+        CALDATE,
+        MIN(CREATEDON) AS MIN_CPU_TIME,
+        MAX(CREATEDON) AS MAX_CPU_TIME,
+        DATEDIFF(SECOND, MIN(CREATEDON), MAX(CREATEDON)) AS CPU_Duration_Seconds
+    FROM EMPCPUData
+    WHERE CALDATE >= '2025-07-01'
+    GROUP BY EMPID, CALDATE
+),
+Activity_Time AS (
+    SELECT 
+        EMPID, 
+        CALDATE,
+        DATEDIFF(SECOND, MIN(STARTTIME), MAX(STARTTIME)) AS Activity_Duration_Seconds
+    FROM EMPActivity
+    WHERE CALDATE >= '2025-07-01'
+    GROUP BY EMPID, CALDATE
+),
+Dip_Analysis AS (
+    SELECT 
+        c.EMPID,
+        c.CALDATE,
+        c.CPU_Duration_Seconds,
+        ISNULL(a.Activity_Duration_Seconds, 0) AS Activity_Duration_Seconds,
+        CASE WHEN ISNULL(a.Activity_Duration_Seconds, 0) < (c.CPU_Duration_Seconds * 0.5) 
+             THEN 1 ELSE 0 END AS Has_Significant_Dip
+    FROM CPU_Time c
+    LEFT JOIN Activity_Time a ON c.EMPID = a.EMPID AND c.CALDATE = a.CALDATE
+)
+
+-- Daily counts of employees with significant dip
+SELECT 
+    CALDATE,
+    COUNT(*) AS Total_Employees_With_CPU_Data,
+    SUM(Has_Significant_Dip) AS Employees_With_Significant_Dip
+FROM Dip_Analysis
+GROUP BY CALDATE
+ORDER BY CALDATE;
+
+-- List of employees with significant dip each day
+SELECT 
+    CALDATE,
+    EMPID
+FROM Dip_Analysis
+WHERE Has_Significant_Dip = 1
+ORDER BY CALDATE, EMPID;
+
+-- Part 2: Agent Migration Tracking
+WITH New_Agent_Employees AS (
+    SELECT DISTINCT
+        EMPID,
+        CALDATE,
+        1 AS Is_New_Agent
+    FROM EMPActivity
+    WHERE CALDATE >= '2025-07-01'
+    AND FILEDESCRIPTION IS NOT NULL
+),
+Agent_Status AS (
+    SELECT 
+        e.EMPID,
+        e.CALDATE,
+        CASE WHEN n.Is_New_Agent = 1 THEN 1 ELSE 0 END AS Is_New_Agent_Today,
+        LAG(CASE WHEN n.Is_New_Agent = 1 THEN 1 ELSE 0 END) OVER (PARTITION BY e.EMPID ORDER BY e.CALDATE) AS Was_New_Agent_Yesterday
+    FROM (SELECT DISTINCT EMPID, CALDATE FROM EMPActivity WHERE CALDATE >= '2025-07-01') e
+    LEFT JOIN New_Agent_Employees n ON e.EMPID = n.EMPID AND e.CALDATE = n.CALDATE
+)
+
+-- Daily counts of agent status
+SELECT 
+    CALDATE,
+    SUM(Is_New_Agent_Today) AS Employees_On_New_Agent,
+    COUNT(*) - SUM(Is_New_Agent_Today) AS Employees_On_Old_Agent,
+    SUM(CASE WHEN Is_New_Agent_Today = 1 AND (Was_New_Agent_Yesterday = 0 OR Was_New_Agent_Yesterday IS NULL) THEN 1 ELSE 0 END) AS Newly_Migrated_Employees
+FROM Agent_Status
+GROUP BY CALDATE
+ORDER BY CALDATE;
+
+
+
+
 WITH daily_counts AS (
     SELECT
         CALDATE,
