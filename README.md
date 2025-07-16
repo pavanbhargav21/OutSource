@@ -1,4 +1,25 @@
+WITH file_desc_flags AS (
+    SELECT 
+        CANDIDATE,
+        EMPAD,
+        MAX(CASE WHEN file_description IS NULL THEN 1 ELSE 0 END) AS has_null,
+        MAX(CASE WHEN file_description IS NOT NULL THEN 1 ELSE 0 END) AS has_not_null
+    FROM 
+        your_table
+    GROUP BY 
+        CANDIDATE, EMPAD
+)
 
+SELECT
+    CANDIDATE,
+    COUNT(CASE WHEN has_null = 1 THEN EMPAD END) AS null_file_desc_count,
+    COUNT(CASE WHEN has_not_null = 1 THEN EMPAD END) AS not_null_file_desc_count
+FROM 
+    file_desc_flags
+GROUP BY 
+    CANDIDATE
+ORDER BY 
+    CANDIDATE;
 
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
