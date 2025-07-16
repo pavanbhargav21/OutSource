@@ -1,4 +1,98 @@
 
+WITH Daily_Agent_Status AS (
+    SELECT 
+        EMPID,
+        CALDATE,
+        MAX(CASE WHEN FILEDESCRIPTION IS NOT NULL THEN 1 ELSE 0 END) AS Is_New_Agent
+    FROM EMPActivity
+    WHERE CALDATE >= '2025-07-01'
+    GROUP BY EMPID, CALDATE
+),
+Migration_Events AS (
+    SELECT 
+        EMPID,
+        CALDATE AS Migration_Date,
+        LEAD(CALDATE) OVER (PARTITION BY EMPID ORDER BY CALDATE) AS Next_Status_Date
+    FROM Daily_Agent_Status
+    WHERE Is_New_Agent = 1
+    AND NOT EXISTS (
+        SELECT 1 FROM Daily_Agent_Status prev
+        WHERE prev.EMPID = Daily_Agent_Status.EMPID
+        AND prev.CALDATE < Daily_Agent_Status.CALDATE
+        AND prev.Is_New_Agent = 1
+    )
+),
+Daily_Status_With_Migration AS (
+    SELECT 
+        d.EMPID,
+        d.CALDATE,
+        d.Is_New_Agent,
+        m.Migration_Date,
+        CASE 
+            WHEN m.Migration_Date IS NOT NULL THEN 'New Migration'
+            WHEN d.Is_New_Agent = 1 AND EXISTS (
+                SELECT 1 FROM Migration_Events me 
+                WHERE me.EMPID = d.EMPID 
+                AND me.Migration_Date < d.CALDATE
+            ) THEN 'Continuing New Agent'
+            ELSE 'Old Agent'
+        END AS Status_Type
+    FROM Daily_Agent_Status d
+    LEFT JOIN Migration_Events m ON d.EMPID = m.EMPID AND d.CALDATE = m.Migration_Date
+)
+
+-- Main report showing daily migration and subsequent status
+SELECT 
+    CALDATE,
+    EMPID,
+    Status_Type,
+    -- Check if employee regressed to old agent after migration
+    CASE 
+        WHEN Status_Type = 'New Migration' THEN 'N/A'
+        WHEN Status_Type = 'Continuing New Agent' THEN 'Consistent'
+        WHEN Status_Type = 'Old Agent' AND EXISTS (
+            SELECT 1 FROM Migration_Events me 
+            WHERE me.EMPID = Daily_Status_With_Migration.EMPID 
+            AND me.Migration_Date < Daily_Status_With_Migration.CALDATE
+        ) THEN 'Regression'
+        ELSE 'N/A'
+    END AS Consistency_Status
+FROM Daily_Status_With_Migration
+ORDER BY CALDATE, EMPID;
+
+-- Summary of migrations and consistency
+SELECT 
+    Migration_Date,
+    COUNT(DISTINCT EMPID) AS Employees_Migrated,
+    -- Count how many were still on new agent the next day
+    (
+        SELECT COUNT(DISTINCT ds.EMPID)
+        FROM Daily_Agent_Status ds
+        WHERE ds.CALDATE = DATEADD(day, 1, me.Migration_Date)
+        AND ds.Is_New_Agent = 1
+        AND ds.EMPID IN (
+            SELECT EMPID FROM Migration_Events 
+            WHERE Migration_Date = me.Migration_Date
+        )
+    ) AS Still_New_Agent_Next_Day,
+    -- Count how many regressed to old agent within 3 days
+    (
+        SELECT COUNT(DISTINCT reg.EMPID)
+        FROM Daily_Agent_Status reg
+        WHERE reg.CALDATE BETWEEN DATEADD(day, 1, me.Migration_Date) AND DATEADD(day, 3, me.Migration_Date)
+        AND reg.Is_New_Agent = 0
+        AND reg.EMPID IN (
+            SELECT EMPID FROM Migration_Events 
+            WHERE Migration_Date = me.Migration_Date
+        )
+    ) AS Regressed_Within_3_Days
+FROM Migration_Events me
+GROUP BY Migration_Date
+ORDER BY Migration_Date;
+
+
+
+
 
 -- Part 1: Significant Dip Analysis
 WITH CPU_Time AS (
