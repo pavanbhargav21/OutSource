@@ -1,3 +1,58 @@
+
+WITH daily_counts AS (
+    SELECT
+        CALDATE,
+        COUNT(DISTINCT CASE WHEN file_description IS NOT NULL THEN EMPAD END) AS new_agent_count,
+        COUNT(DISTINCT CASE WHEN file_description IS NULL THEN EMPAD END) AS old_agent_count
+    FROM 
+        your_table
+    GROUP BY 
+        CALDATE
+),
+with_movement_flag AS (
+    SELECT
+        CALDATE,
+        new_agent_count,
+        old_agent_count,
+        CASE 
+            WHEN new_agent_count > 0 THEN true 
+            ELSE false 
+        END AS agent_movement
+    FROM 
+        daily_counts
+),
+movement_change AS (
+    SELECT
+        CALDATE,
+        new_agent_count,
+        old_agent_count,
+        agent_movement,
+        LAG(agent_movement) OVER (ORDER BY CALDATE) AS prev_movement,
+        CASE 
+            WHEN agent_movement != LAG(agent_movement) OVER (ORDER BY CALDATE) THEN true
+            ELSE false
+        END AS movement_changed
+    FROM 
+        with_movement_flag
+)
+
+SELECT 
+    CALDATE,
+    agent_movement,
+    movement_changed,
+    new_agent_count,
+    old_agent_count
+FROM 
+    movement_change
+ORDER BY 
+    CALDATE;
+
+
+
+
+
+
+
 WITH file_desc_flags AS (
     SELECT 
         CANDIDATE,
