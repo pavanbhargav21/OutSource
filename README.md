@@ -1,3 +1,112 @@
+
+WITH EmployeeMigrationDates AS (
+    -- First identify each employee's first migration date
+    SELECT 
+        emp_id,
+        MIN(cal_date) AS FirstMigrationDate
+    FROM app_trace.emp_activity
+    WHERE FILE_DESCRIPTION IS NOT NULL
+    AND cal_date >= '2025-07-01'
+    GROUP BY emp_id
+),
+RecentActivity AS (
+    -- Get each employee's most recent activity
+    SELECT 
+        emp_id,
+        cal_date AS MostRecentDate,
+        CASE WHEN FILE_DESCRIPTION IS NOT NULL THEN 1 ELSE 0 END AS IsNewAgent
+    FROM (
+        SELECT 
+            emp_id,
+            cal_date,
+            FILE_DESCRIPTION,
+            ROW_NUMBER() OVER (PARTITION BY emp_id ORDER BY cal_date DESC) AS rn
+        FROM app_trace.emp_activity
+        WHERE cal_date >= '2025-07-01'
+    ) ranked
+    WHERE rn = 1
+),
+OldAgentAfterMigration AS (
+    -- Find employees with old agent activity after migrating
+    SELECT DISTINCT
+        a.emp_id,
+        m.FirstMigrationDate,
+        a.cal_date AS OldAgentDate
+    FROM app_trace.emp_activity a
+    JOIN EmployeeMigrationDates m ON a.emp_id = m.emp_id
+    WHERE a.FILE_DESCRIPTION IS NULL
+    AND a.cal_date > m.FirstMigrationDate
+),
+WFH_Status AS (
+    -- Get first and last WFH status entries for each employee
+    SELECT 
+        emp_id,
+        MIN(cal_date) AS FirstWFHStatusDate,
+        MAX(cal_date) AS LastWFHStatusDate,
+        MAX(CASE WHEN rn_first = 1 THEN is_wfh END) AS FirstStatus_is_wfh,
+        MAX(CASE WHEN rn_first = 1 THEN version END) AS FirstStatus_version,
+        MAX(CASE WHEN rn_last = 1 THEN is_wfh END) AS LastStatus_is_wfh,
+        MAX(CASE WHEN rn_last = 1 THEN version END) AS LastStatus_version
+    FROM (
+        SELECT 
+            emp_id,
+            cal_date,
+            is_wfh,
+            version,
+            ROW_NUMBER() OVER (PARTITION BY emp_id ORDER BY cal_date) AS rn_first,
+            ROW_NUMBER() OVER (PARTITION BY emp_id ORDER BY cal_date DESC) AS rn_last
+        FROM app_trace.emp_wfo_wfh_status
+    ) ranked
+    GROUP BY emp_id
+)
+
+-- Final result with employee details
+SELECT 
+    m.emp_id,
+    m.FirstMigrationDate,
+    r.MostRecentDate,
+    CASE WHEN r.IsNewAgent = 1 THEN 'Currently New Agent' ELSE 'Currently Old Agent' END AS CurrentStatus,
+    COUNT(o.OldAgentDate) AS DaysWithOldAgentAfterMigration,
+    MIN(o.OldAgentDate) AS FirstRegressionDate,
+    MAX(o.OldAgentDate) AS LastRegressionDate,
+    w.FirstWFHStatusDate,
+    w.LastWFHStatusDate,
+    w.FirstStatus_is_wfh,
+    w.FirstStatus_version,
+    w.LastStatus_is_wfh,
+    w.LastStatus_version,
+    CASE 
+        WHEN w.FirstWFHStatusDate IS NULL THEN 'Missing WFH Status'
+        WHEN w.FirstWFHStatusDate > m.FirstMigrationDate THEN 'Late WFH Status'
+        ELSE 'WFH Status OK'
+    END AS WFHStatusValidation
+FROM EmployeeMigrationDates m
+LEFT JOIN RecentActivity r ON m.emp_id = r.emp_id
+LEFT JOIN OldAgentAfterMigration o ON m.emp_id = o.emp_id
+LEFT JOIN WFH_Status w ON m.emp_id = w.emp_id
+GROUP BY 
+    m.emp_id,
+    m.FirstMigrationDate,
+    r.MostRecentDate,
+    r.IsNewAgent,
+    w.FirstWFHStatusDate,
+    w.LastWFHStatusDate,
+    w.FirstStatus_is_wfh,
+    w.FirstStatus_version,
+    w.LastStatus_is_wfh,
+    w.LastStatus_version
+HAVING COUNT(o.OldAgentDate) > 0  -- Only include those with regression days
+ORDER BY 
+    WFHStatusValidation,
+    CurrentStatus,
+    DaysWithOldAgentAfterMigration DESC,
+    m.emp_id;
+
+
+
+
+
+
 WITH EmployeeMigrationDates AS (
     SELECT 
         emp_id,
