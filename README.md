@@ -1,4 +1,92 @@
 
+import sqlite3  # or your preferred DB connector
+
+def get_employee_resource_usage(db_connection):
+    """Fetch resource usage between login-logout times in a single query"""
+    cursor = db_connection.cursor()
+    
+    # Single query that handles both same-day and cross-day shifts
+    query = """
+    WITH employee_windows AS (
+        SELECT 
+            emp_id,
+            shift_date,
+            emp_login_time,
+            emp_logout_time,
+            -- Detect cross-day shifts
+            CASE WHEN date(emp_logout_time) > date(emp_login_time) THEN 1 ELSE 0 END AS is_cross_day
+        FROM emp_login_logout
+    )
+    SELECT
+        r.emp_id,
+        date(r.event_time) AS usage_date,
+        strftime('%H:00', r.event_time) || '-' || 
+            strftime('%H:59', datetime(r.event_time, '+2 hours')) AS time_window,
+        AVG(r.cpu_used_pct) AS avg_cpu,
+        AVG(r.ram_used_pct) AS avg_ram,
+        AVG(r.disk_used_pct) AS avg_disk,
+        e.emp_login_time,
+        e.emp_logout_time
+    FROM emp_cpudata r
+    JOIN employee_windows e ON 
+        r.emp_id = e.emp_id AND
+        (
+            -- Same day shift
+            (e.is_cross_day = 0 AND 
+             date(r.event_time) = date(e.emp_login_time) AND
+             r.event_time BETWEEN e.emp_login_time AND e.emp_logout_time)
+            OR
+            -- Cross-day shift part 1 (first day)
+            (e.is_cross_day = 1 AND 
+             date(r.event_time) = date(e.emp_login_time) AND
+             r.event_time BETWEEN e.emp_login_time AND datetime(date(e.emp_login_time), '23:59:59'))
+            OR
+            -- Cross-day shift part 2 (next day)
+            (e.is_cross_day = 1 AND 
+             date(r.event_time) = date(e.emp_logout_time) AND
+             r.event_time BETWEEN datetime(date(e.emp_logout_time), '00:00:00') AND e.emp_logout_time)
+        )
+    GROUP BY r.emp_id, date(r.event_time), 
+             strftime('%H', r.event_time) / 3  -- 3-hour windows
+    ORDER BY r.emp_id, usage_date, time_window
+    """
+    
+    cursor.execute(query)
+    results = []
+    
+    for row in cursor.fetchall():
+        results.append({
+            'emp_id': row[0],
+            'date': row[1],
+            'time_window': row[2],
+            'avg_cpu': round(row[3], 2),
+            'avg_ram': round(row[4], 2),
+            'avg_disk': round(row[5], 2),
+            'login_time': row[6],
+            'logout_time': row[7]
+        })
+    
+    return results
+
+# Example usage
+if __name__ == "__main__":
+    conn = sqlite3.connect('employee_data.db')
+    resource_data = get_employee_resource_usage(conn)
+    
+    for record in resource_data:
+        print(f"{record['emp_id']} | {record['date']} {record['time_window']}")
+        print(f"Login: {record['login_time']} - Logout: {record['logout_time']}")
+        print(f"CPU: {record['avg_cpu']}% | RAM: {record['avg_ram']}% | Disk: {record['avg_disk']}%")
+        print("-" * 60)
+    
+    conn.close()
+
+
+
+
+
+
+
 WITH EmployeeMigrationDates AS (
     -- First identify each employee's first migration date
     SELECT 
