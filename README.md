@@ -1,5 +1,96 @@
 
 
+
+import sqlite3  # or your preferred DB connector
+
+def get_daily_resource_usage(db_connection, target_date):
+    """
+    Get daily resource usage with proper 3-hour windows
+    in a single query that works across all SQL databases
+    """
+    cursor = db_connection.cursor()
+    
+    query = f"""
+    WITH employee_sessions AS (
+        SELECT 
+            emp_id,
+            emp_login_time,
+            emp_logout_time,
+            -- Extract hour and calculate 3-hour window group
+            CAST(strftime('%H', emp_login_time) AS INTEGER) AS login_hour,
+            CASE WHEN date(emp_logout_time) > date(emp_login_time) THEN 1 ELSE 0 END AS is_overnight
+        FROM emp_login_logout
+        WHERE shift_date = '{target_date}'
+    ),
+    time_windows AS (
+        SELECT 0 AS window_start, 2 AS window_end, '00:00-02:59' AS window_label UNION ALL
+        SELECT 3, 5, '03:00-05:59' UNION ALL
+        SELECT 6, 8, '06:00-08:59' UNION ALL
+        SELECT 9, 11, '09:00-11:59' UNION ALL
+        SELECT 12, 14, '12:00-14:59' UNION ALL
+        SELECT 15, 17, '15:00-17:59' UNION ALL
+        SELECT 18, 20, '18:00-20:59' UNION ALL
+        SELECT 21, 23, '21:00-23:59'
+    )
+    SELECT
+        s.emp_id,
+        w.window_label AS time_window,
+        ROUND(AVG(r.cpu_used_pct), 2) AS avg_cpu,
+        ROUND(AVG(r.ram_used_pct), 2) AS avg_ram,
+        ROUND(AVG(r.disk_used_pct), 2) AS avg_disk,
+        s.emp_login_time,
+        s.emp_logout_time
+    FROM emp_cpudata r
+    JOIN employee_sessions s ON r.emp_id = s.emp_id
+    JOIN time_windows w ON 
+        CAST(strftime('%H', r.event_time) AS INTEGER) BETWEEN w.window_start AND w.window_end
+    WHERE (
+        -- Same day shift
+        (s.is_overnight = 0 AND 
+         date(r.event_time) = date(s.emp_login_time) AND
+         r.event_time BETWEEN s.emp_login_time AND s.emp_logout_time)
+        
+        OR
+        
+        -- Overnight shift part 1 (start day)
+        (s.is_overnight = 1 AND 
+         date(r.event_time) = date(s.emp_login_time) AND
+         r.event_time >= s.emp_login_time)
+        
+        OR
+        
+        -- Overnight shift part 2 (next day)
+        (s.is_overnight = 1 AND 
+         date(r.event_time) = date(s.emp_logout_time) AND
+         r.event_time <= s.emp_logout_time)
+    )
+    AND date(r.event_time) IN (date('{target_date}'), date('{target_date}', '+1 day'))
+    GROUP BY s.emp_id, w.window_start, w.window_label
+    ORDER BY s.emp_id, w.window_start
+    """
+    
+    cursor.execute(query)
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+# Example Usage
+if __name__ == "__main__":
+    conn = sqlite3.connect('employee_data.db')
+    today = datetime.now().strftime('%Y-%m-%d')
+    results = get_daily_resource_usage(conn, today)
+    
+    print(f"Daily Resource Usage for {today}")
+    print("="*50)
+    for record in results:
+        print(f"\nEmployee {record['emp_id']}")
+        print(f"Active: {record['emp_login_time']} to {record['emp_logout_time']}")
+        print(f"Window: {record['time_window']}")
+        print(f"CPU: {record['avg_cpu']}% | RAM: {record['avg_ram']}% | Disk: {record['avg_disk']}%")
+    
+    conn.close()
+
+
+
 import sqlite3  # or your DB connector of choice
 from datetime import datetime
 
