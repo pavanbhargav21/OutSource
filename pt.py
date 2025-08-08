@@ -1,4 +1,47 @@
 
+WITH shift_events AS (
+    SELECT
+        l.EMPID,
+        l.SHIFT_DATE,
+        COUNT(*) AS total_events,
+        SUM(CASE WHEN k.EVENT_TYPE IN ('BACKSPACE', 'ESCAPE', 'DELETE') THEN 1 ELSE 0 END) AS error_events,
+        SUM(CASE WHEN k.EVENT_TYPE = 'ENTER' THEN 1 ELSE 0 END) AS enter_events,
+        SUM(CASE WHEN k.EVENT_TYPE IN ('CTRL+C', 'CTRL+V') THEN 1 ELSE 0 END) AS copy_paste_events,
+        SUM(CASE WHEN k.EVENT_TYPE = 'ALT+TAB' THEN 1 ELSE 0 END) AS swivel_events,
+        TIMESTAMPDIFF(SECOND, l.EMP_LOGIN_TIME, l.EMP_LOGOUT_TIME) / 3600.0 AS shift_hours
+    FROM
+        emp_login_logout l
+    JOIN
+        emp_keyboard_data k
+        ON k.EMPID = l.EMPID
+        AND k.EVENT_TIME >= l.EMP_LOGIN_TIME
+        AND k.EVENT_TIME <= l.EMP_LOGOUT_TIME
+    GROUP BY
+        l.EMPID,
+        l.SHIFT_DATE
+)
+SELECT
+    EMPID,
+    AVG(total_events) AS avg_input_activities,
+    AVG(error_events) AS avg_error_events,
+    AVG(enter_events) AS avg_enter_events,
+    AVG(copy_paste_events) AS avg_copy_paste_events,
+    AVG(swivel_events) AS avg_swivel_events,
+    AVG(shift_hours) AS avg_shift_hours,
+    (AVG(total_events) / NULLIF(AVG(shift_hours),0)) AS avg_input_per_hour,
+    (AVG(error_events) / NULLIF(AVG(total_events),0)) * 100 AS error_handling_pct,
+    (AVG(enter_events) / NULLIF(AVG(total_events),0)) * 100 AS enter_events_pct,
+    (AVG(copy_paste_events) / NULLIF(AVG(total_events),0)) * 100 AS copy_paste_pct,
+    (AVG(swivel_events) / NULLIF(AVG(total_events),0)) * 100 AS swivel_pct
+FROM
+    shift_events
+WHERE
+    SHIFT_DATE BETWEEN '2025-08-01' AND '2025-08-07'  -- your input window
+GROUP BY
+    EMPID;
+
+
+
 @app.get('/get_employee_productivity')
 async def get_employee_productivity(
     Authorize: AuthJWT = Depends(),
