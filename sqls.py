@@ -1,4 +1,186 @@
 
+WITH 
+-- 1. First get all active employees
+FilteredEmployees AS (
+    SELECT emplid
+    FROM inbound.hr_employee_central
+    WHERE func_agr_id(manager_id) 
+    AND (TERMINATION_DT > CURRENT_TIMESTAMP() OR TERMINATION_DT IS NULL)
+),
+
+-- 2. Set date parameters (last 14 days)
+date_range AS (
+    SELECT 
+        DATEADD(day, -14, CURRENT_DATE()) AS start_date,
+        CURRENT_DATE() AS end_date
+),
+
+-- 3. Application usage data
+FilteredAppInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_time_spent_active,
+        total_time_spent_idle,
+        window_lock_time, 
+        interval 
+    FROM gold_dashboard.analytics_emp_app_info
+    WHERE cal_date BETWEEN (SELECT start_date FROM date_range) 
+                      AND (SELECT end_date FROM date_range)
+    AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+-- 4. Mouse activity data
+FilteredMouseInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_mouse_count, 
+        interval 
+    FROM gold_dashboard.analytics_emp_mouseclicks 
+    WHERE cal_date BETWEEN (SELECT start_date FROM date_range) 
+                      AND (SELECT end_date FROM date_range)
+    AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+-- 5. Keyboard activity data
+FilteredKeyInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_keyboard_events, 
+        interval 
+    FROM gold_dashboard.analytics_emp_keystrokes 
+    WHERE cal_date BETWEEN (SELECT start_date FROM date_range) 
+                      AND (SELECT end_date FROM date_range)
+    AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+-- 6. Login/logout data
+FilteredLoginLogout AS (
+    SELECT 
+        emp_id, 
+        shift_date, 
+        emp_late,
+        emp_login_time, 
+        emp_logout_time 
+    FROM gold_dashboard.analytics_emp_login_logout 
+    WHERE shift_date BETWEEN (SELECT start_date FROM date_range) 
+                        AND (SELECT end_date FROM date_range)
+    AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+-- 7. Combined activity data
+EmployeeActivity AS (
+    SELECT
+        i.emp_id,
+        l.shift_date AS cal_date,
+        i.app_name,
+        COALESCE(SUM(i.total_time_spent_active), 0) AS total_active_time, 
+        COALESCE(SUM(i.total_time_spent_idle), 0) AS total_idle_time, 
+        COALESCE(SUM(i.window_lock_time), 0) AS total_window_lock_time, 
+        COALESCE(SUM(m.total_mouse_count), 0) AS total_mouse_clicks, 
+        COALESCE(SUM(k.total_keyboard_events), 0) AS total_key_strokes
+    FROM FilteredAppInfo i
+    LEFT JOIN FilteredLoginLogout l
+        ON i.emp_id = l.emp_id
+        AND (
+            (l.emp_login_time IS NOT NULL
+            AND l.emp_logout_time IS NOT NULL
+            AND DATEADD(hour, -1, TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss'))
+            < TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+            AND TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss')
+            > TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+            OR (l.emp_logout_time IS NULL
+            AND DATEADD(hour, -1, TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss'))
+            < TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+        )
+    LEFT JOIN FilteredMouseInfo m
+        ON i.emp_id = m.emp_id
+        AND i.cal_date = m.cal_date
+        AND i.app_name = m.app_name
+        AND i.interval = m.interval
+    LEFT JOIN FilteredKeyInfo k
+        ON i.emp_id = k.emp_id
+        AND i.cal_date = k.cal_date
+        AND i.app_name = k.app_name
+        AND i.interval = k.interval
+    WHERE i.emp_id IN (SELECT emplid FROM FilteredEmployees)
+    AND l.shift_date BETWEEN (SELECT start_date FROM date_range) 
+                        AND (SELECT end_date FROM date_range)
+    GROUP BY i.emp_id, l.shift_date, i.app_name
+),
+
+-- 8. Daily summary
+PerDayEmployeeSummary AS (
+    SELECT
+        emp_id,
+        cal_date,
+        SUM(total_active_time) AS daily_active_time,
+        SUM(total_idle_time) AS daily_idle_time,
+        SUM(total_window_lock_time) AS daily_lock_time,
+        SUM(total_active_time + total_idle_time + total_window_lock_time) AS daily_total_time
+    FROM EmployeeActivity
+    GROUP BY emp_id, cal_date
+),
+
+-- 9. Final report data
+DailyProductivityReport AS (
+    SELECT
+        e.emp_id,
+        e.cal_date,
+        e.daily_active_time,
+        e.daily_total_time,
+        ROUND((e.daily_active_time / NULLIF(e.daily_total_time, 0)) * 100, 2) AS utilization_percentage,
+        COALESCE(m.total_mouse_clicks, 0) AS total_mouse_clicks,
+        COALESCE(k.total_key_strokes, 0) AS total_key_strokes,
+        ROUND(COALESCE(m.total_mouse_clicks, 0) / NULLIF(e.daily_active_time/3600, 0), 2) AS mouse_clicks_per_hour,
+        ROUND(COALESCE(k.total_key_strokes, 0) / NULLIF(e.daily_active_time/3600, 0), 2) AS keystrokes_per_hour,
+        CASE 
+            WHEN e.daily_active_time > 0 AND (m.total_mouse_clicks < 10 OR k.total_key_strokes < 50) THEN 'LOW_INPUT_ACTIVITY'
+            WHEN (e.daily_idle_time / e.daily_total_time) > 0.4 THEN 'HIGH_IDLE_TIME'
+            ELSE 'NORMAL'
+        END AS anomaly_flag
+    FROM PerDayEmployeeSummary e
+    LEFT JOIN (
+        SELECT emp_id, cal_date, SUM(total_mouse_clicks) AS total_mouse_clicks
+        FROM EmployeeActivity GROUP BY emp_id, cal_date
+    ) m ON e.emp_id = m.emp_id AND e.cal_date = m.cal_date
+    LEFT JOIN (
+        SELECT emp_id, cal_date, SUM(total_key_strokes) AS total_key_strokes
+        FROM EmployeeActivity GROUP BY emp_id, cal_date
+    ) k ON e.emp_id = k.emp_id AND e.cal_date = k.cal_date
+)
+
+-- MAIN REPORT QUERY
+SELECT 
+    r.*,
+    l.emp_login_time,
+    l.emp_logout_time,
+    CASE 
+        WHEN l.emp_logout_time IS NULL THEN 'MISSING_LOGOUT'
+        WHEN TIMESTAMPDIFF(HOUR, TO_TIMESTAMP(l.emp_login_time), TO_TIMESTAMP(l.emp_logout_time)) < 4 THEN 'SHORT_SHIFT'
+        ELSE 'NORMAL_SHIFT'
+    END AS shift_anomaly,
+    (SELECT STRING_AGG(CONCAT(app_name, ' (', ROUND(app_active_time/3600,1), 'h)'), ', ' ORDER BY app_active_time DESC)
+     FROM (
+         SELECT emp_id, cal_date, app_name, SUM(total_active_time) AS app_active_time
+         FROM EmployeeActivity
+         GROUP BY emp_id, cal_date, app_name
+         HAVING SUM(total_active_time) > 900
+     ) a 
+     WHERE a.emp_id = r.emp_id AND a.cal_date = r.cal_date
+    ) AS top_applications
+FROM DailyProductivityReport r
+LEFT JOIN FilteredLoginLogout l ON r.emp_id = l.emp_id AND r.cal_date = l.shift_date
+ORDER BY r.cal_date DESC, r.anomaly_flag, r.utilization_percentage DESC;
+
+
+
+
 # Enhanced Employee Activity Analysis with Interval Alignment
 
 I'll revise the queries to properly align the login/logout times with hourly intervals from your gold tables, similar to your sample but expanded for all employees over the past 2 weeks.
