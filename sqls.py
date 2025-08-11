@@ -1,3 +1,156 @@
+
+
+Here are the SQL queries you can run in Databricks SQL to generate daily shift reports from your `gold_dashboard.emp_login_logout` table:
+
+### 1. Daily Average Working Hours Report (Last 30 Days)
+
+```sql
+SELECT 
+  DATE(shift_time) AS shift_date,
+  DAYNAME(shift_time) AS day_of_week,
+  COUNT(DISTINCT emp_id) AS total_employees,
+  ROUND(AVG(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS avg_working_hours,
+  SUM(CASE WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) >= 9 THEN 1 ELSE 0 END) AS employees_over_9_hours,
+  SUM(CASE WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) < 9 THEN 1 ELSE 0 END) AS employees_under_9_hours
+FROM 
+  gold_dashboard.emp_login_logout
+WHERE 
+  shift_time >= DATE_SUB(CURRENT_DATE(), 30)
+  AND emp_login_time IS NOT NULL
+  AND emp_logout_time IS NOT NULL
+GROUP BY 
+  DATE(shift_time), DAYNAME(shift_time)
+ORDER BY 
+  shift_date DESC;
+```
+
+### 2. Weekly Pattern Analysis (Average by Day of Week)
+
+```sql
+SELECT 
+  DAYNAME(shift_time) AS day_of_week,
+  COUNT(DISTINCT emp_id) AS avg_employees_per_day,
+  ROUND(AVG(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS avg_working_hours,
+  ROUND(AVG(CASE WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) >= 9 THEN 1 ELSE 0 END) * 100, 2) AS percentage_over_9_hours
+FROM 
+  gold_dashboard.emp_login_logout
+WHERE 
+  shift_time >= DATE_SUB(CURRENT_DATE(), 90) -- Last 90 days for weekly pattern
+  AND emp_login_time IS NOT NULL
+  AND emp_logout_time IS NOT NULL
+GROUP BY 
+  DAYNAME(shift_time)
+ORDER BY 
+  CASE DAYNAME(shift_time)
+    WHEN 'Sunday' THEN 1
+    WHEN 'Monday' THEN 2
+    WHEN 'Tuesday' THEN 3
+    WHEN 'Wednesday' THEN 4
+    WHEN 'Thursday' THEN 5
+    WHEN 'Friday' THEN 6
+    WHEN 'Saturday' THEN 7
+  END;
+```
+
+### 3. Detailed Daily Report (Yesterday)
+
+```sql
+SELECT 
+  DATE(shift_time) AS shift_date,
+  COUNT(DISTINCT emp_id) AS total_employees,
+  ROUND(AVG(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS avg_working_hours,
+  SUM(CASE WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) >= 9 THEN 1 ELSE 0 END) AS employees_over_9_hours,
+  SUM(CASE WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) < 9 THEN 1 ELSE 0 END) AS employees_under_9_hours,
+  ROUND(MIN(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS min_hours_worked,
+  ROUND(MAX(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS max_hours_worked
+FROM 
+  gold_dashboard.emp_login_logout
+WHERE 
+  DATE(shift_time) = DATE_SUB(CURRENT_DATE(), 1)
+  AND emp_login_time IS NOT NULL
+  AND emp_logout_time IS NOT NULL
+GROUP BY 
+  DATE(shift_time);
+```
+
+### 4. Employee List with Long/Short Shifts (Yesterday)
+
+```sql
+SELECT 
+  emp_id,
+  DATE(shift_time) AS shift_date,
+  TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) AS hours_worked,
+  CASE 
+    WHEN TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time) >= 9 THEN 'Over 9 hours'
+    ELSE 'Under 9 hours'
+  END AS shift_category
+FROM 
+  gold_dashboard.emp_login_logout
+WHERE 
+  DATE(shift_time) = DATE_SUB(CURRENT_DATE(), 1)
+  AND emp_login_time IS NOT NULL
+  AND emp_logout_time IS NOT NULL
+ORDER BY 
+  hours_worked DESC;
+```
+
+### 5. Trend Analysis (Last 12 Weeks by Day of Week)
+
+```sql
+SELECT 
+  DATE_TRUNC('WEEK', shift_time) AS week_starting,
+  DAYNAME(shift_time) AS day_of_week,
+  COUNT(DISTINCT emp_id) AS total_employees,
+  ROUND(AVG(TIMESTAMPDIFF(HOUR, emp_login_time, emp_logout_time)), 2) AS avg_working_hours
+FROM 
+  gold_dashboard.emp_login_logout
+WHERE 
+  shift_time >= DATE_SUB(CURRENT_DATE(), 84) -- 12 weeks
+  AND emp_login_time IS NOT NULL
+  AND emp_logout_time IS NOT NULL
+GROUP BY 
+  DATE_TRUNC('WEEK', shift_time), DAYNAME(shift_time)
+ORDER BY 
+  week_starting DESC, 
+  CASE DAYNAME(shift_time)
+    WHEN 'Sunday' THEN 1
+    WHEN 'Monday' THEN 2
+    WHEN 'Tuesday' THEN 3
+    WHEN 'Wednesday' THEN 4
+    WHEN 'Thursday' THEN 5
+    WHEN 'Friday' THEN 6
+    WHEN 'Saturday' THEN 7
+  END;
+```
+
+### Notes for Databricks Implementation:
+
+1. **Time Functions**: 
+   - `TIMESTAMPDIFF` is supported in Databricks SQL
+   - Alternative for hours calculation: `ROUND((unix_timestamp(emp_logout_time) - unix_timestamp(emp_login_time))/3600, 2)`
+
+2. **Performance**:
+   - These queries will benefit if your table is partitioned by `shift_time`
+   - Consider caching frequently accessed data
+
+3. **Visualization**:
+   - The weekly pattern query (#2) is perfect for a bar chart
+   - The trend analysis (#5) works well as a line chart by week
+
+4. **Customization**:
+   - Adjust the time windows (30 days, 90 days) as needed
+   - Change the 9-hour threshold to match your business rules
+
+All queries are optimized for Databricks SQL and will work with your login/logout timestamp data to provide comprehensive shift analysis.
+
+
+
+
+
+
+
+
+
 # Daily Report Generation Queries
 
 Based on your requirements, I'll create 15-20 queries for daily report generation that analyze the data from your AppTrace and SysTrace tables. These queries will focus on employee activity patterns, discrepancies between different tracking systems, and data completeness.
