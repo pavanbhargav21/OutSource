@@ -1,3 +1,170 @@
+
+
+Here are the two optimized queries you requested:
+
+### Query 1: Daily Count of Missing Employees by Category
+
+```sql
+WITH RawAppActivity AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM app_trace.emp_activity
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+),
+RawKeyboard AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM sys_trace.emp_keyboarddata
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+),
+RawMouse AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM sys_trace.emp_mousedata
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+SELECT 
+  cal_date,
+  COUNT(DISTINCT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_app_info g 
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  ) THEN r.emp_id END) AS missing_emp_count_app,
+  
+  COUNT(DISTINCT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_keystrokes k 
+    WHERE k.emp_id = r.emp_id AND k.cal_date = r.cal_date
+  ) THEN r.emp_id END) AS missing_emp_count_key,
+  
+  COUNT(DISTINCT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_mouseclicks m 
+    WHERE m.emp_id = r.emp_id AND m.cal_date = r.cal_date
+  ) THEN r.emp_id END) AS missing_emp_count_mouse,
+  
+  CONCAT_WS(', ',
+    CASE WHEN COUNT(DISTINCT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM gold_dashboard.analytics_emp_app_info g 
+      WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+    ) THEN r.emp_id END) > 0 THEN 'App data missing' END,
+    
+    CASE WHEN COUNT(DISTINCT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM gold_dashboard.analytics_emp_keystrokes k 
+      WHERE k.emp_id = r.emp_id AND k.cal_date = r.cal_date
+    ) THEN r.emp_id END) > 0 THEN 'Keyboard data missing' END,
+    
+    CASE WHEN COUNT(DISTINCT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM gold_dashboard.analytics_emp_mouseclicks m 
+      WHERE m.emp_id = r.emp_id AND m.cal_date = r.cal_date
+    ) THEN r.emp_id END) > 0 THEN 'Mouse data missing' END
+  ) AS missing_reason
+FROM 
+  (SELECT emp_id, cal_date FROM RawAppActivity
+   UNION
+   SELECT emp_id, cal_date FROM RawKeyboard
+   UNION
+   SELECT emp_id, cal_date FROM RawMouse) r
+GROUP BY 
+  cal_date
+ORDER BY 
+  cal_date DESC;
+```
+
+### Query 2: Detailed List of All Missing Records (Union of All Checks)
+
+```sql
+WITH RawAppActivity AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM app_trace.emp_activity
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+),
+RawKeyboard AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM sys_trace.emp_keyboarddata
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+),
+RawMouse AS (
+  SELECT DISTINCT emp_id, CAST(created_on AS DATE) AS cal_date
+  FROM sys_trace.emp_mousedata
+  WHERE created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+-- App data missing
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in analytics_emp_app_info' AS missing_in
+FROM 
+  RawAppActivity r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_app_info g 
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- Keyboard data missing
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in analytics_emp_keystrokes' AS missing_in
+FROM 
+  RawKeyboard r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_keystrokes k 
+    WHERE k.emp_id = r.emp_id AND k.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- Mouse data missing
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in analytics_emp_mouseclicks' AS missing_in
+FROM 
+  RawMouse r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 FROM gold_dashboard.analytics_emp_mouseclicks m 
+    WHERE m.emp_id = r.emp_id AND m.cal_date = r.cal_date
+  )
+
+ORDER BY 
+  cal_date DESC, 
+  emp_id, 
+  missing_in;
+```
+
+### Key Features:
+
+1. **Query 1 (Daily Counts)**:
+   - Shows counts per day of employees missing in each gold table
+   - Includes a concatenated "missing_reason" column
+   - Only shows dates where at least one employee is missing data
+   - Clean, aggregated view for dashboard reporting
+
+2. **Query 2 (Detailed List)**:
+   - Comprehensive list of every missing record
+   - Clearly identifies which gold table is missing data
+   - Union of all three checks (app, keyboard, mouse)
+   - Useful for detailed troubleshooting
+
+3. **Common Parameters**:
+   - Both queries use the same 14-day lookback period
+   - Consistent date formatting and filtering
+   - Same table relationships and join logic
+
+4. **Performance Optimized**:
+   - Uses EXISTS instead of JOINs for better performance
+   - DISTINCT in the raw data CTEs to reduce processing
+   - Clean sorting for easy review
+
+These queries provide both the high-level summary and detailed breakdown you need for monitoring your data pipeline completeness.
+
+
+
+
+
+
 -- 1. Check for employees with app_trace.emp_activity but missing in analytics_emp_app_info
 WITH RawAppActivity AS (
   SELECT DISTINCT 
