@@ -1,4 +1,304 @@
 
+
+
+
+# SQL Queries for AppTrace Version Analysis (Simplified)
+
+I'll provide simplified versions of the queries without the candidate_id concept, focusing purely on version distribution and changes.
+
+## Query 1: Employee Count by Version (Simplified)
+
+```sql
+%sql
+SELECT 
+  pulse_version,
+  COUNT(DISTINCT emp_id) AS employee_count,
+  cal_date,
+  DAYNAME(cal_date) AS day_name
+FROM app_trace.emp_wfo_wfh_status
+WHERE cal_date >= date_sub(current_date(), 14)
+GROUP BY pulse_version, cal_date, DAYNAME(cal_date)
+ORDER BY pulse_version, cal_date DESC
+```
+
+## Query 2: Version Change Analysis (New/Old/Same Version)
+
+```sql
+%sql
+WITH version_changes AS (
+  SELECT 
+    curr.emp_id,
+    curr.cal_date,
+    curr.pulse_version AS current_version,
+    prev.pulse_version AS previous_version,
+    CASE 
+      WHEN prev.pulse_version IS NULL THEN 'new_employee'
+      WHEN curr.pulse_version = prev.pulse_version THEN 'same_version'
+      WHEN 
+        split(curr.pulse_version, '\\.')[0] > split(prev.pulse_version, '\\.')[0] OR
+        (split(curr.pulse_version, '\\.')[0] = split(prev.pulse_version, '\\.')[0] AND 
+         split(curr.pulse_version, '\\.')[1] > split(prev.pulse_version, '\\.')[1]) OR
+        (split(curr.pulse_version, '\\.')[0] = split(prev.pulse_version, '\\.')[0] AND 
+         split(curr.pulse_version, '\\.')[1] = split(prev.pulse_version, '\\.')[1] AND
+         split(curr.pulse_version, '\\.')[2] > split(prev.pulse_version, '\\.')[2]) OR
+        (split(curr.pulse_version, '\\.')[0] = split(prev.pulse_version, '\\.')[0] AND 
+         split(curr.pulse_version, '\\.')[1] = split(prev.pulse_version, '\\.')[1] AND
+         split(curr.pulse_version, '\\.')[2] = split(prev.pulse_version, '\\.')[2] AND
+         split(curr.pulse_version, '\\.')[3] > split(prev.pulse_version, '\\.')[3])
+      THEN 'newer_version'
+      ELSE 'older_version'
+    END AS version_change
+  FROM 
+    (SELECT emp_id, cal_date, pulse_version 
+     FROM app_trace.emp_wfo_wfh_status
+     WHERE cal_date >= date_sub(current_date(), 14)) curr
+  LEFT JOIN 
+    (SELECT emp_id, date_add(cal_date, 1) AS next_date, pulse_version 
+     FROM app_trace.emp_wfo_wfh_status
+     WHERE cal_date >= date_sub(current_date(), 15)) prev
+    ON curr.emp_id = prev.emp_id AND curr.cal_date = prev.next_date
+),
+
+daily_counts AS (
+  SELECT
+    cal_date,
+    COUNT(DISTINCT emp_id) AS total_employees,
+    COUNT(DISTINCT CASE WHEN version_change = 'newer_version' THEN emp_id END) AS moved_to_new_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'older_version' THEN emp_id END) AS moved_to_old_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'same_version' THEN emp_id END) AS same_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'new_employee' THEN emp_id END) AS new_employees
+  FROM version_changes
+  GROUP BY cal_date
+)
+
+SELECT
+  d.cal_date,
+  DAYNAME(d.cal_date) AS day_name,
+  d.total_employees,
+  a.emp_activity_count,
+  w.wfh_status_count,
+  d.moved_to_new_version,
+  d.moved_to_old_version,
+  d.same_version,
+  d.new_employees,
+  ROUND((d.moved_to_new_version * 100.0 / NULLIF(d.total_employees - d.new_employees, 0)), 2) AS pct_upgraded,
+  ROUND((d.moved_to_old_version * 100.0 / NULLIF(d.total_employees - d.new_employees, 0)), 2) AS pct_downgraded
+FROM daily_counts d
+LEFT JOIN (
+  SELECT cal_date, COUNT(DISTINCT emp_id) AS emp_activity_count
+  FROM app_trace.emp_activity
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+) a ON d.cal_date = a.cal_date
+LEFT JOIN (
+  SELECT cal_date, COUNT(DISTINCT emp_id) AS wfh_status_count
+  FROM app_trace.emp_wfo_wfh_status
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+) w ON d.cal_date = w.cal_date
+ORDER BY d.cal_date DESC
+```
+
+## Key Features of These Simplified Queries:
+
+1. **Version Distribution Report**:
+   - Shows how many employees are running each version of AppTrace
+   - Includes date and day of week for analysis
+   - Simple count of employees by version
+
+2. **Version Change Analysis**:
+   - Tracks employees moving to newer/older versions day-over-day
+   - Compares version numbers using semantic versioning logic
+   - Includes metrics for:
+     - Total employees
+     - Employees running AppTrace (emp_activity)
+     - Employees with WFH status data
+     - Employees moved to newer version
+     - Employees moved to older version
+     - Employees with same version
+     - New employees (no previous day data)
+   - Calculates upgrade/downgrade percentages
+
+3. **Simplified Data**:
+   - Removed all candidate_id references
+   - Focuses purely on version tracking across all employees
+   - Maintains all the key metrics you requested
+
+Both queries analyze the last 14 days of data, and you can adjust this time frame by changing the `date_sub(current_date(), 14)` values.
+
+
+
+
+# SQL Queries for Employee Activity Analysis
+
+I'll provide the three requested SQL queries for your Databricks notebook. These queries will analyze the employee activity data over the last 14 days with comparisons to the previous week's same day.
+
+## Query 1: Employee Counts by Trace Type with Weekly Comparison
+
+```sql
+%sql
+WITH current_week_data AS (
+  SELECT 
+    cal_date,
+    DAYNAME(cal_date) AS day_name,
+    COUNT(DISTINCT a.emp_id) AS app_trace_count,
+    COUNT(DISTINCT k.emp_id) AS keyboard_count,
+    COUNT(DISTINCT m.emp_id) AS mouse_count,
+    COUNT(DISTINCT c.emp_id) AS cpu_count
+  FROM 
+    (SELECT DISTINCT emp_id, cal_date FROM app_trace.emp_activity 
+     WHERE cal_date >= date_sub(current_date(), 14)) a
+  LEFT JOIN 
+    (SELECT DISTINCT emp_id, cal_date FROM sys_trace.emp_keyboarddata) k 
+    ON a.emp_id = k.emp_id AND a.cal_date = k.cal_date
+  LEFT JOIN 
+    (SELECT DISTINCT emp_id, cal_date FROM sys_trace.emp_mousedata) m 
+    ON a.emp_id = m.emp_id AND a.cal_date = m.cal_date
+  LEFT JOIN 
+    (SELECT DISTINCT emp_id, cal_date FROM sys_trace.emp_cpudata) c 
+    ON a.emp_id = c.emp_id AND a.cal_date = c.cal_date
+  GROUP BY cal_date, DAYNAME(cal_date)
+),
+
+previous_week_data AS (
+  SELECT 
+    date_add(cal_date, 7) AS cal_date,
+    app_trace_count AS prev_app_trace_count,
+    keyboard_count AS prev_keyboard_count,
+    mouse_count AS prev_mouse_count,
+    cpu_count AS prev_cpu_count
+  FROM current_week_data
+  WHERE cal_date < date_sub(current_date(), 7)
+)
+
+SELECT 
+  c.cal_date,
+  c.day_name,
+  c.app_trace_count,
+  p.prev_app_trace_count,
+  c.keyboard_count,
+  p.prev_keyboard_count,
+  c.mouse_count,
+  p.prev_mouse_count,
+  c.cpu_count,
+  p.prev_cpu_count
+FROM current_week_data c
+LEFT JOIN previous_week_data p ON c.cal_date = p.cal_date
+WHERE c.cal_date >= date_sub(current_date(), 14)
+ORDER BY c.cal_date DESC
+```
+
+## Query 2: Employees Running App Trace but Not Mouse/Keyboard Data
+
+```sql
+%sql
+WITH app_trace_employees AS (
+  SELECT DISTINCT emp_id, cal_date 
+  FROM app_trace.emp_activity 
+  WHERE cal_date >= date_sub(current_date(), 14)
+),
+
+keyboard_mouse_employees AS (
+  SELECT DISTINCT emp_id, cal_date 
+  FROM sys_trace.emp_keyboarddata 
+  WHERE cal_date >= date_sub(current_date(), 14)
+  UNION
+  SELECT DISTINCT emp_id, cal_date 
+  FROM sys_trace.emp_mousedata 
+  WHERE cal_date >= date_sub(current_date(), 14)
+),
+
+current_week_counts AS (
+  SELECT 
+    a.cal_date,
+    DAYNAME(a.cal_date) AS day_name,
+    COUNT(DISTINCT a.emp_id) AS app_only_count
+  FROM app_trace_employees a
+  LEFT JOIN keyboard_mouse_employees k ON a.emp_id = k.emp_id AND a.cal_date = k.cal_date
+  WHERE k.emp_id IS NULL
+  GROUP BY a.cal_date, DAYNAME(a.cal_date)
+),
+
+previous_week_counts AS (
+  SELECT 
+    date_add(cal_date, 7) AS cal_date,
+    app_only_count AS prev_app_only_count
+  FROM current_week_counts
+  WHERE cal_date < date_sub(current_date(), 7)
+)
+
+SELECT 
+  c.cal_date,
+  c.day_name,
+  c.app_only_count,
+  p.prev_app_only_count
+FROM current_week_counts c
+LEFT JOIN previous_week_counts p ON c.cal_date = p.cal_date
+WHERE c.cal_date >= date_sub(current_date(), 14)
+ORDER BY c.cal_date DESC
+```
+
+## Query 3: Employees Running Keyboard/Mouse Data but Not App Trace
+
+```sql
+%sql
+WITH app_trace_employees AS (
+  SELECT DISTINCT emp_id, cal_date 
+  FROM app_trace.emp_activity 
+  WHERE cal_date >= date_sub(current_date(), 14)
+),
+
+keyboard_mouse_employees AS (
+  SELECT DISTINCT emp_id, cal_date 
+  FROM sys_trace.emp_keyboarddata 
+  WHERE cal_date >= date_sub(current_date(), 14)
+  UNION
+  SELECT DISTINCT emp_id, cal_date 
+  FROM sys_trace.emp_mousedata 
+  WHERE cal_date >= date_sub(current_date(), 14)
+),
+
+current_week_counts AS (
+  SELECT 
+    k.cal_date,
+    DAYNAME(k.cal_date) AS day_name,
+    COUNT(DISTINCT k.emp_id) AS keyboard_mouse_only_count
+  FROM keyboard_mouse_employees k
+  LEFT JOIN app_trace_employees a ON k.emp_id = a.emp_id AND k.cal_date = a.cal_date
+  WHERE a.emp_id IS NULL
+  GROUP BY k.cal_date, DAYNAME(k.cal_date)
+),
+
+previous_week_counts AS (
+  SELECT 
+    date_add(cal_date, 7) AS cal_date,
+    keyboard_mouse_only_count AS prev_keyboard_mouse_only_count
+  FROM current_week_counts
+  WHERE cal_date < date_sub(current_date(), 7)
+)
+
+SELECT 
+  c.cal_date,
+  c.day_name,
+  c.keyboard_mouse_only_count,
+  p.prev_keyboard_mouse_only_count
+FROM current_week_counts c
+LEFT JOIN previous_week_counts p ON c.cal_date = p.cal_date
+WHERE c.cal_date >= date_sub(current_date(), 14)
+ORDER BY c.cal_date DESC
+```
+
+These queries will:
+1. Show daily counts of employees using each trace type with previous week comparisons
+2. Identify employees using App Trace but not Mouse/Keyboard data
+3. Identify employees using Mouse/Keyboard data but not App Trace
+
+All queries cover the last 14 days and include day-of-week comparisons to the previous week's same day.
+
+
+
+
+
 WITH FilteredEmployees AS (
     SELECT emplid
     FROM inbound.hr_employee_central
