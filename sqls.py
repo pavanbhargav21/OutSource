@@ -1,4 +1,175 @@
 
+WITH FilteredEmployees AS (
+    SELECT emplid
+    FROM inbound.hr_employee_central
+    WHERE func_mgr_id = manager_id
+      AND (termination_dt > CURRENT_TIMESTAMP OR termination_dt IS NULL)
+),
+
+FilteredAppInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_time_spent_active,
+        total_time_spent_idle,
+        window_lock_time,
+        interval
+    FROM gold_dashboard.analytics_emp_app_info
+    WHERE cal_date BETWEEN prev_start_date AND ext_end_date
+      AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+FilteredMouseInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_mouse_count,
+        interval
+    FROM gold_dashboard.analytics_emp_mouseclicks
+    WHERE cal_date BETWEEN prev_start_date AND ext_end_date
+      AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+FilteredKeyInfo AS (
+    SELECT 
+        emp_id,
+        cal_date,
+        app_name,
+        total_keyboard_events,
+        interval
+    FROM gold_dashboard.analytics_emp_keystrokes
+    WHERE cal_date BETWEEN prev_start_date AND ext_end_date
+      AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+FilteredLoginLogout AS (
+    SELECT 
+        emp_id,
+        shift_date,
+        emp_late,
+        emp_login_time,
+        emp_logout_time,
+        -- Calculate shift duration in seconds
+        CASE 
+            WHEN emp_login_time IS NOT NULL AND emp_logout_time IS NOT NULL
+            THEN TIMESTAMPDIFF(SECOND, 
+                 TO_TIMESTAMP(emp_login_time, 'yyyy-MM-dd HH:mm:ss'),
+                 TO_TIMESTAMP(emp_logout_time, 'yyyy-MM-dd HH:mm:ss'))
+            ELSE NULL
+        END AS shift_duration_seconds
+    FROM gold_dashboard.analytics_emp_login_logout
+    WHERE shift_date BETWEEN prev_start_date AND end_date
+      AND emp_id IN (SELECT emplid FROM FilteredEmployees)
+),
+
+EmployeeActivity AS (
+    SELECT
+        i.emp_id,
+        l.shift_date AS cal_date,
+        MAX(l.emp_login_time) AS emp_login_time,
+        MAX(l.emp_logout_time) AS emp_logout_time,
+        MAX(l.shift_duration_seconds) AS shift_duration_seconds,
+        COALESCE(SUM(i.total_time_spent_active), 0) AS total_active_time,
+        COALESCE(SUM(i.total_time_spent_idle), 0) AS total_idle_time,
+        COALESCE(SUM(i.window_lock_time), 0) AS total_window_lock_time,
+        COALESCE(SUM(m.total_mouse_count), 0) AS total_mouse_clicks,
+        COALESCE(SUM(k.total_keyboard_events), 0) AS total_key_strokes
+    FROM FilteredAppInfo i
+    LEFT JOIN FilteredLoginLogout l
+        ON i.emp_id = l.emp_id
+       AND (
+            -- If login and logout times are both present
+            (
+                l.emp_login_time IS NOT NULL
+                AND l.emp_logout_time IS NOT NULL
+                AND DATEADD(hour, -1, TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss'))
+                    < TO_TIMESTAMP(CONCAT(i.cal_date, SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+                AND TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss')
+                    > TO_TIMESTAMP(CONCAT(i.cal_date, SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+            )
+            -- If logout time is NULL, consider all intervals after login
+            OR (
+                l.emp_logout_time IS NULL
+                AND DATEADD(hour, -1, TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss'))
+                    < TO_TIMESTAMP(CONCAT(i.cal_date, SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss')
+            )
+       )
+    LEFT JOIN FilteredMouseInfo m
+        ON i.emp_id = m.emp_id
+       AND i.cal_date = m.cal_date
+       AND i.interval = m.interval
+    LEFT JOIN FilteredKeyInfo k
+        ON i.emp_id = k.emp_id
+       AND i.cal_date = k.cal_date
+       AND i.interval = k.interval
+    WHERE i.emp_id IN (SELECT emplid FROM FilteredEmployees)
+      AND l.shift_date BETWEEN prev_start_date AND end_date
+    GROUP BY i.emp_id, l.shift_date
+),
+
+PerDayEmployeeSummary AS (
+    SELECT
+        emp_id,
+        cal_date,
+        emp_login_time,
+        emp_logout_time,
+        shift_duration_seconds,
+        -- Convert seconds to HH:MM:SS format
+        CASE 
+            WHEN shift_duration_seconds IS NOT NULL 
+            THEN CONCAT(
+                LPAD(FLOOR(shift_duration_seconds/3600), 2, '0'), ':',
+                LPAD(FLOOR(MOD(shift_duration_seconds,3600)/60), 2, '0'), ':',
+                LPAD(MOD(shift_duration_seconds,60), 2, '0'))
+            ELSE NULL
+        END AS shift_duration_formatted,
+        SUM(total_active_time) AS daily_active_time,
+        SUM(total_active_time + total_idle_time + total_window_lock_time) AS daily_total_time,
+        -- Calculate productivity ratio (active time vs shift duration)
+        CASE
+            WHEN shift_duration_seconds > 0
+            THEN ROUND(SUM(total_active_time)/NULLIF(shift_duration_seconds,0)*100, 2)
+            ELSE NULL
+        END AS productivity_percentage,
+        SUM(total_mouse_clicks) AS total_mouse_clicks,
+        SUM(total_key_strokes) AS total_key_strokes
+    FROM EmployeeActivity
+    GROUP BY emp_id, cal_date, emp_login_time, emp_logout_time, shift_duration_seconds
+)
+
+SELECT 
+    emp_id,
+    cal_date,
+    emp_login_time,
+    emp_logout_time,
+    shift_duration_formatted,
+    daily_active_time,
+    -- Convert seconds to hours for readability
+    ROUND(daily_active_time/3600, 2) AS daily_active_hours,
+    daily_total_time,
+    ROUND(daily_total_time/3600, 2) AS daily_total_hours,
+    productivity_percentage,
+    total_mouse_clicks,
+    total_key_strokes,
+    -- Calculate input rates
+    CASE 
+        WHEN daily_active_time > 0 
+        THEN ROUND(total_mouse_clicks/NULLIF(daily_active_time/3600,0), 2)
+        ELSE 0
+    END AS mouse_clicks_per_hour,
+    CASE 
+        WHEN daily_active_time > 0 
+        THEN ROUND(total_key_strokes/NULLIF(daily_active_time/3600,0), 2)
+        ELSE 0
+    END AS keystrokes_per_hour
+FROM PerDayEmployeeSummary
+ORDER BY cal_date, emp_id;
+
+
+
+
 WITH 
 -- 1. Active employees
 FilteredEmployees AS (
