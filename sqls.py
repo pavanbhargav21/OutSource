@@ -1,4 +1,277 @@
 
+# Enhanced Employee Activity Analysis with Interval Alignment
+
+I'll revise the queries to properly align the login/logout times with hourly intervals from your gold tables, similar to your sample but expanded for all employees over the past 2 weeks.
+
+## 1. Core Activity Analysis with Interval Matching (Past 14 Days)
+
+```sql
+WITH EmployeeIntervals AS (
+  SELECT
+    a.emp_id,
+    a.cal_date,
+    a.interval,
+    a.app_name,
+    a.total_time_spent_active,
+    a.total_time_spent_idle,
+    a.window_lock_time,
+    COALESCE(m.total_mouse_count, 0) AS mouse_clicks,
+    COALESCE(k.total_keyboard_events, 0) AS key_strokes,
+    l.emp_login_time,
+    l.emp_logout_time,
+    -- Extract hour from interval (e.g., "01:00-02:00" -> 1)
+    CAST(SUBSTRING(a.interval, 1, 2) AS INT AS interval_hour,
+    -- Create timestamp for interval start (e.g., "2025-08-10 01:00:00")
+    TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5), 'yyyy-MM-dd HH:mm') AS interval_start,
+    -- Create timestamp for interval end (e.g., "2025-08-10 02:00:00")
+    TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 7, 5), 'yyyy-MM-dd HH:mm') AS interval_end
+  FROM 
+    gold_dashboard.analytics_emp_app_info a
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_mouseclicks m
+    ON a.emp_id = m.emp_id 
+    AND a.cal_date = m.cal_date 
+    AND a.app_name = m.app_name 
+    AND a.interval = m.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_keystrokes k
+    ON a.emp_id = k.emp_id 
+    AND a.cal_date = k.cal_date 
+    AND a.app_name = k.app_name 
+    AND a.interval = k.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_login_logout l
+    ON a.emp_id = l.emp_id 
+    AND a.cal_date = l.shift_date
+  WHERE 
+    a.cal_date >= DATE_SUB(CURRENT_DATE(), 14)
+),
+
+FilteredIntervals AS (
+  SELECT * FROM EmployeeIntervals
+  WHERE 
+    -- Include interval if it's within login/logout window
+    (
+      emp_login_time IS NOT NULL 
+      AND emp_logout_time IS NOT NULL
+      AND interval_start >= emp_login_time 
+      AND interval_end <= emp_logout_time
+    )
+    OR
+    (
+      emp_login_time IS NOT NULL 
+      AND emp_logout_time IS NULL 
+      AND interval_start >= emp_login_time
+    )
+)
+
+SELECT
+  cal_date,
+  DAYNAME(cal_date) AS day_of_week,
+  interval,
+  COUNT(DISTINCT emp_id) AS active_employees,
+  ROUND(SUM(total_time_spent_active)/3600, 2) AS total_active_hours,
+  ROUND(AVG(total_time_spent_active)/60, 2) AS avg_active_minutes_per_emp,
+  SUM(mouse_clicks) AS total_mouse_clicks,
+  SUM(key_strokes) AS total_key_strokes,
+  ROUND(SUM(window_lock_time)/3600, 2) AS total_lock_hours
+FROM 
+  FilteredIntervals
+GROUP BY 
+  cal_date, day_of_week, interval
+ORDER BY 
+  cal_date DESC, 
+  interval;
+```
+
+## 2. Employee Daily Summary with Working Hours Validation
+
+```sql
+WITH IntervalData AS (
+  SELECT
+    a.emp_id,
+    a.cal_date,
+    l.emp_login_time,
+    l.emp_logout_time,
+    SUM(a.total_time_spent_active) AS total_active_time,
+    SUM(a.total_time_spent_idle) AS total_idle_time,
+    SUM(a.window_lock_time) AS total_lock_time,
+    SUM(COALESCE(m.total_mouse_count, 0)) AS total_mouse_clicks,
+    SUM(COALESCE(k.total_keyboard_events, 0))) AS total_key_strokes,
+    -- Count of active intervals (hours with activity)
+    COUNT(DISTINCT a.interval) AS active_intervals
+  FROM 
+    gold_dashboard.analytics_emp_app_info a
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_mouseclicks m
+    ON a.emp_id = m.emp_id 
+    AND a.cal_date = m.cal_date 
+    AND a.interval = m.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_keystrokes k
+    ON a.emp_id = k.emp_id 
+    AND a.cal_date = k.cal_date 
+    AND a.interval = k.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_login_logout l
+    ON a.emp_id = l.emp_id 
+    AND a.cal_date = l.shift_date
+  WHERE 
+    a.cal_date >= DATE_SUB(CURRENT_DATE(), 14)
+    AND (
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NOT NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5), 'yyyy-MM-dd HH:mm') >= l.emp_login_time AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 7, 5), 'yyyy-MM-dd HH:mm') <= l.emp_logout_time)
+      OR
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5), 'yyyy-MM-dd HH:mm') >= l.emp_login_time)
+    )
+  GROUP BY 
+    a.emp_id, a.cal_date, l.emp_login_time, l.emp_logout_time
+)
+
+SELECT
+  cal_date,
+  DAYNAME(cal_date) AS day_of_week,
+  COUNT(DISTINCT emp_id) AS total_employees,
+  ROUND(AVG(total_active_time)/3600, 2) AS avg_active_hours,
+  ROUND(AVG(total_mouse_clicks), 2) AS avg_mouse_clicks,
+  ROUND(AVG(total_key_strokes), 2) AS avg_key_strokes,
+  -- Percentage of employees with low activity (<2 active hours)
+  ROUND(100.0 * SUM(CASE WHEN total_active_time < 7200 THEN 1 ELSE 0 END) / COUNT(DISTINCT emp_id), 2) AS pct_low_activity,
+  -- Percentage of employees with minimal interaction (<100 combined events)
+  ROUND(100.0 * SUM(CASE WHEN total_mouse_clicks + total_key_strokes < 100 THEN 1 ELSE 0 END) / COUNT(DISTINCT emp_id), 2) AS pct_minimal_interaction,
+  -- Average active intervals (hours) per employee
+  ROUND(AVG(active_intervals), 2) AS avg_active_hours_count
+FROM 
+  IntervalData
+GROUP BY 
+  cal_date, day_of_week
+ORDER BY 
+  cal_date DESC;
+```
+
+## 3. Application Usage by Time Interval (Heatmap Data)
+
+```sql
+WITH AppIntervalUsage AS (
+  SELECT
+    a.app_name,
+    a.interval,
+    TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5)), 'yyyy-MM-dd HH:mm') AS interval_start,
+    COUNT(DISTINCT a.emp_id) AS active_users,
+    SUM(a.total_time_spent_active) AS total_active_time,
+    SUM(COALESCE(m.total_mouse_count, 0))) AS total_mouse_clicks,
+    SUM(COALESCE(k.total_keyboard_events, 0))) AS total_key_strokes
+  FROM 
+    gold_dashboard.analytics_emp_app_info a
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_mouseclicks m
+    ON a.emp_id = m.emp_id AND a.cal_date = m.cal_date AND a.interval = m.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_keystrokes k
+    ON a.emp_id = k.emp_id AND a.cal_date = k.cal_date AND a.interval = k.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_login_logout l
+    ON a.emp_id = l.emp_id AND a.cal_date = l.shift_date
+  WHERE 
+    a.cal_date >= DATE_SUB(CURRENT_DATE(), 14)
+    AND (
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NOT NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5)), 'yyyy-MM-dd HH:mm') >= l.emp_login_time AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 7, 5)), 'yyyy-MM-dd HH:mm') <= l.emp_logout_time)
+      OR
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5)), 'yyyy-MM-dd HH:mm') >= l.emp_login_time)
+    )
+  GROUP BY 
+    a.app_name, a.interval, a.cal_date
+)
+
+SELECT
+  app_name,
+  SUBSTRING(interval, 1, 5) AS hour_slot,
+  ROUND(AVG(active_users), 2) AS avg_daily_users,
+  ROUND(AVG(total_active_time)/60, 2) AS avg_active_minutes,
+  ROUND(AVG(total_mouse_clicks), 2) AS avg_mouse_clicks,
+  ROUND(AVG(total_key_strokes), 2) AS avg_key_strokes
+FROM 
+  AppIntervalUsage
+GROUP BY 
+  app_name, hour_slot
+ORDER BY 
+  app_name, 
+  hour_slot;
+```
+
+## 4. Employee Productivity Scorecard (Individual Level)
+
+```sql
+WITH EmployeeDaily AS (
+  SELECT
+    a.emp_id,
+    a.cal_date,
+    l.emp_login_time,
+    l.emp_logout_time,
+    SUM(a.total_time_spent_active) AS total_active_time,
+    SUM(a.total_time_spent_idle) AS total_idle_time,
+    SUM(a.window_lock_time) AS total_lock_time,
+    SUM(COALESCE(m.total_mouse_count, 0))) AS total_mouse_clicks,
+    SUM(COALESCE(k.total_keyboard_events, 0))) AS total_key_strokes,
+    COUNT(DISTINCT a.interval) AS active_intervals
+  FROM 
+    gold_dashboard.analytics_emp_app_info a
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_mouseclicks m
+    ON a.emp_id = m.emp_id AND a.cal_date = m.cal_date AND a.interval = m.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_keystrokes k
+    ON a.emp_id = k.emp_id AND a.cal_date = k.cal_date AND a.interval = k.interval
+  LEFT JOIN 
+    gold_dashboard.analytics_emp_login_logout l
+    ON a.emp_id = l.emp_id AND a.cal_date = l.shift_date
+  WHERE 
+    a.cal_date >= DATE_SUB(CURRENT_DATE(), 14)
+    AND (
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NOT NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5)), 'yyyy-MM-dd HH:mm') >= l.emp_login_time AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 7, 5)), 'yyyy-MM-dd HH:mm') <= l.emp_logout_time)
+      OR
+      (l.emp_login_time IS NOT NULL AND l.emp_logout_time IS NULL AND
+       TO_TIMESTAMP(CONCAT(a.cal_date, ' ', SUBSTRING(a.interval, 1, 5)), 'yyyy-MM-dd HH:mm') >= l.emp_login_time)
+    )
+  GROUP BY 
+    a.emp_id, a.cal_date, l.emp_login_time, l.emp_logout_time
+)
+
+SELECT
+  emp_id,
+  COUNT(DISTINCT cal_date) AS days_active,
+  ROUND(AVG(total_active_time)/3600, 2) AS avg_active_hours_per_day,
+  ROUND(AVG(total_mouse_clicks + total_key_strokes)), 2) AS avg_interactions_per_day,
+  ROUND(AVG(total_active_time)/NULLIF(AVG(total_mouse_clicks + total_key_strokes), 0)*60, 2) AS seconds_per_interaction,
+  ROUND(100.0 * SUM(CASE WHEN total_active_time >= 18000 THEN 1 ELSE 0 END) / COUNT(DISTINCT cal_date), 2) AS pct_days_high_activity,
+  ROUND(100.0 * SUM(CASE WHEN total_mouse_clicks + total_key_strokes >= 1000 THEN 1 ELSE 0 END) / COUNT(DISTINCT cal_date), 2) AS pct_days_high_interaction
+FROM 
+  EmployeeDaily
+GROUP BY 
+  emp_id
+ORDER BY 
+  avg_active_hours_per_day DESC;
+```
+
+## Key Improvements:
+
+1. **Precise Interval Alignment**: Properly matches login/logout times with hourly intervals using timestamp conversion
+2. **Comprehensive Filtering**: Only includes intervals that fall within an employee's logged-in period
+3. **All Employees**: Analyzes all employees, not just filtered ones
+4. **Time Conversion**: Converts seconds to hours/minutes for better readability
+5. **Multiple Metrics**: Tracks active time, idle time, lock time, mouse clicks, and keystrokes
+6. **Flexible Date Range**: Uses past 14 days but can be easily adjusted
+
+These queries maintain the exact interval matching logic from your sample while expanding the analysis to all employees and providing more comprehensive reporting.
+
+
 
 Here are the SQL queries you can run in Databricks SQL to generate daily shift reports from your `gold_dashboard.emp_login_logout` table:
 
