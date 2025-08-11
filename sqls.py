@@ -1,4 +1,139 @@
+-- 1. Check for employees with app_trace.emp_activity but missing in analytics_emp_app_info
+WITH RawAppActivity AS (
+  SELECT DISTINCT 
+    emp_id, 
+    CAST(created_on AS DATE) AS cal_date,
+    'app_trace.emp_activity' AS raw_table
+  FROM 
+    app_trace.emp_activity
+  WHERE 
+    created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
 
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in gold_dashboard.analytics_emp_app_info' AS missing_in
+FROM 
+  RawAppActivity r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 
+    FROM gold_dashboard.analytics_emp_app_info g 
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- 2. Check for employees with app_trace.emp_idletime but missing in corresponding gold table
+WITH RawIdleTime AS (
+  SELECT DISTINCT 
+    emp_id, 
+    CAST(created_on AS DATE) AS cal_date,
+    'app_trace.emp_idletime' AS raw_table
+  FROM 
+    app_trace.emp_idletime
+  WHERE 
+    created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in corresponding gold idle time table' AS missing_in
+FROM 
+  RawIdleTime r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 
+    FROM gold_dashboard.analytics_emp_app_info g  -- Adjust to correct gold table if different
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- 3. Check for employees with sys_trace.emp_keyboarddata but missing in analytics_emp_keystrokes
+WITH RawKeyboard AS (
+  SELECT DISTINCT 
+    emp_id, 
+    CAST(created_on AS DATE) AS cal_date,
+    'sys_trace.emp_keyboarddata' AS raw_table
+  FROM 
+    sys_trace.emp_keyboarddata
+  WHERE 
+    created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in gold_dashboard.analytics_emp_keystrokes' AS missing_in
+FROM 
+  RawKeyboard r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 
+    FROM gold_dashboard.analytics_emp_keystrokes g 
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- 4. Check for employees with sys_trace.emp_mousedata but missing in analytics_emp_mouseclicks
+WITH RawMouse AS (
+  SELECT DISTINCT 
+    emp_id, 
+    CAST(created_on AS DATE) AS cal_date,
+    'sys_trace.emp_mousedata' AS raw_table
+  FROM 
+    sys_trace.emp_mousedata
+  WHERE 
+    created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in gold_dashboard.analytics_emp_mouseclicks' AS missing_in
+FROM 
+  RawMouse r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 
+    FROM gold_dashboard.analytics_emp_mouseclicks g 
+    WHERE g.emp_id = r.emp_id AND g.cal_date = r.cal_date
+  )
+
+UNION ALL
+
+-- 5. Check for employees with sys_trace.emp_logindata but missing in analytics_emp_login_logout
+WITH RawLogin AS (
+  SELECT DISTINCT 
+    emp_id, 
+    CAST(created_on AS DATE) AS cal_date,
+    'sys_trace.emp_logindata' AS raw_table
+  FROM 
+    sys_trace.emp_logindata
+  WHERE 
+    created_on >= DATE_SUB(CURRENT_DATE(), 14)
+)
+
+SELECT 
+  r.emp_id,
+  r.cal_date,
+  'Missing in gold_dashboard.analytics_emp_login_logout' AS missing_in
+FROM 
+  RawLogin r
+WHERE 
+  NOT EXISTS (
+    SELECT 1 
+    FROM gold_dashboard.analytics_emp_login_logout g 
+    WHERE g.emp_id = r.emp_id AND g.shift_date = r.cal_date
+  )
+
+ORDER BY 
+  cal_date DESC, 
+  emp_id;
 
 
 
