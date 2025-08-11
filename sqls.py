@@ -1,5 +1,170 @@
 
 WITH 
+-- 1. Active employees
+FilteredEmployees AS (
+    SELECT emplid
+    FROM inbound.hr_employee_central
+    WHERE func_agr_id(manager_id) 
+    AND (TERMINATION_DT > CURRENT_TIMESTAMP() OR TERMINATION_DT IS NULL)
+),
+
+-- 2. Date range (last 14 days)
+date_range AS (
+    SELECT 
+        DATEADD(day, -14, CURRENT_DATE()) AS start_date,
+        CURRENT_DATE() AS end_date
+),
+
+-- 3. Base activity data (no app-level detail)
+DailyActivity AS (
+    SELECT
+        e.emp_id,
+        l.shift_date AS cal_date,
+        SUM(COALESCE(a.total_time_spent_active, 0)) AS total_active_time,
+        SUM(COALESCE(a.total_time_spent_idle, 0)) AS total_idle_time,
+        SUM(COALESCE(a.window_lock_time, 0)) AS total_lock_time,
+        SUM(COALESCE(m.total_mouse_count, 0)) AS total_mouse_clicks,
+        SUM(COALESCE(k.total_keyboard_events, 0)) AS total_key_strokes,
+        MAX(l.emp_login_time) AS login_time,
+        MAX(l.emp_logout_time) AS logout_time,
+        BOOL_OR(l.emp_late) AS was_late
+    FROM FilteredEmployees e
+    LEFT JOIN gold_dashboard.analytics_emp_login_logout l
+        ON e.emplid = l.emp_id
+        AND l.shift_date BETWEEN (SELECT start_date FROM date_range) 
+                            AND (SELECT end_date FROM date_range)
+    LEFT JOIN gold_dashboard.analytics_emp_app_info a
+        ON e.emplid = a.emp_id
+        AND l.shift_date = a.cal_date
+        AND a.cal_date BETWEEN (SELECT start_date FROM date_range) 
+                          AND (SELECT end_date FROM date_range)
+    LEFT JOIN gold_dashboard.analytics_emp_mouseclicks m
+        ON e.emplid = m.emp_id
+        AND l.shift_date = m.cal_date
+        AND m.cal_date BETWEEN (SELECT start_date FROM date_range) 
+                           AND (SELECT end_date FROM date_range)
+    LEFT JOIN gold_dashboard.analytics_emp_keystrokes k
+        ON e.emplid = k.emp_id
+        AND l.shift_date = k.cal_date
+        AND k.cal_date BETWEEN (SELECT start_date FROM date_range) 
+                           AND (SELECT end_date FROM date_range)
+    GROUP BY e.emp_id, l.shift_date
+    HAVING SUM(COALESCE(a.total_time_spent_active, 0)) > 0 -- Only days with activity
+),
+
+-- 4. Daily aggregates (for benchmarks)
+DailyBenchmarks AS (
+    SELECT
+        cal_date,
+        COUNT(DISTINCT emp_id) AS active_employees,
+        AVG(total_active_time) AS avg_active_time,
+        AVG(total_idle_time) AS avg_idle_time,
+        AVG(total_lock_time) AS avg_lock_time,
+        AVG(total_mouse_clicks) AS avg_mouse_clicks,
+        AVG(total_key_strokes) AS avg_key_strokes,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_active_time) AS median_active_time,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY total_active_time) AS q1_active_time,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY total_active_time) AS q3_active_time
+    FROM DailyActivity
+    GROUP BY cal_date
+),
+
+-- 5. Employee 14-day averages
+EmployeeAverages AS (
+    SELECT
+        emp_id,
+        AVG(total_active_time) AS avg_active_time_14d,
+        AVG(total_idle_time) AS avg_idle_time_14d,
+        AVG(total_lock_time) AS avg_lock_time_14d,
+        AVG(total_mouse_clicks) AS avg_mouse_clicks_14d,
+        AVG(total_key_strokes) AS avg_key_strokes_14d,
+        COUNT(*) AS days_worked
+    FROM DailyActivity
+    GROUP BY emp_id
+)
+
+-- FINAL REPORT: Three-tiered output
+(
+    -- Tier 1: Daily Summary (for leadership dashboard)
+    SELECT 
+        'DAILY_SUMMARY' AS report_type,
+        db.cal_date,
+        db.active_employees,
+        db.avg_active_time/3600 AS avg_active_hours,
+        db.avg_idle_time/3600 AS avg_idle_hours,
+        ROUND((db.avg_active_time / NULLIF(db.avg_active_time + db.avg_idle_time + db.avg_lock_time, 0)) * 100, 1) AS utilization_pct,
+        db.avg_mouse_clicks,
+        db.avg_key_strokes,
+        NULL AS emp_id,
+        NULL AS detail
+    FROM DailyBenchmarks db
+    
+    UNION ALL
+    
+    -- Tier 2: Employee outliers (for managers)
+    SELECT 
+        'EMPLOYEE_OUTLIERS' AS report_type,
+        da.cal_date,
+        NULL AS active_employees,
+        da.total_active_time/3600 AS active_hours,
+        (da.total_active_time - ea.avg_active_time_14d)/3600 AS deviation_from_avg,
+        ROUND((da.total_active_time / NULLIF(db.avg_active_time, 0)) * 100, 1) AS percent_of_daily_avg,
+        da.total_mouse_clicks,
+        da.total_key_strokes,
+        da.emp_id,
+        CASE
+            WHEN da.total_active_time < db.q1_active_time THEN 'LOW_PRODUCTIVITY'
+            WHEN da.total_active_time > db.q3_active_time THEN 'HIGH_PRODUCTIVITY'
+            WHEN da.total_idle_time > db.avg_idle_time * 1.5 THEN 'HIGH_IDLE_TIME'
+            ELSE NULL
+        END AS detail
+    FROM DailyActivity da
+    JOIN DailyBenchmarks db ON da.cal_date = db.cal_date
+    JOIN EmployeeAverages ea ON da.emp_id = ea.emp_id
+    WHERE 
+        da.total_active_time < db.q1_active_time OR
+        da.total_active_time > db.q3_active_time OR
+        da.total_idle_time > db.avg_idle_time * 1.5
+    
+    UNION ALL
+    
+    -- Tier 3: Detailed anomalies (for HR investigations)
+    SELECT 
+        'ANOMALIES' AS report_type,
+        da.cal_date,
+        NULL AS active_employees,
+        da.total_active_time/3600 AS active_hours,
+        da.total_lock_time/3600 AS lock_hours,
+        CASE
+            WHEN da.total_active_time > 14400 AND da.total_mouse_clicks < 50 THEN 'POSSIBLE_AUTOMATION'
+            WHEN da.was_late AND da.total_lock_time > 3600 THEN 'LATE_WITH_LONG_BREAK'
+            WHEN da.logout_time IS NULL THEN 'MISSING_LOGOUT'
+            WHEN da.total_active_time > 0 AND da.total_key_strokes < 10 THEN 'MINIMAL_INPUT_ACTIVITY'
+            ELSE 'OTHER_ANOMALY'
+        END AS anomaly_type,
+        da.total_mouse_clicks,
+        da.total_key_strokes,
+        da.emp_id,
+        CONCAT(
+            'Login: ', COALESCE(da.login_time, 'missing'), 
+            ' | Logout: ', COALESCE(da.logout_time, 'missing'),
+            ' | Active: ', ROUND(da.total_active_time/3600,1), 'h',
+            ' | Idle: ', ROUND(da.total_idle_time/3600,1), 'h'
+        ) AS detail
+    FROM DailyActivity da
+    WHERE 
+        (da.total_active_time > 14400 AND da.total_mouse_clicks < 50) OR
+        (da.was_late AND da.total_lock_time > 3600) OR
+        (da.logout_time IS NULL) OR
+        (da.total_active_time > 0 AND da.total_key_strokes < 10)
+)
+ORDER BY report_type, cal_date DESC, emp_id;
+
+
+
+
+
+WITH 
 -- 1. First get all active employees
 FilteredEmployees AS (
     SELECT emplid
