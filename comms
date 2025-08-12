@@ -1,0 +1,49 @@
+Here’s a cleaner, structured draft you can use for your proposal email or document:
+
+
+---
+
+Subject: Proposal to Exclude Week-Off Data from Average Calculations in RPEM APIs
+
+Background:
+Currently, our system captures and stores agent activity data for all employees, regardless of whether the date falls on a working day or a week-off (e.g., Saturday, Sunday, or designated weekly off-days). This includes cases where an employee might log in briefly (e.g., 10 minutes or 1 hour) during their week-off.
+
+When average calculations are performed — whether for a week, month, or custom date range — this week-off data is included in the calculation. As a result:
+
+A small amount of activity on a week-off skews both individual and team averages.
+
+The reported averages may not accurately reflect true working-day performance.
+
+
+Proposed Change:
+For all APIs that calculate averages in RPEM, we propose excluding week-off employee activity from the average computation. This means:
+
+If a date is a week-off for a given employee, their data for that date will be ignored in average calculations.
+
+Averages will be calculated only on valid working days for each employee.
+
+
+Expected Benefits:
+
+More accurate and meaningful average metrics for individuals and teams.
+
+Avoids distortion of averages caused by minimal week-off activity.
+
+Consistency across all APIs, regardless of the selected time period filter (week, month, or custom).
+
+
+Scope:
+
+Changes will be implemented in all RPEM APIs that involve average calculations.
+
+The logic to exclude week-off data will be applied at the calculation stage.
+
+
+Request:
+We seek sign-off on this proposal so that development can proceed with updating all relevant APIs to exclude week-off data from average computations.
+
+
+---
+
+Do you want me to also add a visual example showing how averages change before vs. after this change? That would make the proposal even easier to approve.
+
