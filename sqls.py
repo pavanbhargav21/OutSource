@@ -1,5 +1,88 @@
 
 
+
+
+
+%sql
+WITH 
+-- Employees running AppTrace each day
+app_trace_emps AS (
+  SELECT 
+    cal_date,
+    COUNT(DISTINCT emp_id) AS emps_running_app_trace,
+    COLLECT_LIST(DISTINCT emp_id) AS app_trace_emp_list
+  FROM app_trace.emp_activity
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+),
+
+-- Employees running SysTrace (keyboard or mouse) each day
+sys_trace_emps AS (
+  SELECT 
+    cal_date,
+    COUNT(DISTINCT emp_id) AS emps_running_sys_trace,
+    COLLECT_LIST(DISTINCT emp_id) AS sys_trace_emp_list
+  FROM (
+    SELECT emp_id, cal_date FROM sys_trace.emp_keyboarddata
+    UNION
+    SELECT emp_id, cal_date FROM sys_trace.emp_mousedata
+  )
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+),
+
+-- Employees in AppTrace but missing from HR
+app_trace_missing_hr AS (
+  SELECT 
+    a.cal_date,
+    COUNT(DISTINCT a.emp_id) AS emp_app_missing_in_hr,
+    COLLECT_LIST(DISTINCT a.emp_id) AS app_missing_hr_list
+  FROM app_trace.emp_activity a
+  LEFT JOIN hr_employee_central h ON a.emp_id = h.empl_id
+  WHERE a.cal_date >= date_sub(current_date(), 14)
+    AND h.empl_id IS NULL
+  GROUP BY a.cal_date
+),
+
+-- Employees in SysTrace but missing from HR
+sys_trace_missing_hr AS (
+  SELECT 
+    s.cal_date,
+    COUNT(DISTINCT s.emp_id) AS emp_sys_missing_in_hr,
+    COLLECT_LIST(DISTINCT s.emp_id) AS sys_missing_hr_list
+  FROM (
+    SELECT emp_id, cal_date FROM sys_trace.emp_keyboarddata
+    UNION
+    SELECT emp_id, cal_date FROM sys_trace.emp_mousedata
+  ) s
+  LEFT JOIN hr_employee_central h ON s.emp_id = h.empl_id
+  WHERE s.cal_date >= date_sub(current_date(), 14)
+    AND h.empl_id IS NULL
+  GROUP BY s.cal_date
+)
+
+-- Final combined report
+SELECT 
+  COALESCE(a.cal_date, s.cal_date, am.cal_date, sm.cal_date) AS cal_date,
+  DAYNAME(COALESCE(a.cal_date, s.cal_date, am.cal_date, sm.cal_date)) AS day_name,
+  COALESCE(a.emps_running_app_trace, 0) AS emps_running_app_trace,
+  COALESCE(s.emps_running_sys_trace, 0) AS emps_running_sys_trace,
+  COALESCE(am.emp_app_missing_in_hr, 0) AS emp_app_missing_in_hr,
+  COALESCE(sm.emp_sys_missing_in_hr, 0) AS emp_sys_missing_in_hr,
+  a.app_trace_emp_list,
+  s.sys_trace_emp_list,
+  am.app_missing_hr_list,
+  sm.sys_missing_hr_list
+FROM app_trace_emps a
+FULL OUTER JOIN sys_trace_emps s ON a.cal_date = s.cal_date
+FULL OUTER JOIN app_trace_missing_hr am ON a.cal_date = am.cal_date
+FULL OUTER JOIN sys_trace_missing_hr sm ON a.cal_date = sm.cal_date
+ORDER BY cal_date DESC
+
+
+
+
+
 Here are the two optimized queries you requested:
 
 ### Query 1: Daily Count of Missing Employees by Category
