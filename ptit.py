@@ -1,3 +1,148 @@
+integrate leave update to existing login logout
+
+
+to existing login logout --->
+
+from pyspark.sql.window import Window
+from pyspark.sql import functions as F
+
+# 1. Extract distinct emp_id and cal_date from filtered login-logout data
+emp_date_df = filtered_login_logout.select("emp_id", "cal_date").distinct()
+
+# 2. Load leave data, filter to approved/cancelled, last 3 days updated (you may adjust time range)
+leave_filtered = (
+    spark.table("inbound.hr_lms")
+    .filter(F.col("leave_status").isin("Approved", "Cancelled"))
+    .select("employee_id", "leave_status", "leave_start_date", "leave_end_date", "create_time_stamp")
+)
+
+# 3. Explode leave date ranges into individual dates per employee with leave status
+def explode_leave_dates(row):
+    emp_id = row["employee_id"]
+    status = row["leave_status"]
+    start = row["leave_start_date"]
+    end = row["leave_end_date"]
+    dates = []
+    current = start
+    while current <= end:
+        dates.append((emp_id, current, status))
+        current += timedelta(days=1)
+    return dates
+
+exploded_leave_rdd = leave_filtered.rdd.flatMap(explode_leave_dates)
+leave_dates_df = spark.createDataFrame(exploded_leave_rdd, ["emp_id", "cal_date", "leave_status"])
+
+# 4. For duplicates (same emp_id & cal_date), keep the latest by create_time_stamp
+window_spec = Window.partitionBy("emp_id", "cal_date").orderBy(F.col("create_time_stamp").desc())
+
+# Join create_time_stamp info to leave_dates_df for windowing
+leave_with_cts = leave_dates_df.alias("ld").join(
+    leave_filtered.select(
+        F.col("employee_id").alias("employee_id2"),
+        "leave_start_date", "leave_end_date", "create_time_stamp"
+    ),
+    on=[(leave_dates_df.emp_id == F.col("employee_id2")) &
+        (leave_dates_df.cal_date >= F.col("leave_start_date")) &
+        (leave_dates_df.cal_date <= F.col("leave_end_date"))],
+    how="left"
+).select("emp_id", "cal_date", "leave_status", "create_time_stamp")
+
+latest_leave_status_df = leave_with_cts.withColumn(
+    "rn",
+    F.row_number().over(window_spec)
+).filter(F.col("rn") == 1).drop("rn")
+
+# 5. Join latest_leave_status_df back to filtered_login_logout on emp_id and cal_date
+filtered_login_logout_with_leave = filtered_login_logout.alias("flo").join(
+    latest_leave_status_df.alias("lds"),
+    (F.col("flo.emp_id") == F.col("lds.emp_id")) & (F.col("flo.cal_date") == F.col("lds.cal_date")),
+    how="left"
+).select(
+    "flo.*",
+    F.when(F.col("lds.leave_status") == "Approved", True)
+     .when(F.col("lds.leave_status") == "Cancelled", False)
+     .otherwise(F.col("is_holiday")).alias("is_holiday")
+)
+
+# 6. Use this dataframe for your merge:
+filtered_login_logout_with_leave.createOrReplaceTempView("temp_filtered_login_logout")
+
+# Then your existing MERGE continues, no change needed
+
+
+£&#-_&£-_-&&-&&---&&_6&&&&_5_&&
+
+daily job for leave update even for cancelled
+
+from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+
+current_time = datetime.now()
+leave_threshold = current_time - timedelta(days=3)
+
+# 1. Load leaves with status Approved or Cancelled, updated in last 3 days
+leave_df = (
+    spark.table("inbound.hr_lms")
+    .filter(
+        (F.col("updated_time_stamp") >= F.lit(leave_threshold)) &
+        (F.col("leave_status").isin("Approved", "Cancelled"))
+    )
+    .select(
+        "employee_id", "leave_status", "leave_start_date", "leave_end_date",
+        "create_time_stamp"
+    )
+)
+
+# 2. For duplicates on (employee_id, leave_start_date, leave_end_date), keep row with latest create_time_stamp
+window_spec = Window.partitionBy(
+    "employee_id", "leave_start_date", "leave_end_date"
+).orderBy(F.col("create_time_stamp").desc())
+
+distinct_leave_df = leave_df.withColumn(
+    "rank", F.row_number().over(window_spec)
+).filter(F.col("rank") == 1).drop("rank")
+
+# 3. Explode leave intervals into (employee_id, date, leave_status)
+def explode_leave_days(row):
+    emp_id = row["employee_id"]
+    leave_status = row["leave_status"]
+    start = row["leave_start_date"]
+    end = row["leave_end_date"]
+    dates = []
+    curr = start
+    while curr <= end:
+        dates.append((emp_id, curr.strftime("%Y-%m-%d"), leave_status))
+        curr += timedelta(days=1)
+    return dates
+
+exploded = distinct_leave_df.rdd.flatMap(explode_leave_days)
+leave_dates_df = spark.createDataFrame(exploded, ["emp_id", "shift_date", "leave_status"])
+
+# 4. Create temp view for SQL merge
+leave_dates_df.createOrReplaceTempView("leave_dates_to_update")
+
+# 5. Update gold_dashboard.analytics_emp_login_logout based on leave_status
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING leave_dates_to_update AS source
+ON target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.shift_date
+WHEN MATCHED THEN
+    UPDATE SET target.IS_HOLIDAY = CASE
+        WHEN source.leave_status = 'Approved' THEN TRUE
+        WHEN source.leave_status = 'Cancelled' THEN FALSE
+        ELSE target.IS_HOLIDAY -- fallback, should not happen here
+    END
+""")
+
+# 6. Print summary count
+updated_count = leave_dates_df.count()
+print(f"Processed leave updates (approved or cancelled) affecting {updated_count} employee-date records in last 3 days.")
+
+
+
+
+£&£&___&&&&-+----
+
 daily job to update leave details to emp_login_logout.
 
 from pyspark.sql import functions as F
