@@ -1,4 +1,163 @@
 
+WITH keyboard AS (
+    SELECT 
+        EMPID,
+        SHIFT_DATE,
+        CASE 
+            WHEN CALDATE BETWEEN :start_date AND :end_date THEN 'CURRENT'
+            WHEN CALDATE BETWEEN :prev_start_date AND :prev_end_date THEN 'PREVIOUS'
+        END AS period,
+        SUM(BACKSPACE_EVENTS + ESCAPE_EVENTS + DELETE_EVENTS) AS error_events,
+        SUM(ENTER_EVENTS) AS enter_events,
+        SUM(CONTROL_C_EVENTS + CONTROL_V_EVENTS) AS copy_paste_events,
+        SUM(ALLTAB_EVENTS) AS vehicle_events,
+        SUM(OTHER_EVENTS) AS other_events,
+        SUM(TOTAL_KEYBOARD_EVENTS) AS total_keyboard
+    FROM KeyboardEvents
+    WHERE CALDATE BETWEEN :prev_start_date AND :end_date
+    GROUP BY EMPID, SHIFT_DATE,
+             CASE 
+                 WHEN CALDATE BETWEEN :start_date AND :end_date THEN 'CURRENT'
+                 WHEN CALDATE BETWEEN :prev_start_date AND :prev_end_date THEN 'PREVIOUS'
+             END
+),
+mouse AS (
+    SELECT 
+        EMPID,
+        SHIFT_DATE,
+        CASE 
+            WHEN CALDATE BETWEEN :start_date AND :end_date THEN 'CURRENT'
+            WHEN CALDATE BETWEEN :prev_start_date AND :prev_end_date THEN 'PREVIOUS'
+        END AS period,
+        SUM(TOTAL_MOUSE_COUNT) AS mouse_events
+    FROM MouseEvents
+    WHERE CALDATE BETWEEN :prev_start_date AND :end_date
+    GROUP BY EMPID, SHIFT_DATE,
+             CASE 
+                 WHEN CALDATE BETWEEN :start_date AND :end_date THEN 'CURRENT'
+                 WHEN CALDATE BETWEEN :prev_start_date AND :prev_end_date THEN 'PREVIOUS'
+             END
+),
+combined AS (
+    SELECT 
+        k.EMPID,
+        k.SHIFT_DATE,
+        k.period,
+        k.error_events,
+        k.enter_events,
+        k.copy_paste_events,
+        k.vehicle_events,
+        k.other_events,
+        k.total_keyboard,
+        m.mouse_events
+    FROM keyboard k
+    LEFT JOIN mouse m 
+           ON k.EMPID = m.EMPID 
+          AND k.SHIFT_DATE = m.SHIFT_DATE 
+          AND k.period = m.period
+),
+averages AS (
+    SELECT 
+        period,
+        AVG(error_events) AS avg_error,
+        AVG(enter_events) AS avg_enter,
+        AVG(copy_paste_events) AS avg_copy_paste,
+        AVG(vehicle_events) AS avg_vehicle,
+        AVG(mouse_events) AS avg_mouse,
+        AVG(total_keyboard) AS avg_keyboard
+    FROM combined
+    GROUP BY period
+),
+final AS (
+    SELECT
+        'Error Events' AS metric,
+        c.avg_error AS current_avg,
+        p.avg_error AS prev_avg
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+    UNION ALL
+    SELECT 'Enter Events', c.avg_enter, p.avg_enter
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+    UNION ALL
+    SELECT 'Copy/Paste Events', c.avg_copy_paste, p.avg_copy_paste
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+    UNION ALL
+    SELECT 'Vehicle Events', c.avg_vehicle, p.avg_vehicle
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+    UNION ALL
+    SELECT 'Mouse Events', c.avg_mouse, p.avg_mouse
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+),
+with_trends AS (
+    SELECT
+        metric,
+        current_avg,
+        prev_avg,
+        current_avg AS avg_count,   -- ✅ exposing explicitly
+        CASE 
+            WHEN prev_avg IS NULL THEN 'NEW'
+            WHEN current_avg > prev_avg THEN 'UP'
+            WHEN current_avg < prev_avg THEN 'DOWN'
+            ELSE 'NO CHANGE'
+        END AS trend,
+        CASE 
+            WHEN prev_avg IS NULL OR prev_avg = 0 THEN NULL
+            ELSE ROUND(((current_avg - prev_avg) / prev_avg) * 100, 2)
+        END AS change_pct
+    FROM final
+),
+input_summary AS (
+    SELECT
+        c.avg_keyboard AS avg_keyboard_count,
+        c.avg_mouse AS avg_mouse_count,
+        (c.avg_keyboard + c.avg_mouse) AS input_count,
+        CASE 
+            WHEN p.avg_keyboard IS NULL OR p.avg_mouse IS NULL THEN 'NEW'
+            WHEN (c.avg_keyboard + c.avg_mouse) > (p.avg_keyboard + p.avg_mouse) THEN 'UP'
+            WHEN (c.avg_keyboard + c.avg_mouse) < (p.avg_keyboard + p.avg_mouse) THEN 'DOWN'
+            ELSE 'NO CHANGE'
+        END AS prev_trend,
+        CASE 
+            WHEN (p.avg_keyboard + p.avg_mouse) IS NULL OR (p.avg_keyboard + p.avg_mouse) = 0 THEN NULL
+            ELSE ROUND( ((c.avg_keyboard + c.avg_mouse) - (p.avg_keyboard + p.avg_mouse)) 
+                        / (p.avg_keyboard + p.avg_mouse) * 100 , 2)
+        END AS prev_perc
+    FROM averages c
+    LEFT JOIN averages p ON p.period = 'PREVIOUS'
+    WHERE c.period = 'CURRENT'
+)
+SELECT to_json(named_struct(
+    'Usage Summary', collect_list(named_struct(
+        'metric', metric,
+        'avg_count', avg_count,     -- ✅ added
+        'current_avg', current_avg,
+        'prev_avg', prev_avg,
+        'trend', trend,
+        'change_pct', change_pct
+    )),
+    'Input Summary', named_struct(
+        'avg_keyboard_count', avg_keyboard_count,
+        'avg_mouse_count', avg_mouse_count,
+        'input_count', input_count,
+        'prev_trend', prev_trend,
+        'prev_perc', prev_perc
+    )
+)) AS result_json
+FROM with_trends, input_summary;
+
+
+
+
+
 WITH shift_events AS (
     SELECT
         l.EMPID,
