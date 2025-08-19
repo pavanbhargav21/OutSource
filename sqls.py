@@ -1,4 +1,148 @@
 
+
+SELECT 
+  c.cal_date,
+  c.day_name,
+  c.app_trace_count,
+  p.prev_app_trace_count,
+  c.keyboard_count,
+  p.prev_keyboard_count,
+  c.mouse_count,
+  p.prev_mouse_count,
+  c.cpu_count,
+  p.prev_cpu_count,
+  CASE 
+    WHEN ABS(c.app_trace_count - c.cpu_count) > 200 THEN 'Review Needed'
+    ELSE 'OK'
+  END AS review_status
+FROM current_week_data c
+LEFT JOIN previous_week_data p ON c.cal_date = p.cal_date
+WHERE c.cal_date >= date_sub(current_date(), 14)
+ORDER BY c.cal_date DESC
+
+
+
+
+
+
+
+SELECT 
+  c.cal_date,
+  c.day_name,
+  c.app_only_count,
+  p.prev_app_only_count,
+  CASE 
+    WHEN c.app_only_count > 200 THEN 'Review Needed'
+    ELSE 'OK'
+  END AS review_status
+FROM current_week_counts c
+LEFT JOIN previous_week_counts p ON c.cal_date = p.cal_date
+WHERE c.cal_date >= date_sub(current_date(), 14)
+ORDER BY c.cal_date DESC
+
+
+
+
+
+
+
+WITH version_changes AS (
+  SELECT 
+    curr.emp_id,
+    curr.cal_date,
+    curr.pulse_version AS current_version,
+    prev.pulse_version AS previous_version,
+    CASE 
+      WHEN prev.pulse_version IS NULL THEN 'new_employee'
+      WHEN curr.pulse_version = prev.pulse_version THEN 'same_version'
+      WHEN 
+        split(curr.pulse_version, '\\.')[0] > split(prev.pulse_version, '\\.') OR
+        (split(curr.pulse_version, '\\.') = split(prev.pulse_version, '\\.') AND 
+         split(curr.pulse_version, '\\.')[1] > split(prev.pulse_version, '\\.')[1]) OR
+        (split(curr.pulse_version, '\\.') = split(prev.pulse_version, '\\.') AND 
+         split(curr.pulse_version, '\\.')[1] = split(prev.pulse_version, '\\.')[1] AND
+         split(curr.pulse_version, '\\.')[2] > split(prev.pulse_version, '\\.')[2]) OR
+        (split(curr.pulse_version, '\\.') = split(prev.pulse_version, '\\.') AND 
+         split(curr.pulse_version, '\\.')[1] = split(prev.pulse_version, '\\.')[1] AND
+         split(curr.pulse_version, '\\.')[2] = split(prev.pulse_version, '\\.')[2] AND
+         split(curr.pulse_version, '\\.')[3] > split(prev.pulse_version, '\\.')[3])
+      THEN 'newer_version'
+      ELSE 'older_version'
+    END AS version_change
+  FROM 
+    (SELECT emp_id, cal_date, pulse_version 
+     FROM app_trace.emp_wfo_wfh_status
+     WHERE cal_date >= date_sub(current_date(), 14)) curr
+  LEFT JOIN 
+    (SELECT emp_id, date_add(cal_date, 1) AS next_date, pulse_version 
+     FROM app_trace.emp_wfo_wfh_status
+     WHERE cal_date >= date_sub(current_date(), 15)) prev
+    ON curr.emp_id = prev.emp_id AND curr.cal_date = prev.next_date
+),
+
+daily_counts AS (
+  SELECT
+    cal_date,
+    COUNT(DISTINCT emp_id) AS total_employees,
+    COUNT(DISTINCT CASE WHEN version_change = 'newer_version' THEN emp_id END) AS moved_to_new_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'older_version' THEN emp_id END) AS moved_to_old_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'same_version' THEN emp_id END) AS same_version,
+    COUNT(DISTINCT CASE WHEN version_change = 'new_employee' THEN emp_id END) AS new_employees
+  FROM version_changes
+  GROUP BY cal_date
+),
+
+moved_to_old_json AS (
+  SELECT 
+    cal_date,
+    to_json(collect_list(emp_id)) AS moved_to_old_version_employees
+  FROM version_changes
+  WHERE version_change = 'older_version'
+  GROUP BY cal_date
+)
+
+SELECT
+  d.cal_date,
+  DAYNAME(d.cal_date) AS day_name,
+  d.total_employees,
+  a.emp_activity_count,
+  w.wfh_status_count,
+  d.moved_to_new_version,
+  d.moved_to_old_version,
+  d.same_version,
+  d.new_employees,
+  ROUND((d.moved_to_new_version * 100.0 / NULLIF(d.total_employees - d.new_employees, 0)), 2) AS pct_upgraded,
+  ROUND((d.moved_to_old_version * 100.0 / NULLIF(d.total_employees - d.new_employees, 0)), 2) AS pct_downgraded,
+  CASE 
+    WHEN d.moved_to_old_version > 0 THEN 'Review Needed'
+    ELSE 'OK'
+  END AS review_status,
+  COALESCE(m.moved_to_old_version_employees, '[]') AS moved_to_old_version_employees
+FROM daily_counts d
+LEFT JOIN (
+  SELECT cal_date, COUNT(DISTINCT emp_id) AS emp_activity_count
+  FROM app_trace.emp_activity
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+) a ON d.cal_date = a.cal_date
+LEFT JOIN (
+  SELECT cal_date, COUNT(DISTINCT emp_id) AS wfh_status_count
+  FROM app_trace.emp_wfo_wfh_status
+  WHERE cal_date >= date_sub(current_date(), 14)
+  GROUP BY cal_date
+) w ON d.cal_date = w.cal_date
+LEFT JOIN moved_to_old_json m ON d.cal_date = m.cal_date
+ORDER BY d.cal_date DESC
+
+
+
+
+
+
+
+
+
+
 WITH HR_employees AS (
     -- Your existing CTE definition
     SELECT EMPLID, NAME
