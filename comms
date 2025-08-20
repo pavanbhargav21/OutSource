@@ -1,3 +1,135 @@
+
+
+from datetime import datetime, date, timedelta
+from dateutil.relativedelta import relativedelta
+from typing import Optional
+from fastapi import Query, Header, Depends
+from fastapi.responses import JSONResponse
+from fastapi import status
+from auth.jwt_handler import AuthJWT
+
+@router.get('/get_team_active_idle_app_category')
+async def get_team_app_activity(
+    Authorize: AuthJWT = Depends(),
+    authorization: str = Header(None),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    date_range: Optional[str] = Query("day")
+):
+    if not authorization or not authorization.startswith("Bearer"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"msg": "Authorization Token Missing"}
+        )
+    
+    try:
+        Authorize.jwt_required()
+        user_identity = Authorize.get_jwt_subject()
+        claims = Authorize.get_raw_jwt()
+        manager_id = claims.get("user_id")
+        
+        if not manager_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={'message': "Invalid Token Claims"}
+            )
+        
+        today = datetime.today().date()
+        
+        if start_date and end_date:
+            try:
+                start_date_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+                end_date_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+                
+                period_days = (end_date_dt - start_date_dt).days + 1
+                
+                # Handle different date range types
+                if date_range.lower() == "day":
+                    # Previous week's same day
+                    prev_start_date = start_date_dt - timedelta(days=7)
+                    prev_end_date = prev_start_date  # Same day for day range
+                    ext_end_date = end_date_dt + timedelta(days=1)
+                    
+                elif date_range.lower() == "week":
+                    # Previous week's same days (exact number of days)
+                    prev_start_date = start_date_dt - timedelta(days=7)
+                    prev_end_date = end_date_dt - timedelta(days=7)
+                    ext_end_date = end_date_dt + timedelta(days=1)
+                    
+                elif date_range.lower() == "month":
+                    # Check if selected dates are in current month
+                    current_month = today.month
+                    current_year = today.year
+                    selected_month = start_date_dt.month
+                    selected_year = start_date_dt.year
+                    
+                    if selected_month == current_month and selected_year == current_year:
+                        # Current month: go back exactly 4 weeks (28 days)
+                        prev_start_date = start_date_dt - timedelta(days=28)
+                        prev_end_date = end_date_dt - timedelta(days=28)
+                    else:
+                        # Not current month: previous month's start and end
+                        # Get first day of previous month for start_date
+                        prev_start_date = (start_date_dt.replace(day=1) - relativedelta(months=1)).replace(day=1)
+                        
+                        # Get last day of previous month for end_date
+                        prev_month_end = (end_date_dt.replace(day=1) - relativedelta(months=1))
+                        prev_end_date = (prev_month_end + relativedelta(months=1, days=-1))
+                    
+                    ext_end_date = end_date_dt + timedelta(days=1)
+                
+                else:
+                    # Default to day logic for unknown ranges
+                    prev_start_date = start_date_dt - timedelta(days=7)
+                    prev_end_date = prev_start_date
+                    ext_end_date = end_date_dt + timedelta(days=1)
+                
+                # Return the calculated dates
+                return {
+                    "start_date": start_date_dt.isoformat(),
+                    "end_date": end_date_dt.isoformat(),
+                    "previous_start_date": prev_start_date.isoformat(),
+                    "previous_end_date": prev_end_date.isoformat(),
+                    "extended_end_date": ext_end_date.isoformat(),
+                    "date_range": date_range,
+                    "period_days": period_days
+                }
+                
+            except ValueError:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"msg": "Invalid date format. Use YYYY-MM-DD."}
+                )
+        else:
+            # Default to daily when no dates provided
+            start_date_dt = today
+            end_date_dt = today
+            prev_start_date = today - timedelta(days=7)
+            prev_end_date = prev_start_date
+            ext_end_date = today + timedelta(days=1)
+            
+            return {
+                "start_date": start_date_dt.isoformat(),
+                "end_date": end_date_dt.isoformat(),
+                "previous_start_date": prev_start_date.isoformat(),
+                "previous_end_date": prev_end_date.isoformat(),
+                "extended_end_date": ext_end_date.isoformat(),
+                "date_range": "day",
+                "period_days": 1
+            }
+            
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Internal server error: {str(e)}"}
+        )
+
+
+
+
+
+
+
 Here’s a cleaner, structured draft you can use for your proposal email or document:
 
 
