@@ -1,3 +1,93 @@
+
+Let me walk through your examples using Approach 1 logic:
+
+Example 1: Shift 10:25:00 - 19:25:00, Login 10:45:12, Logout 20:42:45
+
+For 10:00-11:00 interval:
+
+· Activity: 10:45:12 - 11:00:00 (14m48s)
+· seconds_within_shift = unix_timestamp('11:00:00') - unix_timestamp('10:45:12') = 888 seconds
+· seconds_outside_shift = 0 seconds (all within shift)
+· Ratio = 888/(888+0) = 1.0
+· Result: 100% of active/idle/lock time allocated to WITHIN shift
+
+For 19:00-20:00 interval:
+
+· Activity: 19:00:00 - 20:00:00 (60m)
+· Within shift portion: 19:00:00 - 19:25:00 (25m)
+· Outside shift portion: 19:25:00 - 20:00:00 (35m)
+· seconds_within_shift = unix_timestamp('19:25:00') - unix_timestamp('19:00:00') = 1500 seconds
+· seconds_outside_shift = unix_timestamp('20:00:00') - unix_timestamp('19:25:00') = 2100 seconds
+· Ratio = 1500/(1500+2100) = 0.4167 (within), 0.5833 (outside)
+· Result: 41.67% of active/idle/lock to WITHIN shift, 58.33% of active/idle to OUTSIDE shift
+
+For 20:00-21:00 interval:
+
+· Activity: 20:00:00 - 20:42:45 (42m45s)
+· seconds_within_shift = 0 seconds (completely after shift end)
+· seconds_outside_shift = unix_timestamp('20:42:45') - unix_timestamp('20:00:00') = 2565 seconds
+· Ratio = 0/(0+2565) = 0.0 (within), 1.0 (outside)
+· Result: 100% of active/idle to OUTSIDE shift, 0% lock time
+
+---
+
+Example 2: Shift 10:25:00 - 19:25:00, Login 09:12:14, Logout 16:20:00
+
+For 09:00-10:00 interval:
+
+· Activity: 09:12:14 - 10:00:00 (47m46s)
+· seconds_within_shift = 0 seconds (completely before shift start)
+· seconds_outside_shift = unix_timestamp('10:00:00') - unix_timestamp('09:12:14') = 2866 seconds
+· Ratio = 0/(0+2866) = 0.0 (within), 1.0 (outside)
+· Result: 100% of active/idle to OUTSIDE shift
+
+For 10:00-11:00 interval:
+
+· Activity: 10:00:00 - 11:00:00 (60m)
+· Within shift portion: 10:25:00 - 11:00:00 (35m)
+· Outside shift portion: 10:00:00 - 10:25:00 (25m)
+· seconds_within_shift = unix_timestamp('11:00:00') - unix_timestamp('10:25:00') = 2100 seconds
+· seconds_outside_shift = unix_timestamp('10:25:00') - unix_timestamp('10:00:00') = 1500 seconds
+· Ratio = 2100/(2100+1500) = 0.5833 (within), 0.4167 (outside)
+· Result: 58.33% of active/idle/lock to WITHIN shift, 41.67% of active/idle to OUTSIDE shift
+
+---
+
+Example 3: Shift 09:30:00 - 18:30:00, Login 10:15:12, Logout 20:42:45
+
+For 10:00-11:00 interval:
+
+· Activity: 10:15:12 - 11:00:00 (44m48s)
+· seconds_within_shift = unix_timestamp('11:00:00') - unix_timestamp('10:15:12') = 2688 seconds
+· seconds_outside_shift = 0 seconds (all within shift)
+· Ratio = 2688/(2688+0) = 1.0
+· Result: 100% of active/idle/lock to WITHIN shift
+
+For 18:00-19:00 interval:
+
+· Activity: 18:00:00 - 19:00:00 (60m)
+· Within shift portion: 18:00:00 - 18:30:00 (30m)
+· Outside shift portion: 18:30:00 - 19:00:00 (30m)
+· seconds_within_shift = unix_timestamp('18:30:00') - unix_timestamp('18:00:00') = 1800 seconds
+· seconds_outside_shift = unix_timestamp('19:00:00') - unix_timestamp('18:30:00') = 1800 seconds
+· Ratio = 1800/(1800+1800) = 0.5 (within), 0.5 (outside)
+· Result: 50% of active/idle/lock to WITHIN shift, 50% of active/idle to OUTSIDE shift
+
+Key Points:
+
+1. Automatic handling: The ratio seconds_within_shift/(total_seconds) automatically gives correct allocation
+2. Complete within: Ratio = 1.0 → 100% within shift
+3. Complete outside: Ratio = 0.0 → 100% outside shift
+4. Partial overlap: Exact proportional split based on time
+5. Lock time: Only gets allocated to within-shift portion (as per business rule)
+
+The logic is mathematically precise and handles all your scenarios correctly!
+
+
+
+
+
+
 from datetime import datetime, date, timedelta
 from typing import Optional
 from fastapi import Query, Header, Depends
