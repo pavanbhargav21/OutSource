@@ -1,4 +1,263 @@
 
+WITH ActivityWithShiftBounds AS (
+  SELECT
+    i.emp_id,
+    i.shift_date,
+    i.start_time,
+    i.end_time,
+    i.interval_start,
+    i.interval_end,
+    i.emp_login_time,
+    i.emp_logout_time,
+    i.total_time_active,
+    i.total_time_idle,
+    i.window_lock_time,
+    GREATEST(i.interval_start, i.start_time) AS overlap_start,
+    LEAST(i.interval_end, i.end_time) AS overlap_end,
+    GREATEST(i.interval_start, i.emp_login_time) AS activity_start,
+    LEAST(i.interval_end, i.emp_logout_time) AS activity_end
+  FROM FilteredAppInfo i
+  LEFT JOIN EmployeeShiftsWithConfig s
+    ON i.emp_id = s.emp_id AND i.shift_date = s.shift_date
+),
+
+ActivityTimeAllocation AS (
+  SELECT
+    emp_id,
+    shift_date,
+    total_time_active,
+    total_time_idle,
+    window_lock_time,
+    CASE 
+      WHEN activity_start >= end_time OR activity_end <= start_time THEN 0
+      WHEN activity_start >= start_time AND activity_end <= end_time THEN
+        EXTRACT(EPOCH FROM (activity_end - activity_start))
+      ELSE
+        EXTRACT(EPOCH FROM (LEAST(activity_end, end_time) - GREATEST(activity_start, start_time)))
+    END AS seconds_within_shift,
+    
+    CASE 
+      WHEN activity_start >= end_time OR activity_end <= start_time THEN
+        EXTRACT(EPOCH FROM (activity_end - activity_start))
+      WHEN activity_start >= start_time AND activity_end <= end_time THEN 0
+      ELSE
+        EXTRACT(EPOCH FROM ((activity_end - activity_start) - 
+               (LEAST(activity_end, end_time) - GREATEST(activity_start, start_time))))
+    END AS seconds_outside_shift
+  FROM ActivityWithShiftBounds
+  WHERE activity_start < activity_end
+),
+
+CurrentShiftData AS (
+  SELECT
+    a.emp_id,
+    a.shift_date,
+    SUM(total_time_active) AS total_active_time,
+    SUM(total_time_idle) AS total_idle_time,
+    SUM(window_lock_time) AS total_lock_time,
+    SUM(total_time_active + total_time_idle + window_lock_time) AS total_work_time,
+    
+    SUM(total_time_active * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))) AS active_within_shift,
+    SUM(total_time_idle * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))) AS idle_within_shift,
+    SUM(window_lock_time * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))) AS lock_within_shift,
+    
+    SUM(total_time_active * (seconds_outside_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))) AS active_outside_shift,
+    SUM(total_time_idle * (seconds_outside_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))) AS idle_outside_shift,
+    
+    MAX(s.pulse_shift_time) AS pulse_shift_time,
+    MAX(s.adjusted_active_time) AS adjusted_active_time,
+    MAX(s.adjusted_lock_time) AS adjusted_lock_time,
+    MIN(s.start_time) AS shift_start_time,
+    MAX(s.end_time) AS shift_end_time
+    
+  FROM ActivityTimeAllocation a
+  JOIN EmployeeShiftsWithConfig s
+    ON a.emp_id = s.emp_id AND a.shift_date = s.shift_date
+  GROUP BY a.emp_id, a.shift_date
+),
+
+-- Define date ranges for current and previous periods
+DateRanges AS (
+  SELECT 
+    emp_id,
+    shift_date,
+    total_active_time,
+    total_idle_time,
+    total_lock_time,
+    total_work_time,
+    pulse_shift_time,
+    adjusted_active_time,
+    adjusted_lock_time,
+    shift_start_time,
+    shift_end_time,
+    -- Define your date ranges here (example: current week vs previous week)
+    DATE_TRUNC('week', shift_date) AS current_week_start,
+    DATE_TRUNC('week', shift_date) + INTERVAL '6 days' AS current_week_end,
+    DATE_TRUNC('week', shift_date) - INTERVAL '7 days' AS prev_week_start,
+    DATE_TRUNC('week', shift_date) - INTERVAL '1 day' AS prev_week_end
+  FROM CurrentShiftData
+),
+
+PreviousPeriodData AS (
+  SELECT
+    d.emp_id,
+    d.shift_date,
+    d.total_active_time,
+    d.total_idle_time,
+    d.total_lock_time,
+    d.total_work_time,
+    d.pulse_shift_time,
+    d.adjusted_active_time,
+    d.adjusted_lock_time,
+    d.shift_start_time,
+    d.shift_end_time,
+    d.current_week_start,
+    d.current_week_end,
+    d.prev_week_start,
+    d.prev_week_end,
+    
+    -- Get previous period data using proper date range comparison
+    (SELECT AVG(p.total_work_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_total_work_time,
+    
+    (SELECT AVG(p.total_active_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_active_time,
+    
+    (SELECT AVG(p.total_idle_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_idle_time,
+    
+    (SELECT AVG(p.total_lock_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_lock_time,
+    
+    (SELECT AVG(p.pulse_shift_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_pulse_shift_time,
+    
+    (SELECT AVG(p.adjusted_active_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_adjusted_active_time,
+    
+    (SELECT AVG(p.adjusted_lock_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_adjusted_lock_time,
+    
+    (SELECT MIN(p.shift_start_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_shift_start_time,
+    
+    (SELECT MAX(p.shift_end_time) 
+     FROM CurrentShiftData p 
+     WHERE p.emp_id = d.emp_id 
+       AND p.shift_date BETWEEN d.prev_week_start AND d.prev_week_end) AS prev_shift_end_time
+    
+  FROM DateRanges d
+),
+
+TrendAnalysis AS (
+  SELECT
+    emp_id,
+    shift_date,
+    total_work_time,
+    total_active_time,
+    total_idle_time,
+    total_lock_time,
+    pulse_shift_time,
+    adjusted_active_time,
+    adjusted_lock_time,
+    shift_start_time,
+    shift_end_time,
+    
+    prev_total_work_time,
+    prev_active_time,
+    prev_idle_time,
+    prev_lock_time,
+    prev_shift_start_time,
+    prev_shift_end_time,
+    prev_pulse_shift_time,
+    prev_adjusted_active_time,
+    prev_adjusted_lock_time,
+    
+    -- Trend calculations (same as before but with proper date ranges)
+    CASE 
+      WHEN prev_total_work_time IS NULL THEN 'No Previous Data'
+      WHEN total_work_time > prev_total_work_time THEN 'Up'
+      WHEN total_work_time < prev_total_work_time THEN 'Down'
+      ELSE 'Exact'
+    END AS prev_work_trend,
+    
+    ROUND(CASE 
+      WHEN prev_total_work_time IS NULL OR prev_total_work_time = 0 THEN NULL
+      ELSE ((total_work_time - prev_total_work_time) / prev_total_work_time) * 100
+    END, 2) AS prev_work_perc,
+    
+    -- ... (other trend calculations remain the same as previous query)
+    
+    CASE 
+      WHEN pulse_shift_time IS NULL THEN 'No Shift Data'
+      WHEN total_work_time > (pulse_shift_time * 3600) THEN 'Up'
+      WHEN total_work_time < (pulse_shift_time * 3600) THEN 'Down'
+      ELSE 'Exact'
+    END AS total_work_time_shift_trend,
+    
+    (pulse_shift_time * 3600) AS total_work_shift_time,
+    
+    -- ... (other shift trend calculations)
+    
+    total_work_time - (pulse_shift_time * 3600) AS work_time_diff_seconds,
+    total_active_time - (adjusted_active_time * 3600) AS active_time_diff_seconds,
+    total_lock_time - (adjusted_lock_time * 3600) AS lock_time_diff_seconds
+    
+  FROM PreviousPeriodData
+)
+
+SELECT
+  emp_id,
+  shift_date,
+  total_work_time,
+  total_active_time,
+  total_idle_time,
+  total_lock_time,
+  prev_total_work_time,
+  prev_active_time,
+  prev_idle_time,
+  prev_lock_time,
+  prev_work_trend,
+  prev_work_perc,
+  total_work_time_shift_trend,
+  total_work_shift_time,
+  work_time_diff_seconds,
+  -- ... (all other required columns)
+  shift_start_time,
+  shift_end_time,
+  prev_shift_start_time,
+  prev_shift_end_time
+  
+FROM TrendAnalysis
+ORDER BY emp_id, shift_date;
+
+
+
+
+
+
+
+
+
+
+
+
 WITH keyboard AS (
     SELECT
         EMP_ID,
