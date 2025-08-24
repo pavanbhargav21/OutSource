@@ -1,4 +1,295 @@
 
+
+WITH FilteredEmployees AS (
+  SELECT
+    emplid AS emp_id,
+    COALESCE(country, 'Default') AS country
+  FROM inbound.hr_employee_central
+  WHERE func_mar_id = 43560069
+    AND (TERMINATION_DT > CURRENT_TIMESTAMP() OR TERMINATION_DT IS NULL)
+),
+
+EmployeeShiftsWithConfig AS (
+  SELECT
+    l.emp_id,
+    l.shift_date,
+    TO_TIMESTAMP(l.start_time, 'yyyy-MM-dd HH:mm:ss') AS start_time,
+    TO_TIMESTAMP(l.end_time, 'yyyy-MM-dd HH:mm:ss') AS end_time,
+    TO_TIMESTAMP(l.emp_login_time, 'yyyy-MM-dd HH:mm:ss') AS emp_login_time,
+    TO_TIMESTAMP(l.emp_logout_time, 'yyyy-MM-dd HH:mm:ss') AS emp_logout_time,
+    (UNIX_TIMESTAMP(l.end_time) - UNIX_TIMESTAMP(l.start_time)) / 3600.0 AS pulse_shift_time,
+    (COALESCE(o.shift_dur_hrs, 8) * (UNIX_TIMESTAMP(l.end_time) - UNIX_TIMESTAMP(l.start_time)) / 3600.0 / COALESCE(o.shift_length_hrs, 9)) AS adjusted_active_time,
+    (COALESCE(o.break_dur_hrs, 1) * (UNIX_TIMESTAMP(l.end_time) - UNIX_TIMESTAMP(l.start_time)) / 3600.0 / COALESCE(o.shift_length_hrs, 9)) AS adjusted_lock_time
+  FROM gold_dashboard.analytics_emp_login_logout l
+  JOIN FilteredEmployees e ON l.emp_id = e.emp_id
+  LEFT JOIN inbound.countrywise_shift o ON e.country = o.country
+  WHERE (l.shift_date BETWEEN '{start_date}' AND '{end_date}' OR l.shift_date BETWEEN '{prev_start_date}' AND '{prev_end_date}')
+    AND l.is_weekoff = false
+    AND l.emp_login_time IS NOT NULL
+    AND l.emp_logout_time IS NOT NULL
+),
+
+FilteredAppInfo AS (
+  SELECT
+    i.emp_id,
+    i.cal_date AS shift_date,
+    TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 1, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') AS interval_start,
+    TO_TIMESTAMP(CONCAT(i.cal_date, ' ', SUBSTRING(i.interval, 7, 5), ':00'), 'yyyy-MM-dd HH:mm:ss') AS interval_end,
+    i.total_time_spent_active AS total_time_active,
+    i.total_time_spent_idle AS total_time_idle,
+    i.window_lock_time
+  FROM gold_dashboard.analytics_emp_app_info i
+  JOIN FilteredEmployees e ON i.emp_id = e.emp_id
+  WHERE (i.cal_date BETWEEN '{start_date}' AND '{end_date}' OR i.cal_date BETWEEN '{prev_start_date}' AND '{prev_end_date}')
+),
+
+ActivityWithShiftBounds AS (
+  SELECT
+    i.emp_id,
+    i.shift_date,
+    s.start_time,
+    s.end_time,
+    i.interval_start,
+    i.interval_end,
+    s.emp_login_time,
+    s.emp_logout_time,
+    i.total_time_active,
+    i.total_time_idle,
+    i.window_lock_time,
+    GREATEST(i.interval_start, s.start_time) AS overlap_start,
+    LEAST(i.interval_end, s.end_time) AS overlap_end,
+    GREATEST(i.interval_start, s.emp_login_time) AS activity_start,
+    LEAST(i.interval_end, s.emp_logout_time) AS activity_end
+  FROM FilteredAppInfo i
+  JOIN EmployeeShiftsWithConfig s ON i.emp_id = s.emp_id AND i.shift_date = s.shift_date
+  WHERE s.emp_login_time < i.interval_end
+    AND s.emp_logout_time > i.interval_start
+),
+
+ActivityTimeAllocation AS (
+  SELECT
+    emp_id,
+    shift_date,
+    total_time_active,
+    total_time_idle,
+    window_lock_time,
+    start_time,
+    end_time,
+    
+    -- Calculate seconds within shift
+    CASE 
+      WHEN activity_start >= end_time OR activity_end <= start_time THEN 0
+      WHEN activity_start >= start_time AND activity_end <= end_time THEN
+        UNIX_TIMESTAMP(activity_end) - UNIX_TIMESTAMP(activity_start)
+      ELSE
+        UNIX_TIMESTAMP(LEAST(activity_end, end_time)) - UNIX_TIMESTAMP(GREATEST(activity_start, start_time))
+    END AS seconds_within_shift,
+    
+    -- Calculate seconds outside shift
+    CASE 
+      WHEN activity_start >= end_time OR activity_end <= start_time THEN
+        UNIX_TIMESTAMP(activity_end) - UNIX_TIMESTAMP(activity_start)
+      WHEN activity_start >= start_time AND activity_end <= end_time THEN 0
+      ELSE
+        (UNIX_TIMESTAMP(activity_end) - UNIX_TIMESTAMP(activity_start)) - 
+        (UNIX_TIMESTAMP(LEAST(activity_end, end_time)) - UNIX_TIMESTAMP(GREATEST(activity_start, start_time)))
+    END AS seconds_outside_shift
+  FROM ActivityWithShiftBounds
+  WHERE activity_start < activity_end
+),
+
+CurrentShiftData AS (
+  SELECT
+    a.emp_id,
+    a.shift_date,
+    
+    -- Total metrics
+    SUM(total_time_active) AS total_active_time,
+    SUM(total_time_idle) AS total_idle_time,
+    SUM(window_lock_time) AS total_lock_time,
+    SUM(total_time_active + total_time_idle + window_lock_time) AS total_work_time,
+    
+    -- Within shift allocation
+    SUM(
+      total_time_active * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))
+    ) AS active_within_shift,
+    
+    SUM(
+      total_time_idle * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))
+    ) AS idle_within_shift,
+    
+    SUM(
+      window_lock_time * (seconds_within_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))
+    ) AS lock_within_shift,
+    
+    -- Outside shift allocation
+    SUM(
+      total_time_active * (seconds_outside_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))
+    ) AS active_outside_shift,
+    
+    SUM(
+      total_time_idle * (seconds_outside_shift / NULLIF((seconds_within_shift + seconds_outside_shift), 0))
+    ) AS idle_outside_shift,
+    
+    -- Shift configuration
+    MAX(s.pulse_shift_time) AS pulse_shift_time,
+    MAX(s.adjusted_active_time) AS adjusted_active_time,
+    MAX(s.adjusted_lock_time) AS adjusted_lock_time,
+    
+    -- Period indicator
+    CASE 
+      WHEN a.shift_date BETWEEN '{start_date}' AND '{end_date}' THEN 'current'
+      WHEN a.shift_date BETWEEN '{prev_start_date}' AND '{prev_end_date}' THEN 'previous'
+    END AS period
+    
+  FROM ActivityTimeAllocation a
+  JOIN EmployeeShiftsWithConfig s ON a.emp_id = s.emp_id AND a.shift_date = s.shift_date
+  GROUP BY a.emp_id, a.shift_date, 
+    CASE 
+      WHEN a.shift_date BETWEEN '{start_date}' AND '{end_date}' THEN 'current'
+      WHEN a.shift_date BETWEEN '{prev_start_date}' AND '{prev_end_date}' THEN 'previous'
+    END
+),
+
+PeriodAggregates AS (
+  SELECT
+    period,
+    AVG(total_work_time) AS avg_total_work_time,
+    AVG(total_active_time) AS avg_total_active_time,
+    AVG(total_idle_time) AS avg_total_idle_time,
+    AVG(total_lock_time) AS avg_total_lock_time,
+    AVG(active_within_shift + idle_within_shift + lock_within_shift) AS avg_total_work_time_within_shift,
+    AVG(active_outside_shift + idle_outside_shift) AS avg_total_work_time_outside_shift,
+    AVG(pulse_shift_time * 3600) AS avg_pulse_shift_time_seconds,
+    AVG(adjusted_active_time * 3600) AS avg_adjusted_active_time_seconds,
+    AVG(adjusted_lock_time * 3600) AS avg_adjusted_lock_time_seconds
+  FROM CurrentShiftData
+  WHERE period IN ('current', 'previous')
+  GROUP BY period
+),
+
+CurrentPeriod AS (
+  SELECT * FROM PeriodAggregates WHERE period = 'current'
+),
+
+PreviousPeriod AS (
+  SELECT * FROM PeriodAggregates WHERE period = 'previous'
+)
+
+SELECT
+  -- Current period metrics (use 0 if no data exists)
+  COALESCE(curr.avg_total_work_time, 0) AS current_total_work_time,
+  COALESCE(curr.avg_total_active_time, 0) AS current_total_active_time,
+  COALESCE(curr.avg_total_idle_time, 0) AS current_total_idle_time,
+  COALESCE(curr.avg_total_lock_time, 0) AS current_total_lock_time,
+  COALESCE(curr.avg_total_work_time_within_shift, 0) AS current_total_work_time_within_shift,
+  COALESCE(curr.avg_total_work_time_outside_shift, 0) AS current_total_work_time_outside_shift,
+  
+  -- Schedule comparisons (only calculate if current data exists)
+  CASE 
+    WHEN curr.avg_total_work_time IS NOT NULL 
+    THEN COALESCE(curr.avg_total_work_time, 0) - COALESCE(curr.avg_pulse_shift_time_seconds, 0)
+    ELSE 0 
+  END AS total_work_shift_schedule,
+  
+  CASE 
+    WHEN curr.avg_total_work_time IS NULL THEN 'No Data'
+    WHEN COALESCE(curr.avg_total_work_time, 0) - COALESCE(curr.avg_pulse_shift_time_seconds, 0) > 0 THEN 'Up'
+    WHEN COALESCE(curr.avg_total_work_time, 0) - COALESCE(curr.avg_pulse_shift_time_seconds, 0) < 0 THEN 'Down'
+    ELSE 'No Change'
+  END AS total_work_shift_schedule_trend,
+  
+  CASE 
+    WHEN curr.avg_total_active_time IS NOT NULL 
+    THEN COALESCE(curr.avg_total_active_time, 0) - COALESCE(curr.avg_adjusted_active_time_seconds, 0)
+    ELSE 0 
+  END AS total_active_shift_schedule,
+  
+  CASE 
+    WHEN curr.avg_total_active_time IS NULL THEN 'No Data'
+    WHEN COALESCE(curr.avg_total_active_time, 0) - COALESCE(curr.avg_adjusted_active_time_seconds, 0) > 0 THEN 'Up'
+    WHEN COALESCE(curr.avg_total_active_time, 0) - COALESCE(curr.avg_adjusted_active_time_seconds, 0) < 0 THEN 'Down'
+    ELSE 'No Change'
+  END AS total_active_shift_schedule_trend,
+  
+  CASE 
+    WHEN curr.avg_total_lock_time IS NOT NULL 
+    THEN COALESCE(curr.avg_total_lock_time, 0) - COALESCE(curr.avg_adjusted_lock_time_seconds, 0)
+    ELSE 0 
+  END AS total_lock_shift_schedule,
+  
+  CASE 
+    WHEN curr.avg_total_lock_time IS NULL THEN 'No Data'
+    WHEN COALESCE(curr.avg_total_lock_time, 0) - COALESCE(curr.avg_adjusted_lock_time_seconds, 0) > 0 THEN 'Up'
+    WHEN COALESCE(curr.avg_total_lock_time, 0) - COALESCE(curr.avg_adjusted_lock_time_seconds, 0) < 0 THEN 'Down'
+    ELSE 'No Change'
+  END AS total_lock_shift_schedule_trend,
+  
+  -- Previous period metrics (use 0 if no data exists)
+  COALESCE(prev.avg_total_work_time, 0) AS prev_total_work_time,
+  COALESCE(prev.avg_total_active_time, 0) AS prev_total_active_time,
+  COALESCE(prev.avg_total_idle_time, 0) AS prev_total_idle_time,
+  COALESCE(prev.avg_total_lock_time, 0) AS prev_total_lock_time,
+  
+  -- Period comparison trends (handle missing data scenarios)
+  CASE 
+    WHEN curr.avg_total_work_time IS NULL OR prev.avg_total_work_time IS NULL THEN 'No Comparison Data'
+    WHEN curr.avg_total_work_time > prev.avg_total_work_time THEN 'Up'
+    WHEN curr.avg_total_work_time < prev.avg_total_work_time THEN 'Down'
+    ELSE 'No Change'
+  END AS total_work_trend,
+  
+  CASE 
+    WHEN curr.avg_total_work_time IS NULL OR prev.avg_total_work_time IS NULL OR prev.avg_total_work_time = 0 THEN 0
+    ELSE ROUND(((curr.avg_total_work_time - prev.avg_total_work_time) / prev.avg_total_work_time) * 100, 2)
+  END AS total_work_percentage_change,
+  
+  CASE 
+    WHEN curr.avg_total_active_time IS NULL OR prev.avg_total_active_time IS NULL THEN 'No Comparison Data'
+    WHEN curr.avg_total_active_time > prev.avg_total_active_time THEN 'Up'
+    WHEN curr.avg_total_active_time < prev.avg_total_active_time THEN 'Down'
+    ELSE 'No Change'
+  END AS total_active_trend,
+  
+  CASE 
+    WHEN curr.avg_total_active_time IS NULL OR prev.avg_total_active_time IS NULL OR prev.avg_total_active_time = 0 THEN 0
+    ELSE ROUND(((curr.avg_total_active_time - prev.avg_total_active_time) / prev.avg_total_active_time) * 100, 2)
+  END AS total_active_percentage_change,
+  
+  CASE 
+    WHEN curr.avg_total_idle_time IS NULL OR prev.avg_total_idle_time IS NULL THEN 'No Comparison Data'
+    WHEN curr.avg_total_idle_time > prev.avg_total_idle_time THEN 'Up'
+    WHEN curr.avg_total_idle_time < prev.avg_total_idle_time THEN 'Down'
+    ELSE 'No Change'
+  END AS total_idle_trend,
+  
+  CASE 
+    WHEN curr.avg_total_idle_time IS NULL OR prev.avg_total_idle_time IS NULL OR prev.avg_total_idle_time = 0 THEN 0
+    ELSE ROUND(((curr.avg_total_idle_time - prev.avg_total_idle_time) / prev.avg_total_idle_time) * 100, 2)
+  END AS total_idle_percentage_change,
+  
+  CASE 
+    WHEN curr.avg_total_lock_time IS NULL OR prev.avg_total_lock_time IS NULL THEN 'No Comparison Data'
+    WHEN curr.avg_total_lock_time > prev.avg_total_lock_time THEN 'Up'
+    WHEN curr.avg_total_lock_time < prev.avg_total_lock_time THEN 'Down'
+    ELSE 'No Change'
+  END AS total_lock_trend,
+  
+  CASE 
+    WHEN curr.avg_total_lock_time IS NULL OR prev.avg_total_lock_time IS NULL OR prev.avg_total_lock_time = 0 THEN 0
+    ELSE ROUND(((curr.avg_total_lock_time - prev.avg_total_lock_time) / prev.avg_total_lock_time) * 100, 2)
+  END AS total_lock_percentage_change
+  
+FROM 
+  (SELECT 1 AS join_key) AS dummy
+LEFT JOIN CurrentPeriod curr ON 1=1
+LEFT JOIN PreviousPeriod prev ON 1=1
+
+
+
+
+
+
 WITH FilteredEmployees AS (
   SELECT
     emplid AS emp_id,
