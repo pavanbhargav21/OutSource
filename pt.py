@@ -1,4 +1,265 @@
 
+
+WITH date_periods AS (
+    SELECT 
+        '2025-08-18'::DATE AS curr_start,
+        '2025-08-24'::DATE AS curr_end,
+        '2025-08-11'::DATE AS prev_start,
+        '2025-08-17'::DATE AS prev_end
+),
+
+filtered_employees AS (
+    SELECT emplid FROM FilteredEmployees
+),
+
+FilteredLoginLogout AS (
+    SELECT
+        emp_id,
+        shift_date,
+        TO_TIMESTAMP(emp_login_time, 'yyyy-MM-dd HH:mm:ss') as emp_login_time,
+        TO_TIMESTAMP(emp_logout_time, 'yyyy-MM-dd HH:mm:ss') as emp_logout_time,
+        CASE
+            WHEN shift_date BETWEEN (SELECT curr_start FROM date_periods) 
+                               AND (SELECT curr_end FROM date_periods) THEN 'CURRENT'
+            WHEN shift_date BETWEEN (SELECT prev_start FROM date_periods) 
+                               AND (SELECT prev_end FROM date_periods) THEN 'PREVIOUS'
+        END AS period
+    FROM gold_dashboard.analytics_emp_login_logout
+    WHERE shift_date BETWEEN (SELECT prev_start FROM date_periods) 
+                         AND (SELECT curr_end FROM date_periods)
+    AND emp_id IN (SELECT emplid FROM filtered_employees)
+    AND is_weekoff IS FALSE 
+    AND emp_id IS NOT NULL
+),
+
+work_hours AS (
+    SELECT
+        period,
+        SUM(EXTRACT(EPOCH FROM (emp_logout_time - emp_login_time)) / 3600) AS total_hours_worked
+    FROM FilteredLoginLogout
+    WHERE emp_login_time IS NOT NULL 
+      AND emp_logout_time IS NOT NULL
+      AND emp_logout_time > emp_login_time
+    GROUP BY period
+),
+
+keyboard_data AS (
+    SELECT
+        f.period,
+        SUM(k.BACKSPACE_EVENTS + k.ESC_EVENTS + k.DELETE_EVENTS) AS total_error,
+        SUM(k.ENTER_EVENTS) AS total_enter,
+        SUM(k.CTRL_C_EVENTS + k.CTRL_V_EVENTS) AS total_copy_paste,
+        SUM(k.ALT_TAB_EVENTS) AS total_swivel,
+        SUM(k.TOTAL_KEYBOARD_EVENTS) AS total_keyboard,
+        AVG(k.BACKSPACE_EVENTS + k.ESC_EVENTS + k.DELETE_EVENTS) AS avg_error,
+        AVG(k.ENTER_EVENTS) AS avg_enter,
+        AVG(k.CTRL_C_EVENTS + k.CTRL_V_EVENTS) AS avg_copy_paste,
+        AVG(k.ALT_TAB_EVENTS) AS avg_swivel,
+        AVG(k.TOTAL_KEYBOARD_EVENTS) AS avg_keyboard,
+        COUNT(DISTINCT k.EMP_ID) AS emp_count
+    FROM gold_dashboard.analytics_ump_keystrokes k
+    INNER JOIN FilteredLoginLogout f
+        ON k.EMP_ID = f.emp_id
+        AND k.SHIFT_DATE = f.shift_date
+    WHERE k.SHIFT_DATE BETWEEN (SELECT prev_start FROM date_periods) 
+                          AND (SELECT curr_end FROM date_periods)
+    GROUP BY f.period
+),
+
+mouse_data AS (
+    SELECT
+        f.period,
+        SUM(m.TOTAL_MOUSE_COUNT) AS total_mouse,
+        AVG(m.TOTAL_MOUSE_COUNT) AS avg_mouse
+    FROM gold_dashboard.analytics_emp_mouseclicks m
+    INNER JOIN FilteredLoginLogout f
+        ON m.EMP_ID = f.emp_id
+        AND m.SHIFT_DATE = f.shift_date
+    WHERE m.SHIFT_DATE BETWEEN (SELECT prev_start FROM date_periods) 
+                          AND (SELECT curr_end FROM date_periods)
+    GROUP BY f.period
+),
+
+combined_data AS (
+    SELECT
+        COALESCE(k.period, m.period) AS period,
+        COALESCE(k.total_error, 0) AS total_error,
+        COALESCE(k.total_enter, 0) AS total_enter,
+        COALESCE(k.total_copy_paste, 0) AS total_copy_paste,
+        COALESCE(k.total_swivel, 0) AS total_swivel,
+        COALESCE(k.total_keyboard, 0) AS total_keyboard,
+        COALESCE(m.total_mouse, 0) AS total_mouse,
+        COALESCE(k.avg_error, 0) AS avg_error,
+        COALESCE(k.avg_enter, 0) AS avg_enter,
+        COALESCE(k.avg_copy_paste, 0) AS avg_copy_paste,
+        COALESCE(k.avg_swivel, 0) AS avg_swivel,
+        COALESCE(k.avg_keyboard, 0) AS avg_keyboard,
+        COALESCE(m.avg_mouse, 0) AS avg_mouse,
+        COALESCE(k.total_keyboard, 0) + COALESCE(m.total_mouse, 0) AS total_input,
+        COALESCE(k.avg_keyboard, 0) + COALESCE(m.avg_mouse, 0) AS avg_input
+    FROM keyboard_data k
+    FULL OUTER JOIN mouse_data m ON k.period = m.period
+),
+
+period_data AS (
+    SELECT 
+        cd.*,
+        wh.total_hours_worked
+    FROM combined_data cd
+    LEFT JOIN work_hours wh ON cd.period = wh.period
+),
+
+metrics_comparison AS (
+    SELECT
+        metric,
+        MAX(CASE WHEN period = 'CURRENT' THEN total_value END) AS current_total,
+        MAX(CASE WHEN period = 'PREVIOUS' THEN total_value END) AS prev_total,
+        MAX(CASE WHEN period = 'CURRENT' THEN avg_value END) AS current_avg,
+        MAX(CASE WHEN period = 'PREVIOUS' THEN avg_value END) AS prev_avg
+    FROM period_data,
+    LATERAL (
+        VALUES 
+            ('Error Handling', total_error, avg_error),
+            ('Enter Usage', total_enter, avg_enter),
+            ('Copy Paste', total_copy_paste, avg_copy_paste),
+            ('Swivel Chairing', total_swivel, avg_swivel)
+    ) AS m(metric, total_value, avg_value)
+    GROUP BY metric
+),
+
+final_metrics AS (
+    SELECT
+        metric,
+        current_total,
+        prev_total,
+        current_avg,
+        prev_avg,
+        CASE 
+            WHEN prev_total IS NULL THEN 'No Change'
+            WHEN current_total > prev_total THEN 'UP'
+            WHEN current_total < prev_total THEN 'Down'
+            ELSE 'No Change'
+        END AS total_trend,
+        CASE 
+            WHEN prev_total IS NULL OR prev_total = 0 THEN 0
+            ELSE ROUND(((current_total - prev_total) / prev_total) * 100, 2)
+        END AS total_change_pct,
+        CASE 
+            WHEN prev_avg IS NULL THEN 'No Change'
+            WHEN current_avg > prev_avg THEN 'UP'
+            WHEN current_avg < prev_avg THEN 'Down'
+            ELSE 'No Change'
+        END AS avg_trend,
+        CASE 
+            WHEN prev_avg IS NULL OR prev_avg = 0 THEN 0
+            ELSE ROUND(((current_avg - prev_avg) / prev_avg) * 100, 2)
+        END AS avg_change_pct
+    FROM metrics_comparison
+),
+
+input_comparison AS (
+    SELECT
+        curr.total_keyboard AS total_keyboard_count,
+        curr.total_mouse AS total_mouse_count,
+        curr.total_input AS total_input_count,
+        prev.total_input AS prev_total_input_count,
+        curr.avg_keyboard AS avg_keyboard_count,
+        curr.avg_mouse AS avg_mouse_count,
+        curr.avg_input AS avg_input_count,
+        prev.avg_input AS prev_avg_input_count,
+        curr.total_hours_worked AS current_total_hours,
+        prev.total_hours_worked AS prev_total_hours,
+        curr.total_input / NULLIF(curr.total_hours_worked, 0) AS current_hourly_rate,
+        prev.total_input / NULLIF(prev.total_hours_worked, 0) AS prev_hourly_rate,
+        CASE 
+            WHEN prev.total_input IS NULL THEN 'No Change'
+            WHEN curr.total_input > prev.total_input THEN 'UP'
+            WHEN curr.total_input < prev.total_input THEN 'Down'
+            ELSE 'No Change'
+        END AS total_trend,
+        CASE 
+            WHEN prev.total_input IS NULL OR prev.total_input = 0 THEN 0
+            ELSE ROUND(((curr.total_input - prev.total_input) / prev.total_input) * 100, 2)
+        END AS total_change_pct,
+        CASE 
+            WHEN prev.avg_input IS NULL THEN 'No Change'
+            WHEN curr.avg_input > prev.avg_input THEN 'UP'
+            WHEN curr.avg_input < prev.avg_input THEN 'Down'
+            ELSE 'No Change'
+        END AS avg_trend,
+        CASE 
+            WHEN prev.avg_input IS NULL OR prev.avg_input = 0 THEN 0
+            ELSE ROUND(((curr.avg_input - prev.avg_input) / prev.avg_input) * 100, 2)
+        END AS avg_change_pct,
+        CASE 
+            WHEN prev.total_hours_worked IS NULL OR prev.total_hours_worked = 0 THEN 'No Change'
+            WHEN (curr.total_input / NULLIF(curr.total_hours_worked, 0)) > 
+                 (prev.total_input / NULLIF(prev.total_hours_worked, 0)) THEN 'UP'
+            WHEN (curr.total_input / NULLIF(curr.total_hours_worked, 0)) < 
+                 (prev.total_input / NULLIF(prev.total_hours_worked, 0)) THEN 'Down'
+            ELSE 'No Change'
+        END AS hourly_trend,
+        CASE 
+            WHEN prev.total_hours_worked IS NULL OR prev.total_hours_worked = 0 THEN 0
+            ELSE ROUND(((
+                (curr.total_input / NULLIF(curr.total_hours_worked, 0)) - 
+                (prev.total_input / NULLIF(prev.total_hours_worked, 0))
+            ) / NULLIF((prev.total_input / NULLIF(prev.total_hours_worked, 0)), 0) * 100), 2)
+        END AS hourly_change_pct
+    FROM period_data curr
+    CROSS JOIN period_data prev
+    WHERE curr.period = 'CURRENT' AND prev.period = 'PREVIOUS'
+)
+
+SELECT to_json(
+    named_struct(
+        'totals', named_struct(
+            'UsageSummary', (SELECT COLLECT_LIST(named_struct(
+                'metric', metric,
+                'count', current_total,
+                'prev_count', prev_total,
+                'prev_trend', total_trend,
+                'prev_perc', total_change_pct
+            )) FROM final_metrics),
+            'InputSummary', named_struct(
+                'key_count', total_keyboard_count,
+                'mouse_count', total_mouse_count,
+                'input_event_count', total_input_count,
+                'prev_input_event_count', prev_total_input_count,
+                'total_hours_worked', current_total_hours,
+                'prev_total_hours_worked', prev_total_hours,
+                'hourly_rate', current_hourly_rate,
+                'prev_hourly_rate', prev_hourly_rate,
+                'prev_trend', total_trend,
+                'prev_perc', total_change_pct,
+                'hourly_trend', hourly_trend,
+                'hourly_perc', hourly_change_pct
+            )
+        ),
+        'averages', named_struct(
+            'UsageSummary', (SELECT COLLECT_LIST(named_struct(
+                'metric', metric,
+                'current_avg', current_avg,
+                'prev_avg', prev_avg,
+                'prev_trend', avg_trend,
+                'prev_perc', avg_change_pct
+            )) FROM final_metrics),
+            'InputSummary', named_struct(
+                'key_count', avg_keyboard_count,
+                'mouse_count', avg_mouse_count,
+                'input_event_count', avg_input_count,
+                'prev_input_event_count', prev_avg_input_count,
+                'prev_trend', avg_trend,
+                'prev_perc', avg_change_pct
+            )
+        )
+    )
+) AS result_json;
+
+
+
+
+
 WITH keyboard AS (
     SELECT 
         EMPID,
