@@ -1,3 +1,55 @@
+result_df = classified_df.groupBy("emp_id", "cal_date").agg(
+    # Current login: Minimum start_time within current window and app_name != "Window Lock"
+    F.min(F.when(
+        (F.col("is_current_login")) & (F.col("app_name") != "WindowLock"),
+        F.col("start_time")
+    )).alias("current_login"),
+    
+    # Last activity: Maximum start_time within current window BUT exclude WindowLock
+    F.max(F.when(
+        (F.col("start_time") >= F.col("current_window_start")) &
+        (F.col("start_time") <= F.col("current_window_end")) &
+        (F.col("app_name") != "WindowLock"),  # EXCLUDE WindowLock
+        F.col("start_time")
+    )).alias("last_activity"),
+    
+    # ... keep other aggregations as they are
+)
+
+# For mouse/keyboard data, we already exclude WindowLock by nature
+result_mkdf = classified_mkdf.groupBy("emp_id", "cal_date").agg(
+    F.max(F.when(
+        (F.col("event_time") >= F.col("current_window_start")) &
+        (F.col("event_time") <= F.col("current_window_end")),
+        F.col("event_time")
+    )).alias("last_mk_activity"),
+    # ... other aggregations
+)
+
+
+
+
+final_result = result_df.withColumn(
+    "emp_login_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_login"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("current_login"), F.col("last_activity"))
+    )
+).withColumn(
+    "emp_logout_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_logout"), F.col("last_activity"))
+    ).otherwise(
+        # PREFER mouse/keyboard logout over app activities (which excludes WindowLock)
+        F.coalesce(F.col("last_mk_activity"), F.col("last_activity"), F.col("current_login"))
+    )
+)
+
+
+
 
 # Single combined merge with optimized logic
 spark.sql("""
