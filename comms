@@ -1,4 +1,48 @@
 
+# Single combined merge with optimized logic
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING (
+    -- Combined source data with operation type indicator
+    SELECT ..., 1 as operation_type FROM temp_filtered_login_logout
+    UNION ALL
+    SELECT ..., 2 as operation_type FROM temp_prev_day_updates
+) AS source
+ON (
+    -- Combined join conditions
+    (operation_type = 1 AND target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.shift_date)
+    OR
+    (operation_type = 2 AND target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date)
+)
+WHEN MATCHED AND source.operation_type = 1 AND (
+    -- Only update if source values are better
+    (unix_timestamp(source.emp_login_time) < unix_timestamp(target.EMP_LOGIN_TIME)) OR
+    (unix_timestamp(source.emp_logout_time) > unix_timestamp(target.EMP_LOGOUT_TIME))
+) THEN
+    UPDATE SET 
+        target.EMP_LOGIN_TIME = CASE 
+            WHEN unix_timestamp(source.emp_login_time) < unix_timestamp(target.EMP_LOGIN_TIME)
+            THEN source.emp_login_time 
+            ELSE target.EMP_LOGIN_TIME 
+        END,
+        target.EMP_LOGOUT_TIME = CASE 
+            WHEN unix_timestamp(source.emp_logout_time) > unix_timestamp(target.EMP_LOGOUT_TIME)
+            THEN source.emp_logout_time 
+            ELSE target.EMP_LOGOUT_TIME 
+        END
+WHEN MATCHED AND source.operation_type = 2 AND (
+    -- Only update previous logout if source is later
+    unix_timestamp(source.new_logout_time) > unix_timestamp(target.EMP_LOGOUT_TIME)
+) THEN
+    UPDATE SET target.EMP_LOGOUT_TIME = source.new_logout_time
+WHEN NOT MATCHED AND source.operation_type = 1 THEN
+    INSERT (EMP_ID, START_TIME, END_TIME, EMP_LOGIN_TIME, EMP_LOGOUT_TIME, SHIFT_DATE)
+    VALUES (source.emp_id, source.start_time, source.end_time,
+            source.emp_login_time, source.emp_logout_time, source.shift_date)
+""")
+
+
+
 
 WITH FilteredEmployees AS (
   SELECT
