@@ -1,3 +1,222 @@
+
+
+Here are the exact changes you need to make:
+
+🚀 Startup Command Changes
+
+Before (Problematic):
+
+```bash
+gunicorn -w 8 -k uvicorn.workers.UvicornWorker app:app
+```
+
+After (Fixed):
+
+```bash
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker app:app \
+  --timeout 120 \
+  --graceful-timeout 130 \
+  --max-requests 1000 \
+  --max-requests-jitter 50 \
+  --preload
+```
+
+Alternative: Using gunicorn.conf.py
+
+```python
+# Create gunicorn.conf.py
+bind = "0.0.0.0:80"
+workers = 4
+worker_class = "uvicorn.workers.UvicornWorker"
+timeout = 120
+graceful_timeout = 130
+max_requests = 1000
+max_requests_jitter = 50
+preload = True
+```
+
+Then run:
+
+```bash
+gunicorn -c gunicorn.conf.py app:app
+```
+
+🔧 Databricks Connection Code Changes
+
+Before:
+
+```python
+def create_connection():
+    return sql.connect(
+        server_hostname=os.getenv('DATABRICKS_SERVER_HOSTNAME'),
+        http_path=os.getenv('DATABRICKS_HTTP_PATH'),
+        credentials_provider=lambda: oauth_service_principal(config)
+    )
+```
+
+After (With Timeouts):
+
+```python
+def create_connection():
+    return sql.connect(
+        server_hostname=os.getenv('DATABRICKS_SERVER_HOSTNAME'),
+        http_path=os.getenv('DATABRICKS_HTTP_PATH'),
+        credentials_provider=lambda: oauth_service_principal(config),
+        # ADD THESE TIMEOUTS:
+        timeout=10000,           # 10 second query timeout
+        connect_timeout=5000,    # 5 second connection timeout
+        # Optional: Enable retries
+        retries=3,
+        retry_delay=1000         # 1 second between retries
+    )
+```
+
+🛡️ Additional Safety (Recommended)
+
+1. Add Circuit Breaker
+
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type((TimeoutError, ConnectionError))
+)
+def execute_safe_query(query):
+    with DatabricksSession() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            return cursor.fetchall()
+```
+
+2. Add Memory Protection
+
+```python
+import psutil
+import os
+
+def check_memory_safe():
+    """Prevent operations if memory is critical"""
+    memory = psutil.virtual_memory()
+    if memory.percent > 85:
+        raise MemoryError(f"Memory usage too high: {memory.percent}%")
+    
+    # Check container limits (if in container)
+    if os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+        with open('/sys/fs/cgroup/memory/memory.limit_in_bytes') as f:
+            memory_limit = int(f.read())
+        with open('/sys/fs/cgroup/memory/memory.usage_in_bytes') as f:
+            memory_used = int(f.read())
+        
+        if memory_used > memory_limit * 0.85:
+            raise MemoryError("Container memory limit approaching")
+```
+
+📁 Final Complete databricks_pool.py
+
+```python
+import logging
+import time
+from queue import Queue, Empty
+from databricks import sql
+import os
+import psutil
+from datetime import datetime
+
+# Configuration
+POOL_SIZE = 3  # ← REDUCED FROM 10 TO 3
+CONNECTION_TTL = 1800
+connection_pool = Queue(maxsize=POOL_SIZE)
+
+logger = logging.getLogger(__name__)
+
+# Statistics
+pool_stats = {
+    'total_requests': 0,
+    'new_connections': 0,
+    'pool_hits': 0,
+    'pool_misses': 0,
+    'stale_resets': 0,
+    'current_reset_start_time': time.time()
+}
+
+def create_connection():
+    """Create Databricks connection with timeouts"""
+    server_hostname = os.environ.get('DATABRICKS_SERVER_HOSTNAME')
+    http_path = os.environ.get('DATABRICKS_HTTP_PATH')
+    
+    # Check memory before creating connection
+    memory = psutil.virtual_memory()
+    if memory.percent > 85:
+        raise MemoryError(f"Cannot create connection - memory at {memory.percent}%")
+    
+    return sql.connect(
+        server_hostname=server_hostname,
+        http_path=http_path,
+        timeout=10000,           # 10 second query timeout
+        connect_timeout=5000,    # 5 second connection timeout
+        retries=2,               # 2 retries on failure
+        retry_delay=1000         # 1 second between retries
+    )
+
+# ... (keep your existing DatabricksSession class logic) ...
+
+class DatabricksSession:
+    # ... (your existing class code) ...
+    
+    def __enter__(self):
+        # Add memory safety check
+        memory = psutil.virtual_memory()
+        if memory.percent > 80:
+            logger.warning(f"Memory high ({memory.percent}%) - creating direct connection")
+            self.conn = create_connection()
+            self.connection_source = "new_memory_safe"
+            return self.conn
+        
+        # ... rest of your existing logic ...
+```
+
+🚀 Deployment Steps:
+
+1. Update Startup Command
+
+```bash
+# If using command line:
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker app:app \
+  --timeout 120 --graceful-timeout 130 \
+  --max-requests 1000 --max-requests-jitter 50 --preload
+
+# If using Dockerfile:
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", 
+     "--timeout", "120", "--graceful-timeout", "130", 
+     "--max-requests", "1000", "--max-requests-jitter", "50",
+     "--preload", "app:app"]
+```
+
+2. Update Databricks Connection Code
+
+Add the timeout parameters to your sql.connect() call.
+
+3. Test Gradually
+
+```bash
+# Test with reduced load first
+# Monitor memory usage and worker stability
+# Adjust timeouts if needed
+```
+
+✅ Summary of Changes:
+
+1. Reduced workers from 8 to 4
+2. Reduced pool size from 10 to 3
+3. Added timeouts: 120s worker, 10s query, 5s connection
+4. Added safety: memory checks, retries, circuit breaker
+5. Added monitoring: better logging and statistics
+
+These changes will fix your worker crashes while
+
+
 Yes! You need to implement retry logic at the API level. The retry should happen for the entire Databricks query operation, not just the connection. Here's exactly what to do:
 
 📁 api_endpoints.py (With Retry Logic)
