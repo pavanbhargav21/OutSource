@@ -1,3 +1,246 @@
+Yes! You need to implement retry logic at the API level. The retry should happen for the entire Databricks query operation, not just the connection. Here's exactly what to do:
+
+📁 api_endpoints.py (With Retry Logic)
+
+Before (No Retry):
+
+```python
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    with DatabricksSession(api_name="leadsummary") as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM leads")
+            result = cursor.fetchall()
+    
+    return {"data": result}
+```
+
+After (With Retry):
+
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+import time
+
+# Configure retry for all Databricks queries
+@retry(
+    stop=stop_after_attempt(3),  # Max 3 attempts
+    wait=wait_exponential(multiplier=1, min=2, max=10),  # 2s, 4s, 8s delays
+    retry=retry_if_exception(lambda e: isinstance(e, (TimeoutError, ConnectionError, Exception))),
+    before_sleep=lambda retry_state: logger.warning(f"Retry #{retry_state.attempt_number} for {retry_state.fn.__name__}")
+)
+def execute_databricks_query(query, api_name):
+    """Execute query with retry logic"""
+    with DatabricksSession(api_name=api_name) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            return cursor.fetchall()
+
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    start_time = time.time()
+    try:
+        result = execute_databricks_query("SELECT * FROM leads", "leadsummary")
+        processing_time = time.time() - start_time
+        logger.info(f"leadsummary succeeded in {processing_time:.2f}s")
+        return {"data": result}
+    except Exception as e:
+        processing_time = time.time() - start_time
+        logger.error(f"leadsummary failed after {processing_time:.2f}s: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to fetch data after multiple retries"}
+        )
+```
+
+🔧 Alternative: Custom Retry Decorator
+
+If you don't want to use tenacity library:
+
+```python
+import time
+from functools import wraps
+
+def retry_databricks_query(max_retries=3, initial_delay=2):
+    """Custom retry decorator for Databricks queries"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (TimeoutError, ConnectionError, Exception) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:  # Not last attempt
+                        delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Attempt {attempt + 1} failed. Retrying in {delay}s: {str(e)}")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"All {max_retries} attempts failed")
+                        raise last_exception
+            raise last_exception
+        return wrapper
+    return decorator
+
+@retry_databricks_query(max_retries=3, initial_delay=2)
+def execute_query_with_retry(query, api_name):
+    """Execute query with custom retry logic"""
+    with DatabricksSession(api_name=api_name) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            return cursor.fetchall()
+
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    result = execute_query_with_retry("SELECT * FROM leads", "leadsummary")
+    return {"data": result}
+```
+
+🎯 Where to Implement Retry Logic:
+
+1. API Level (Recommended)
+
+```python
+# Retry the entire API operation including:
+# - Connection acquisition
+# - Query execution
+# - Data fetching
+
+@router.get("/api/data")
+async def get_data():
+    try:
+        result = execute_with_retry("SELECT ...", "api_name")
+        return {"data": result}
+    except:
+        return error_response
+```
+
+2. Service Level
+
+```python
+# Create a service layer that handles retries
+class DataService:
+    @retry(stop=stop_after_attempt(3))
+    def get_lead_data(self):
+        with DatabricksSession() as conn:
+            # ... query logic
+
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    service = DataService()
+    result = service.get_lead_data()
+    return {"data": result}
+```
+
+3. Connection Level (Already Done)
+
+```python
+# You already added retries in create_connection():
+sql.connect(
+    # ...
+    retries=2,        # ← Connection-level retries
+    retry_delay=1000
+)
+```
+
+📊 Retry Strategy Configuration:
+
+```python
+# For different types of APIs, use different retry strategies:
+
+# Fast APIs (should fail quickly):
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(1))
+
+# Important APIs (more retries):
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=30))
+
+# Background jobs (persistent retries):
+@retry(stop=stop_after_attempt(10), wait=wait_exponential(multiplier=2, min=5, max=120))
+```
+
+🚀 Complete API Implementation:
+
+```python
+from fastapi import APIRouter, HTTPException
+import time
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+
+router = APIRouter()
+
+# Global retry configuration
+DATABRICKS_RETRY_CONFIG = {
+    'stop': stop_after_attempt(3),
+    'wait': wait_exponential(multiplier=1, min=2, max=10),
+    'retry': retry_if_exception(lambda e: isinstance(e, (TimeoutError, ConnectionError))),
+    'before_sleep': lambda retry_state: logger.warning(
+        f"Retry #{retry_state.attempt_number} for {retry_state.fn.__name__}"
+    )
+}
+
+@retry(**DATABRICKS_RETRY_CONFIG)
+def execute_databricks_query(query, api_name):
+    """Execute query with retry logic"""
+    with DatabricksSession(api_name=api_name) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            return cursor.fetchall()
+
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    start_time = time.time()
+    try:
+        result = execute_databricks_query(
+            "SELECT * FROM leads WHERE date = CURRENT_DATE()", 
+            "leadsummary"
+        )
+        processing_time = time.time() - start_time
+        logger.info(f"leadsummary succeeded in {processing_time:.2f}s")
+        return {"data": result}
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        logger.error(f"leadsummary failed after {processing_time:.2f}s: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch lead data after multiple attempts: {str(e)}"
+        )
+
+@router.get("/api/userstats")
+async def get_user_stats():
+    start_time = time.time()
+    try:
+        result = execute_databricks_query(
+            "SELECT user_id, COUNT(*) FROM events GROUP BY user_id", 
+            "userstats"
+        )
+        processing_time = time.time() - start_time
+        logger.info(f"userstats succeeded in {processing_time:.2f}s")
+        return {"data": result}
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        logger.error(f"userstats failed after {processing_time:.2f}s: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch user stats: {str(e)}"
+        )
+```
+
+✅ What This Achieves:
+
+1. Automatic retries for transient failures
+2. Exponential backoff to avoid overwhelming Databricks
+3. Detailed logging for debugging
+4. Proper error handling with HTTP status codes
+5. Performance monitoring with timing information
+
+The retry logic should be implemented at the API level to handle the complete operation from connection to query execution! 🚀
+
+
+
+
+
+-----
 
 
 Yes! You need to implement retry logic at the API level. The retry should happen for the entire Databricks query operation, not just the connection. Here's exactly what to do:
