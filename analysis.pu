@@ -1,3 +1,186 @@
+
+from fastapi import APIRouter
+from .databricks_pool import DatabricksSession
+from fastapi.responses import JSONResponse
+
+router = APIRouter()
+
+@router.get("/api/leadsummary")
+async def get_lead_summary():
+    with DatabricksSession(api_name="leadsummary") as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM leads")
+            result = cursor.fetchall()
+    
+    return JSONResponse(content={"data": result})
+
+@router.get("/api/userstats")
+async def get_user_stats():
+    with DatabricksSession(api_name="userstats") as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM users")
+            result = cursor.fetchall()
+    
+    return JSONResponse(content={"data": result})
+
+@router.get("/api/attendance")
+async def get_attendance():
+    with DatabricksSession(api_name="attendance") as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM attendance")
+            result = cursor.fetchall()
+    
+    return JSONResponse(content={"data": result})
+
+
+
+import logging
+import time
+from queue import Queue, Empty
+from databricks import sql
+import os
+from datetime import datetime
+
+# Configuration
+POOL_SIZE = 10
+CONNECTION_TTL = 1800  # 30 minutes
+connection_pool = Queue(maxsize=POOL_SIZE)
+
+logger = logging.getLogger(__name__)
+
+# Global stats - will be reset on stale detection
+pool_stats = {
+    'total_requests': 0,
+    'new_connections': 0,
+    'pool_hits': 0,
+    'pool_misses': 0,
+    'stale_resets': 0,
+    'current_reset_start_time': time.time()
+}
+
+def create_connection():
+    """Create a new Databricks connection"""
+    server_hostname = os.environ.get('DATABRICKS_SERVER_HOSTNAME')
+    http_path = os.environ.get('DATABRICKS_HTTP_PATH')
+    
+    return sql.connect(
+        server_hostname=server_hostname,
+        http_path=http_path,
+        # ... your authentication config
+    )
+
+def reset_everything():
+    """COMPLETE RESET: Close all connections and reset all counters"""
+    # Close all connections in pool
+    closed_count = 0
+    while not connection_pool.empty():
+        try:
+            conn, _ = connection_pool.get_nowait()
+            try:
+                conn.close()
+                closed_count += 1
+            except:
+                pass
+        except Empty:
+            break
+    
+    # RESET ALL COUNTERS to zero
+    global pool_stats
+    pool_stats = {
+        'total_requests': 0,
+        'new_connections': 0,
+        'pool_hits': 0,
+        'pool_misses': 0,
+        'stale_resets': pool_stats['stale_resets'] + 1,
+        'current_reset_start_time': time.time()
+    }
+    
+    # CLEAR VISUAL SEPARATOR with timestamp and meaningful message
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("")
+    logger.info("🔁" * 60)
+    logger.info(f"🔄 COMPLETE CONNECTION RESET at {timestamp}")
+    logger.info(f"📊 Closed {closed_count} old connections")
+    logger.info(f"🔄 All counters reset to ZERO - Fresh start!")
+    logger.info(f"📈 This is reset #{pool_stats['stale_resets']}")
+    logger.info("🔁" * 60)
+    logger.info("")
+    
+    return closed_count
+
+class DatabricksSession:
+    """Connection pool with clear reset messages"""
+    
+    def __init__(self, api_name="unknown"):
+        self.api_name = api_name
+        self.connection_source = None
+    
+    def __enter__(self):
+        # Try to get from pool first
+        try:
+            self.conn, self.last_used = connection_pool.get_nowait()
+            self.connection_source = "pool"
+            pool_stats['pool_hits'] += 1
+            
+            # Check if connection is stale - COMPLETE RESET if stale!
+            if time.time() - self.last_used > CONNECTION_TTL:
+                try:
+                    self.conn.close()
+                except:
+                    pass
+                
+                # COMPLETE RESET with clear visual message
+                reset_everything()
+                
+                # Create fresh connection
+                self.conn = create_connection()
+                self.connection_source = "new_after_reset"
+                pool_stats['new_connections'] += 1
+            
+        except Empty:
+            # Create new connection
+            self.conn = create_connection()
+            self.connection_source = "new"
+            self.last_used = time.time()
+            pool_stats['new_connections'] += 1
+            pool_stats['pool_misses'] += 1
+        
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pool_stats['total_requests'] += 1
+        current_pool_size = connection_pool.qsize()
+        uptime_since_reset = time.time() - pool_stats['current_reset_start_time']
+        
+        # Calculate hit rate since last reset
+        hit_rate = (pool_stats['pool_hits'] / pool_stats['total_requests'] * 100) if pool_stats['total_requests'] > 0 else 0
+        
+        # Meaningful log message with emojis for quick scanning
+        logger.info(
+            f"📡 {self.api_name} → {self.connection_source} "
+            f"| 🏊 pool:{current_pool_size}/{POOL_SIZE} "
+            f"| 📊 Req:{pool_stats['total_requests']} "
+            f"| 🆕 New:{pool_stats['new_connections']} "
+            f"| ✅ Hit:{pool_stats['pool_hits']} "
+            f"| 🔄 Resets:{pool_stats['stale_resets']} "
+            f"| 🎯 Rate:{hit_rate:.1f}% "
+            f"| ⏰ {uptime_since_reset:.0f}s"
+        )
+        
+        # Return to pool if it's a fresh connection
+        try:
+            if not connection_pool.full():
+                connection_pool.put((self.conn, time.time()))
+            else:
+                self.conn.close()
+        except Exception:
+            try:
+                self.conn.close()
+            except:
+                pass
+
+
+
 Subject: Urgent: Fix for Databricks Connection Memory Issues Causing Worker Crashes
 
 Hi Team,
