@@ -1,4 +1,12 @@
+I wanted to share some context regarding the current issue and the upcoming change request scheduled for Monday or Tuesday.
 
+At present, the login-logout recalculation is based on a delete and insert process. This approach leads to inaccurate data being returned if queries are made while the job is still running. The current process recalculates login-logout data for employees whose records fall within the past 72 hours, regardless of whether their actual login or logout times have changed. This is especially problematic with shift changes.
+
+In the upcoming CR, this will be improved. The login-logout recalculation will occur only when there is an actual change in the employee’s login or logout time. Additionally, the process will be handled using an upsert approach instead of delete and insert. This means new data will be appended or updated without removing existing records, ensuring data consistency and accuracy.
+
+With these changes, the issue of querying data during job execution will no longer occur.
+
+Let me know if you have any questions.
 
 import os
 import logging
