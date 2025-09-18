@@ -1,4 +1,247 @@
 
+
+import pandas as pd
+import json
+
+def execute_query(conn, query):
+    """Execute SQL query and return DataFrame"""
+    return pd.read_sql(query, conn)
+
+def process_period_stats(data):
+    """
+    Process period stats data and return the final JSON result with Totals and Averages
+    """
+    if data.empty:
+        return json.dumps({
+            'empCount': 0,
+            'Totals': {
+                'Usage Summary': [],
+                'InputSummary': {
+                    'input_event_count_hr': 0,
+                    'prev_trend': 'No Change',
+                    'prev_perc': 0
+                }
+            },
+            'Averages': {
+                'Usage Summary': [],
+                'InputSummary': {
+                    'input_event_count_hr': 0,
+                    'prev_trend': 'No Change',
+                    'prev_perc': 0
+                }
+            }
+        })
+    
+    # Convert to dictionaries for easier access
+    current_data = data[data['period'] == 'CURRENT']
+    previous_data = data[data['period'] == 'PREVIOUS']
+    
+    current_dict = current_data.iloc[0].to_dict() if not current_data.empty else {}
+    prev_dict = previous_data.iloc[0].to_dict() if not previous_data.empty else {}
+    
+    # Extract values with defaults
+    emp_count = current_dict.get('emp_count', 0) or prev_dict.get('emp_count', 0)
+    current_hours = current_dict.get('total_hours_worked', 0)
+    previous_hours = prev_dict.get('total_hours_worked', 0)
+    
+    # Calculate metrics trends for TOTALS
+    totals_metrics_data = []
+    totals_metrics = [
+        ('Error Handling', 'total_error'),
+        ('Enter Usage', 'total_enter'),
+        ('Copy Paste', 'total_copy_paste'),
+        ('Swivel Chairing', 'total_swivel')
+    ]
+    
+    for metric_name, col_name in totals_metrics:
+        current_val = current_dict.get(col_name, 0)
+        prev_val = prev_dict.get(col_name, 0)
+        
+        # Calculate trend
+        if prev_val == 0:
+            trend = 'No Change'
+            change_pct = 0
+        else:
+            if current_val > prev_val:
+                trend = 'Up'
+            elif current_val < prev_val:
+                trend = 'Down'
+            else:
+                trend = 'No Change'
+            change_pct = round(abs((current_val - prev_val) / prev_val) * 100, 0)
+        
+        totals_metrics_data.append({
+            'metric': metric_name,
+            'current_total': current_val,
+            'prev_total': prev_val,
+            'total_trend': trend,
+            'total_change_pct': change_pct
+        })
+    
+    # Calculate metrics trends for AVERAGES
+    averages_metrics_data = []
+    averages_metrics = [
+        ('Error Handling', 'avg_error'),
+        ('Enter Usage', 'avg_enter'),
+        ('Copy Paste', 'avg_copy_paste'),
+        ('Swivel Chairing', 'avg_swivel')
+    ]
+    
+    for metric_name, col_name in averages_metrics:
+        current_val = current_dict.get(col_name, 0)
+        prev_val = prev_dict.get(col_name, 0)
+        
+        # Calculate trend
+        if prev_val == 0:
+            trend = 'No Change'
+            change_pct = 0
+        else:
+            if current_val > prev_val:
+                trend = 'Up'
+            elif current_val < prev_val:
+                trend = 'Down'
+            else:
+                trend = 'No Change'
+            change_pct = round(abs((current_val - prev_val) / prev_val) * 100, 0)
+        
+        averages_metrics_data.append({
+            'metric': metric_name,
+            'current_avg': current_val,
+            'prev_avg': prev_val,
+            'avg_trend': trend,
+            'avg_change_pct': change_pct
+        })
+    
+    # Calculate input summary for TOTALS
+    current_input_count = current_dict.get('total_keyboard', 0) + current_dict.get('total_mouse', 0)
+    prev_input_count = prev_dict.get('total_keyboard', 0) + prev_dict.get('total_mouse', 0)
+    
+    if prev_input_count == 0:
+        input_trend = 'No Change'
+        input_change_pct = 0
+    else:
+        if current_input_count > prev_input_count:
+            input_trend = 'Up'
+        elif current_input_count < prev_input_count:
+            input_trend = 'Down'
+        else:
+            input_trend = 'No Change'
+        input_change_pct = round(abs((current_input_count - prev_input_count) / prev_input_count) * 100, 0)
+    
+    # Calculate input summary for AVERAGES
+    current_avg_input = current_dict.get('avg_keyboard', 0) + current_dict.get('avg_mouse', 0)
+    prev_avg_input = prev_dict.get('avg_keyboard', 0) + prev_dict.get('avg_mouse', 0)
+    
+    if prev_avg_input == 0:
+        avg_input_trend = 'No Change'
+        avg_input_change_pct = 0
+    else:
+        if current_avg_input > prev_avg_input:
+            avg_input_trend = 'Up'
+        elif current_avg_input < prev_avg_input:
+            avg_input_trend = 'Down'
+        else:
+            avg_input_trend = 'No Change'
+        avg_input_change_pct = round(abs((current_avg_input - prev_avg_input) / prev_avg_input) * 100, 0)
+    
+    # Calculate input events per hour
+    input_events_per_hr = round(current_input_count / current_hours, 0) if current_hours > 0 else 0
+    avg_input_events_per_hr = round(current_avg_input / current_hours, 0) if current_hours > 0 else 0
+    
+    # Calculate percentages for each metric (for Totals)
+    total_keyboard_count = current_dict.get('total_keyboard', 0)
+    for metric in totals_metrics_data:
+        if total_keyboard_count == 0:
+            metric['perc'] = 0
+        else:
+            metric['perc'] = round((metric['current_total'] / total_keyboard_count) * 100, 0)
+    
+    # Calculate percentages for each metric (for Averages)
+    avg_keyboard_count = current_dict.get('avg_keyboard', 0)
+    for metric in averages_metrics_data:
+        if avg_keyboard_count == 0:
+            metric['perc'] = 0
+        else:
+            metric['perc'] = round((metric['current_avg'] / avg_keyboard_count) * 100, 0)
+    
+    # Build final JSON structure
+    result = {
+        'empCount': int(emp_count),
+        'Totals': {
+            'Usage Summary': [
+                {
+                    'metric': m['metric'],
+                    'prev_trend': m['total_trend'],
+                    'prev_perc': int(m['total_change_pct']),
+                    'perc': int(m['perc'])
+                }
+                for m in totals_metrics_data
+            ],
+            'InputSummary': {
+                'input_event_count_hr': int(input_events_per_hr),
+                'prev_trend': input_trend,
+                'prev_perc': int(input_change_pct)
+            }
+        },
+        'Averages': {
+            'Usage Summary': [
+                {
+                    'metric': m['metric'],
+                    'prev_trend': m['avg_trend'],
+                    'prev_perc': int(m['avg_change_pct']),
+                    'perc': int(m['perc'])
+                }
+                for m in averages_metrics_data
+            ],
+            'InputSummary': {
+                'input_event_count_hr': int(avg_input_events_per_hr),
+                'prev_trend': avg_input_trend,
+                'prev_perc': int(avg_input_change_pct)
+            }
+        }
+    }
+    
+    return json.dumps(result)
+
+# Example usage
+def main():
+    conn = your_database_connection_function()
+    
+    # Your SQL query now includes average columns
+    query = """
+    WITH FilteredEmployees AS (...)
+    -- Your query that now includes:
+    -- avg_error, avg_enter, avg_copy_paste, avg_swivel, avg_keyboard, avg_mouse
+    SELECT * FROM period_stats ORDER BY period;
+    """
+    
+    try:
+        data = execute_query(conn, query)
+        print("Raw data from SQL:")
+        print(data)
+        
+        result_json = process_period_stats(data)
+        
+        # Pretty print the result
+        result_dict = json.loads(result_json)
+        print("\nFinal JSON Result:")
+        print(json.dumps(result_dict, indent=2))
+        
+        return result_json
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return json.dumps({'error': str(e)})
+    
+    finally:
+        if conn:
+            conn.close()
+
+
+
+
+
+
 -- Homepage Input KeyMouse Summary Totals, Averages - Optimized
 WITH FilteredEmployees AS (
     SELECT
