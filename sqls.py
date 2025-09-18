@@ -1,4 +1,308 @@
 
+-- Homepage Input KeyMouse Summary Totals, Averages - Optimized
+WITH FilteredEmployees AS (
+    SELECT
+        emplid
+    FROM
+        inbound.hr_employee_central
+    WHERE
+        func_mar_id = 45179442
+        AND (
+            TERMINATION_DT > CURRENT_TIMESTAMP()
+            OR TERMINATION_DT IS NULL
+        )
+),
+
+FilteredLoginLogout AS (
+    SELECT
+        emp_id,
+        shift_date,
+        TO_TIMESTAMP(emp_login_time, 'yyyy-MM-dd HH:mm:ss') AS emp_login_time,
+        TO_TIMESTAMP(emp_logout_time, 'yyyy-MM-dd HH:mm:ss') AS emp_logout_time
+    FROM
+        gold_dashboard.analytics_emp_login_logout
+    WHERE
+        SHIFT_DATE BETWEEN '2025-09-08' AND '2025-09-14'
+        AND emp_id IN (
+            SELECT
+                emplid
+            FROM
+                FilteredEmployees
+        )
+),
+
+current_work_hours AS (
+    SELECT
+        SUM(UNIX_TIMESTAMP(emp_logout_time) - UNIX_TIMESTAMP(emp_login_time)) / 3600 AS total_hours_worked
+    FROM
+        FilteredLoginLogout
+),
+
+keyboard_mouse_combined AS (
+    SELECT
+        COALESCE(k.EMP_ID, m.EMP_ID) AS emp_id,
+        COALESCE(k.SHIFT_DATE, m.SHIFT_DATE) AS shift_date,
+        COALESCE(k.period, m.period) AS period,
+        COALESCE(k.error_events, 0) AS error_events,
+        COALESCE(k.enter_events, 0) AS enter_events,
+        COALESCE(k.copy_paste_events, 0) AS copy_paste_events,
+        COALESCE(k.swivel_events, 0) AS swivel_events,
+        COALESCE(k.other_events, 0) AS other_events,
+        COALESCE(k.total_keyboard, 0) AS total_keyboard,
+        COALESCE(m.mouse_events, 0) AS mouse_events
+    FROM
+        (
+            SELECT
+                EMP_ID,
+                SHIFT_DATE,
+                CASE
+                    WHEN SHIFT_DATE BETWEEN '2025-09-08' AND '2025-09-14' THEN 'CURRENT'
+                    WHEN SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-07' THEN 'PREVIOUS'
+                END AS period,
+                SUM(BACKSPACE_EVENTS + ESC_EVENTS + DELETE_EVENTS) AS error_events,
+                SUM(ENTER_EVENTS) AS enter_events,
+                SUM(ALT_TAB_EVENTS) AS swivel_events,
+                SUM(OTHER_EVENTS) AS other_events,
+                SUM(CTRL_C_EVENTS + CTRL_V_EVENTS) AS copy_paste_events,
+                SUM(TOTAL_KEYBOARD_EVENTS) AS total_keyboard
+            FROM
+                gold_dashboard.analytics_emp_keystrokes
+            WHERE
+                SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-14'
+                AND emp_id IN (
+                    SELECT
+                        emplid
+                    FROM
+                        FilteredEmployees
+                )
+            GROUP BY
+                EMP_ID,
+                SHIFT_DATE,
+                CASE
+                    WHEN SHIFT_DATE BETWEEN '2025-09-08' AND '2025-09-14' THEN 'CURRENT'
+                    WHEN SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-07' THEN 'PREVIOUS'
+                END
+        ) k
+        FULL OUTER JOIN (
+            SELECT
+                EMP_ID,
+                SHIFT_DATE,
+                CASE
+                    WHEN SHIFT_DATE BETWEEN '2025-09-08' AND '2025-09-14' THEN 'CURRENT'
+                    WHEN SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-07' THEN 'PREVIOUS'
+                END AS period,
+                SUM(TOTAL_MOUSE_COUNT) AS mouse_events
+            FROM
+                gold_dashboard.analytics_emp_mouseclicks
+            WHERE
+                SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-14'
+                AND emp_id IN (
+                    SELECT
+                        emplid
+                    FROM
+                        FilteredEmployees
+                )
+            GROUP BY
+                EMP_ID,
+                SHIFT_DATE,
+                CASE
+                    WHEN SHIFT_DATE BETWEEN '2025-09-08' AND '2025-09-14' THEN 'CURRENT'
+                    WHEN SHIFT_DATE BETWEEN '2025-09-01' AND '2025-09-07' THEN 'PREVIOUS'
+                END
+        ) m ON k.EMP_ID = m.EMP_ID
+        AND k.SHIFT_DATE = m.SHIFT_DATE
+        AND k.period = m.period
+),
+
+period_stats AS (
+    SELECT
+        period,
+        SUM(error_events) AS total_error,
+        SUM(enter_events) AS total_enter,
+        SUM(copy_paste_events) AS total_copy_paste,
+        SUM(swivel_events) AS total_swivel,
+        SUM(mouse_events) AS total_mouse,
+        SUM(total_keyboard) AS total_keyboard,
+        SUM(total_keyboard + mouse_events) AS total_input_count
+    FROM
+        keyboard_mouse_combined
+    GROUP BY
+        period
+),
+
+metrics_pivoted AS (
+    SELECT
+        period,
+        total_error,
+        total_enter,
+        total_copy_paste,
+        total_swivel,
+        total_mouse,
+        total_keyboard,
+        total_input_count
+    FROM
+        period_stats
+),
+
+current_prev_joined AS (
+    SELECT
+        c.period AS current_period,
+        c.total_error AS current_error,
+        c.total_enter AS current_enter,
+        c.total_copy_paste AS current_copy_paste,
+        c.total_swivel AS current_swivel,
+        c.total_mouse AS current_mouse,
+        c.total_keyboard AS current_keyboard,
+        c.total_input_count AS current_input_count,
+        p.period AS prev_period,
+        p.total_error AS prev_error,
+        p.total_enter AS prev_enter,
+        p.total_copy_paste AS prev_copy_paste,
+        p.total_swivel AS prev_swivel,
+        p.total_mouse AS prev_mouse,
+        p.total_keyboard AS prev_keyboard,
+        p.total_input_count AS prev_input_count
+    FROM
+        metrics_pivoted c
+        LEFT JOIN metrics_pivoted p ON p.period = 'PREVIOUS'
+    WHERE
+        c.period = 'CURRENT'
+),
+
+metrics_totals_trends AS (
+    SELECT
+        metric,
+        current_total,
+        COALESCE(prev_total, 0) AS prev_total,
+        CASE
+            WHEN prev_total IS NULL THEN 'No Change'
+            WHEN current_total > prev_total THEN 'Up'
+            WHEN current_total < prev_total THEN 'Down'
+            ELSE 'No Change'
+        END AS total_trend,
+        CASE
+            WHEN prev_total IS NULL
+            OR prev_total = 0 THEN 0
+            ELSE ROUND(ABS((current_total - prev_total) / prev_total) * 100, 0)
+        END AS total_change_pct
+    FROM
+        (
+            SELECT
+                'Error Handling' AS metric,
+                current_error AS current_total,
+                prev_error AS prev_total
+            FROM
+                current_prev_joined
+            UNION ALL
+            SELECT
+                'Enter Usage' AS metric,
+                current_enter AS current_total,
+                prev_enter AS prev_total
+            FROM
+                current_prev_joined
+            UNION ALL
+            SELECT
+                'Copy Paste' AS metric,
+                current_copy_paste AS current_total,
+                prev_copy_paste AS prev_total
+            FROM
+                current_prev_joined
+            UNION ALL
+            SELECT
+                'Swivel Chairing' AS metric,
+                current_swivel AS current_total,
+                prev_swivel AS prev_total
+            FROM
+                current_prev_joined
+        ) metrics
+),
+
+input_summary_totals AS (
+    SELECT
+        current_keyboard AS total_keyboard_count,
+        current_input_count AS total_input_count,
+        COALESCE(prev_input_count, 0) AS prev_total_input_count,
+        CASE
+            WHEN prev_input_count IS NULL THEN 'No Change'
+            WHEN current_input_count > prev_input_count THEN 'Up'
+            WHEN current_input_count < prev_input_count THEN 'Down'
+            ELSE 'No Change'
+        END AS total_trend,
+        CASE
+            WHEN prev_input_count IS NULL
+            OR prev_input_count = 0 THEN 0
+            ELSE ROUND(
+                ABS(current_input_count - prev_input_count) / prev_input_count * 100,
+                0
+            )
+        END AS total_change_pct
+    FROM
+        current_prev_joined
+)
+
+SELECT
+    TO_JSON(
+        NAMED_STRUCT(
+            'empCount',
+            COALESCE(
+                (
+                    SELECT
+                        COUNT(emplid)
+                    FROM
+                        FilteredEmployees
+                ),
+                0
+            ),
+            'Totals',
+            NAMED_STRUCT(
+                'Usage Summary',
+                (
+                    SELECT
+                        COLLECT_LIST(
+                            NAMED_STRUCT(
+                                'metric',
+                                m.metric,
+                                'prev_trend',
+                                m.total_trend,
+                                'prev_perc',
+                                m.total_change_pct,
+                                'perc',
+                                CASE
+                                    WHEN ist.total_keyboard_count = 0 THEN 0
+                                    ELSE ROUND((m.current_total / ist.total_keyboard_count) * 100, 0)
+                                END
+                            )
+                        )
+                    FROM
+                        metrics_totals_trends m
+                        CROSS JOIN input_summary_totals ist
+                ),
+                'InputSummary',
+                NAMED_STRUCT(
+                    'input_event_count_hr',
+                    ROUND(
+                        ist.total_input_count / NULLIF(
+                            (
+                                SELECT
+                                    total_hours_worked
+                                FROM
+                                    current_work_hours
+                            ),
+                            0
+                        ),
+                        0
+                    ),
+                    'prev_trend',
+                    ist.total_trend,
+                    'prev_perc',
+                    ist.total_change_pct
+                )
+            )
+        )
+    ) AS result_json;
+
+
+
 WITH ActivityWithShiftBounds AS (
   SELECT
     i.emp_id,
