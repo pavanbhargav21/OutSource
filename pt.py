@@ -1,3 +1,223 @@
+
+
+import pandas as pd
+import json
+from datetime import datetime
+
+def process_time_metrics_data(data, start_date, end_date, pre_start_date, pre_end_date):
+    """
+    Process time metrics data with employee count from UNION query
+    """
+    # Empty response template
+    empty_response = {
+        "empCount": 0,
+        "Averages": {
+            "tot_work_time": 0, "act_time": 0, "idle_time": 0, "wlock_time": 0,
+            "act_shift_trend": "No Change", "wlock_shift_trend": "No Change", 
+            "tot_shift_trend": "No Change",
+            "act_difference_seconds": 0, "tot_difference_seconds": 0, "wlock_difference_seconds": 0,
+            "prev_act_trend": "No Change", "prev_act_perc": 0,
+            "prev_tot_trend": "No Change", "prev_tot_perc": 0,
+            "prev_wlock_trend": "No Change", "prev_wlock_perc": 0,
+            "prev_idle_trend": "No Change", "prev_idle_perc": 0
+        },
+        "Totals": {
+            "tot_work_time": 0, "act_time": 0, "idle_time": 0, "wlock_time": 0,
+            "act_shift_trend": "No Change", "wlock_shift_trend": "No Change", 
+            "tot_shift_trend": "No Change",
+            "act_difference_seconds": 0, "tot_difference_seconds": 0, "wlock_difference_seconds": 0,
+            "prev_act_trend": "No Change", "prev_act_perc": 0,
+            "prev_tot_trend": "No Change", "prev_tot_perc": 0,
+            "prev_wlock_trend": "No Change", "prev_wlock_perc": 0,
+            "prev_idle_trend": "No Change", "prev_idle_perc": 0
+        }
+    }
+    
+    # Check for empty/invalid data
+    if not data or (isinstance(data, dict) and not data.get("success", True)):
+        return json.dumps(empty_response)
+    
+    if not isinstance(data, pd.DataFrame):
+        data = pd.DataFrame(data)
+    
+    if data.empty:
+        return json.dumps(empty_response)
+    
+    # Separate employee count row (where shift_date is NULL) from time metrics data
+    emp_count_data = data[data['shift_date'].isna()]
+    time_metrics_data = data[data['shift_date'].notna()]
+    
+    # Extract employee count
+    emp_count = 0
+    if not emp_count_data.empty:
+        emp_count = int(emp_count_data.iloc[0]['EMPID'])  # EMPID column contains the count
+    
+    # If no time metrics data, return only employee count
+    if time_metrics_data.empty:
+        empty_response["empCount"] = emp_count
+        return json.dumps(empty_response)
+    
+    # Process time metrics data
+    # Convert date strings to datetime objects
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    pre_start_dt = pd.to_datetime(pre_start_date)
+    pre_end_dt = pd.to_datetime(pre_end_date)
+    
+    # Convert shift_date to datetime for filtering
+    time_metrics_data['shift_date'] = pd.to_datetime(time_metrics_data['shift_date'])
+    
+    # Multiply specific columns by 3600
+    time_metrics_data['pulse_shift_time'] = time_metrics_data['pulse_shift_time'] * 3600
+    time_metrics_data['adjust_active_time'] = time_metrics_data['adjust_active_time'] * 3600
+    time_metrics_data['adjust_lock_time'] = time_metrics_data['adjust_lock_time'] * 3600
+    
+    # Filter data for current period
+    current_data = time_metrics_data[(time_metrics_data['shift_date'] >= start_dt) & (time_metrics_data['shift_date'] <= end_dt)]
+    
+    # Filter data for previous period
+    previous_data = time_metrics_data[(time_metrics_data['shift_date'] >= pre_start_dt) & (time_metrics_data['shift_date'] <= pre_end_dt)]
+    
+    # Calculate aggregates for current period
+    current_totals = calculate_aggregates(current_data, "total")
+    current_averages = calculate_aggregates(current_data, "average")
+    
+    # Calculate aggregates for previous period
+    previous_totals = calculate_aggregates(previous_data, "total")
+    previous_averages = calculate_aggregates(previous_data, "average")
+    
+    # Calculate metrics for TOTALS
+    totals_result = calculate_comparisons(current_totals, previous_totals, "Totals")
+    
+    # Calculate metrics for AVERAGES  
+    averages_result = calculate_comparisons(current_averages, previous_averages, "Averages")
+    
+    # Build final JSON structure
+    result = {
+        "empCount": emp_count,  # Use the extracted employee count
+        "Averages": averages_result,
+        "Totals": totals_result
+    }
+    
+    return json.dumps(result)
+
+def extract_employee_count(data):
+    """Extract employee count from the data where shift_date is NULL"""
+    emp_count_data = data[data['shift_date'].isna()]
+    if not emp_count_data.empty:
+        return int(emp_count_data.iloc[0]['EMPID'])
+    return 0
+
+# Rest of the helper functions remain the same...
+def calculate_aggregates(data, agg_type):
+    """Calculate aggregates (sum or average) for the given data"""
+    if data.empty:
+        return {
+            'total_active_time': 0, 'total_idle_time': 0, 'total_lock_time': 0, 
+            'total_work_time': 0, 'pulse_shift_time': 0, 'adjust_active_time': 0, 
+            'adjust_lock_time': 0
+        }
+    
+    if agg_type == "total":
+        aggregates = data.agg({
+            'total_active_time': 'sum',
+            'total_idle_time': 'sum',
+            'total_lock_time': 'sum',
+            'total_work_time': 'sum',
+            'pulse_shift_time': 'sum',
+            'adjust_active_time': 'sum',
+            'adjust_lock_time': 'sum'
+        }).to_dict()
+    else:  # average
+        aggregates = data.agg({
+            'total_active_time': 'mean',
+            'total_idle_time': 'mean',
+            'total_lock_time': 'mean',
+            'total_work_time': 'mean',
+            'pulse_shift_time': 'mean',
+            'adjust_active_time': 'mean',
+            'adjust_lock_time': 'mean'
+        }).to_dict()
+    
+    return aggregates
+
+def calculate_comparisons(current_agg, previous_agg, metric_type):
+    """Calculate comparisons between current and previous aggregates"""
+    # Extract current values
+    current_tot_work = current_agg.get('total_work_time', 0)
+    current_act_time = current_agg.get('total_active_time', 0)
+    current_idle_time = current_agg.get('total_idle_time', 0)
+    current_wlock_time = current_agg.get('total_lock_time', 0)
+    current_pulse_shift = current_agg.get('pulse_shift_time', 0)
+    current_adj_active = current_agg.get('adjust_active_time', 0)
+    current_adj_lock = current_agg.get('adjust_lock_time', 0)
+    
+    # Extract previous values
+    prev_tot_work = previous_agg.get('total_work_time', 0)
+    prev_act_time = previous_agg.get('total_active_time', 0)
+    prev_idle_time = previous_agg.get('total_idle_time', 0)
+    prev_wlock_time = previous_agg.get('total_lock_time', 0)
+    
+    # Calculate DIFFERENCES in seconds
+    tot_difference_seconds = current_tot_work - current_pulse_shift
+    act_difference_seconds = current_act_time - current_adj_active
+    wlock_difference_seconds = current_wlock_time - current_adj_lock
+    
+    # Calculate SHIFT TRENDS
+    tot_shift_trend, _ = calculate_trend(current_tot_work, current_pulse_shift)
+    wlock_shift_trend, _ = calculate_trend(current_wlock_time, current_adj_lock)
+    act_shift_trend, _ = calculate_trend(current_act_time, current_adj_active)
+    
+    # Calculate PREVIOUS PERIOD TRENDS
+    prev_tot_trend, prev_tot_perc = calculate_trend(current_tot_work, prev_tot_work)
+    prev_act_trend, prev_act_perc = calculate_trend(current_act_time, prev_act_time)
+    prev_idle_trend, prev_idle_perc = calculate_trend(current_idle_time, prev_idle_time)
+    prev_wlock_trend, prev_wlock_perc = calculate_trend(current_wlock_time, prev_wlock_time)
+    
+    return {
+        # Current values
+        "tot_work_time": round(current_tot_work, 2),
+        "act_time": round(current_act_time, 2),
+        "idle_time": round(current_idle_time, 2),
+        "wlock_time": round(current_wlock_time, 2),
+        
+        # Shift trends
+        "tot_shift_trend": tot_shift_trend,
+        "wlock_shift_trend": wlock_shift_trend,
+        "act_shift_trend": act_shift_trend,
+        
+        # Differences in seconds
+        "tot_difference_seconds": round(tot_difference_seconds, 2),
+        "act_difference_seconds": round(act_difference_seconds, 2),
+        "wlock_difference_seconds": round(wlock_difference_seconds, 2),
+        
+        # Previous period trends
+        "prev_tot_trend": prev_tot_trend,
+        "prev_tot_perc": round(prev_tot_perc, 2),
+        "prev_act_trend": prev_act_trend,
+        "prev_act_perc": round(prev_act_perc, 2),
+        "prev_idle_trend": prev_idle_trend,
+        "prev_idle_perc": round(prev_idle_perc, 2),
+        "prev_wlock_trend": prev_wlock_trend,
+        "prev_wlock_perc": round(prev_wlock_perc, 2)
+    }
+
+def calculate_trend(current_val, previous_val):
+    """Calculate trend and percentage difference from previous period"""
+    if previous_val == 0:
+        return "No Change", 0
+    
+    if current_val > previous_val:
+        trend = "Up"
+    elif current_val < previous_val:
+        trend = "Down"
+    else:
+        trend = "No Change"
+    
+    change_pct = ((current_val - previous_val) / previous_val) * 100
+    return trend, abs(change_pct)
+
+
 -- Main time metrics data
 SELECT 
     EMPID, 
