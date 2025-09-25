@@ -1,4 +1,32 @@
+-- Main time metrics data
+SELECT 
+    EMPID, 
+    shift_date,
+    total_active_time,
+    total_idle_time, 
+    total_lock_time,
+    total_work_time,
+    pulse_shift_time,
+    adjust_active_time,
+    adjust_lock_time
+FROM your_time_metrics_table
+WHERE shift_date BETWEEN '2025-09-01' AND '2025-09-14'
 
+UNION ALL
+
+-- Employee count as a separate row
+SELECT 
+    COUNT(*) as EMPID,  -- This becomes the empCount
+    NULL as shift_date,
+    NULL as total_active_time,
+    NULL as total_idle_time, 
+    NULL as total_lock_time,
+    NULL as total_work_time,
+    NULL as pulse_shift_time,
+    NULL as adjust_active_time,
+    NULL as adjust_lock_time
+FROM employee_table 
+WHERE -- your employee filters here --
 
 
 
