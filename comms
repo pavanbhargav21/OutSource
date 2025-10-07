@@ -1,3 +1,26 @@
+
+Hi [Team/Name],
+
+Currently, our backend web application connects to the SQL Warehouse to execute all dashboard queries. These queries involve operations like joins and aggregations, and the processed data is stored in Delta Lake tables.
+
+However, since all queries are executed through the SQL Warehouse, the response time is sometimes delayed — especially when the clusters are fully utilized or take time to scale up.
+
+I wanted to check if there’s a way to directly access and query the Delta tables (bypassing SQL Warehouse) to achieve faster, more transactional-style query execution — similar to how traditional RDBMS systems operate.
+
+In short:
+
+Can we query the Delta tables directly without going through SQL Warehouse?
+
+If yes, what would be the recommended approach or architecture to support such access efficiently and securely?
+
+
+Appreciate your inputs on this.
+
+Best regards,
+[Your Name]
+
+
+
 I wanted to share some context regarding the current issue and the upcoming change request scheduled for Monday or Tuesday.
 
 At present, the login-logout recalculation is based on a delete and insert process. This approach leads to inaccurate data being returned if queries are made while the job is still running. The current process recalculates login-logout data for employees whose records fall within the past 72 hours, regardless of whether their actual login or logout times have changed. This is especially problematic with shift changes.
