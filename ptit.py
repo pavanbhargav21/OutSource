@@ -1,3 +1,315 @@
+
+Perfect! Here's the code for Option 1 (manager updates only during login/logout calculations) and a separate script for bulk updating existing data.
+
+Option 1: Manager Updates Only During Login/Logout Calculations
+
+No changes needed from the previous code I provided! The current implementation already follows Option 1. Here's the complete working code:
+
+```python
+from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+from pyspark.sql.window import Window
+
+# -------------------------
+# Configurations
+# -------------------------
+dbutils.widgets.text("dynamic_hours", "24000")
+try:
+    dynamic_hours = int(dbutils.widgets.get("dynamic_hours"))
+except Exception as e:
+    print(f"Error parsing dynamic_hours: {e}, using default 1")
+    dynamic_hours = 24000
+
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 60 * dynamic_hours
+print(f"Processing window: {PROCESSING_WINDOW_MINUTES} minutes")
+
+# -------------------------
+# Time Setup
+# -------------------------
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# -------------------------
+# Load HR Employee Central Data for Manager Information
+# -------------------------
+hr_central_df = spark.table("inbound.hr_employee_central") \
+    .select(
+        F.col("emplid").alias("emp_id"),
+        F.col("func_mgr_id").alias("manager_id"),
+        "func_mgr_name"
+    ).distinct()
+
+print("HR Central data loaded successfully")
+
+# -------------------------
+# Step 1: Recent activity and distinct emp_id, cal_date
+# -------------------------
+act_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold))
+
+# Device activities (for logouts)
+mouse_df = spark.table("sys_trace.emp_mousedata") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date", "event_time")
+
+keyboard_df = spark.table("sys_trace.emp_keyboarddata") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .select("emp_id", "cal_date", "event_time")
+
+mousekey_df = mouse_df.union(keyboard_df)
+
+activities_df = act_df.select("emp_id", "cal_date").distinct()
+
+# -------------------------
+# Add previous date
+# -------------------------
+emp_dates_df = activities_df.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# -------------------------
+# Step 2: Load shift data
+# -------------------------
+shift_df = spark.table("inbound.pulse_emp_shift_info") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# ... [REST OF YOUR ORIGINAL CODE UNTIL FINAL RESULT] ...
+
+# ---------------------------------------------------
+# Step 10. Determine final times with priority rules
+# ---------------------------------------------------
+final_result = result_df.withColumn(
+    "emp_login_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_login"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("current_login"), F.col("last_activity"))
+    )
+).withColumn(
+    "emp_logout_time",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_logout"), F.col("last_activity"))
+    ).otherwise(
+        F.coalesce(F.col("last_activity"), F.col("current_login"))
+    )
+)
+
+final_mkresult = result_mkdf.withColumn(
+    "emp_logout_time_mk",
+    F.when(
+        F.col("is_week_off"),
+        F.coalesce(F.col("week_off_mk_logout"), F.col("last_mk_activity"))
+    ).otherwise(
+        F.coalesce(F.col("last_mk_activity"), F.col("current_login"))
+    )
+)
+
+# Join MK logout with main result
+final_result_with_mk = final_result.join(
+    final_mkresult.select("emp_id", "cal_date", "emp_logout_time_mk", "prev_logout_mk_update"),
+    ["emp_id", "cal_date"],
+    "left"
+)
+
+# ---------------------------------------------------
+# Step 11. Generate previous day updates (both sources)
+# ---------------------------------------------------
+prev_day_updates = final_result_with_mk.filter(
+    F.col("prev_logout_update").isNotNull() | F.col("prev_logout_mk_update").isNotNull()
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.col("prev_cal_date").alias("update_date"),
+    F.coalesce(F.col("prev_logout_mk_update"), F.col("prev_logout_update")).alias("new_logout_time")
+)
+
+# Final output: prefer MK logout if available and join manager information
+final_output_with_manager = final_result_with_mk.join(
+    hr_central_df,
+    ["emp_id"],
+    "left"  # LEFT JOIN ensures employees without HR records get NULL manager_id
+).select(
+    "emp_id",
+    "manager_id",  # This will be NULL for employees not in HR table
+    "cal_date",
+    F.coalesce(F.col("emp_logout_time_mk"), F.col("emp_logout_time")).alias("emp_logout_time"),
+    "emp_login_time",
+    "shift_start_time",
+    "shift_end_time",
+    "is_week_off"
+).orderBy("emp_id", "cal_date")
+
+# Filter out null records
+filtered_login_logout = final_output_with_manager.filter(
+    (F.col("emp_id").isNotNull()) &
+    (F.col("cal_date").isNotNull()) &
+    (F.col("emp_login_time").isNotNull()) &
+    (F.col("emp_logout_time").isNotNull()) &
+    (F.col("emp_logout_time") >= F.col("emp_login_time"))
+)
+
+# Write to Delta table
+spark.sql("""
+CREATE TABLE IF NOT EXISTS gold_dashboard.analytics_emp_login_logout (
+    EMP_ID int,
+    MANAGER_ID int,  -- Add manager_id column
+    EMP_CONTRACTED_HOURS string,
+    START_TIME string,
+    END_TIME string,
+    START_TIME_THRESHOLD string,
+    END_TIME_THRESHOLD string,
+    EMP_LOGIN_TIME string,
+    EMP_LOGOUT_TIME string,
+    SHIFT_DATE date,
+    SHIFT_COMPLETED string,
+    ATTENDENCE_STATUS string,
+    LOGIN_STATUS string,
+    LOGOUT_STATUS string,
+    WORKING_HOURS float,
+    UPDATED_ON TIMESTAMP,
+    IS_WEEK_OFF BOOLEAN GENERATED ALWAYS AS (
+        CASE WHEN unix_timestamp(END_TIME) - unix_timestamp(START_TIME) <= 0 THEN TRUE ELSE FALSE END
+    ),
+    IS_HOLIDAY BOOLEAN
+) USING DELTA
+""")
+
+spark.sql("""ALTER TABLE gold_dashboard.analytics_emp_login_logout ALTER COLUMN UPDATED_ON SET DEFAULT current_timestamp()""")
+spark.sql("""ALTER TABLE gold_dashboard.analytics_emp_login_logout ALTER COLUMN IS_HOLIDAY SET DEFAULT FALSE""")
+
+# Merge data into target table with manager_id
+filtered_login_logout.createOrReplaceTempView("temp_filtered_login_logout")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING temp_filtered_login_logout AS source
+ON target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.cal_date
+WHEN MATCHED AND target.EMP_LOGIN_TIME IS NOT NULL THEN
+    UPDATE SET 
+        target.EMP_LOGIN_TIME = CASE 
+            WHEN source.emp_login_time < target.EMP_LOGIN_TIME THEN source.emp_login_time 
+            ELSE target.EMP_LOGIN_TIME 
+        END,
+        target.EMP_LOGOUT_TIME = source.emp_logout_time,
+        target.START_TIME = source.shift_start_time,
+        target.END_TIME = source.shift_end_time,
+        target.MANAGER_ID = source.manager_id  -- Update manager_id only during recalculation
+WHEN NOT MATCHED THEN
+    INSERT (EMP_ID, MANAGER_ID, START_TIME, END_TIME, EMP_LOGIN_TIME, EMP_LOGOUT_TIME, SHIFT_DATE)
+    VALUES (source.emp_id, source.manager_id, source.shift_start_time, source.shift_end_time,
+            source.emp_login_time, source.emp_logout_time, source.cal_date)
+""")
+
+# Update previous day's logout times with manager information
+prev_day_updates_with_manager = prev_day_updates.join(
+    hr_central_df,
+    prev_day_updates.update_emp_id == hr_central_df.emp_id,
+    "left"
+).select(
+    "update_emp_id",
+    "update_date", 
+    "new_logout_time",
+    "manager_id"
+)
+
+prev_day_updates_with_manager.createOrReplaceTempView("temp_prev_day_updates")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+USING temp_prev_day_updates AS source
+ON target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date
+WHEN MATCHED THEN 
+    UPDATE SET 
+        target.EMP_LOGOUT_TIME = source.new_logout_time,
+        target.MANAGER_ID = source.manager_id  -- Update manager_id for previous day too
+""")
+```
+
+Separate Code for Bulk Updating Existing Manager IDs
+
+Here's a separate script you can run whenever you need to update manager IDs for all existing historical data:
+
+```python
+# separate_manager_update.py
+# Run this script independently when you need to bulk update manager IDs
+
+from pyspark.sql import functions as F
+
+def bulk_update_manager_ids():
+    """
+    Bulk update manager IDs for all existing records in analytics_emp_login_logout
+    This updates historical records with current manager information from HR system
+    """
+    print("Starting bulk update of manager IDs...")
+    
+    # Load current HR data
+    hr_central_df = spark.table("inbound.hr_employee_central") \
+        .select(
+            F.col("emplid").alias("emp_id"),
+            F.col("func_mgr_id").alias("manager_id"),
+            "func_mgr_name"
+        ).distinct()
+    
+    print(f"Loaded HR data for {hr_central_df.count()} employees")
+    
+    # Create temp view for merge
+    hr_central_df.createOrReplaceTempView("temp_hr_central")
+    
+    # Perform bulk update - update ALL records with current manager information
+    update_result = spark.sql("""
+    MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+    USING temp_hr_central AS source
+    ON target.EMP_ID = source.emp_id
+    WHEN MATCHED THEN 
+        UPDATE SET target.MANAGER_ID = source.manager_id
+    """)
+    
+    # Get statistics
+    total_records = spark.sql("SELECT COUNT(*) as total FROM gold_dashboard.analytics_emp_login_logout").collect()[0]['total']
+    records_with_manager = spark.sql("SELECT COUNT(*) as with_manager FROM gold_dashboard.analytics_emp_login_logout WHERE MANAGER_ID IS NOT NULL").collect()[0]['with_manager']
+    records_without_manager = spark.sql("SELECT COUNT(*) as without_manager FROM gold_dashboard.analytics_emp_login_logout WHERE MANAGER_ID IS NULL").collect()[0]['without_manager']
+    
+    print(f"Bulk update completed!")
+    print(f"Total records: {total_records}")
+    print(f"Records with manager ID: {records_with_manager}")
+    print(f"Records without manager ID: {records_without_manager}")
+    print(f"Coverage: {records_with_manager/total_records*100:.2f}%")
+    
+    return update_result
+
+# Run the bulk update
+if __name__ == "__main__":
+    bulk_update_manager_ids()
+```
+
+How to Use:
+
+1. Daily Process: Run the main code - it will update manager IDs only for records being inserted/updated
+2. Bulk Updates: Run the separate script whenever you want to refresh ALL historical records with current manager information
+
+Key Points:
+
+· Main code: Manager IDs updated only during login/logout calculations (Option 1)
+· Separate script: Use for one-time or periodic bulk updates of all historical data
+· LEFT JOIN: Ensures employees without HR records get NULL manager_id
+· No breaking changes: The main logic remains the same
+
+This gives you the flexibility to have incremental updates during daily processing and bulk corrections when needed!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 integrate leave update to existing login logout
 
 
