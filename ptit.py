@@ -1,4 +1,48 @@
 
+def bulk_update_manager_ids():
+    """
+    Bulk update manager IDs using merge with joined DataFrame as source
+    """
+    print("Starting bulk update of manager IDs...")
+    
+    # Step 1: Create source DataFrame by joining login_logout with HR table
+    source_df = spark.table("gold_dashboard.analytics_emp_login_logout") \
+        .select(
+            "EMP_ID",
+            "SHIFT_DATE",
+            "MANAGER_ID"  # This will be updated
+        ) \
+        .join(
+            spark.table("inbound.hr_employee_central")
+                .select(
+                    F.col("emplid").alias("emp_id"),
+                    F.col("func_mgr_id").alias("new_manager_id")
+                ),
+            F.col("EMP_ID") == F.col("emp_id"),
+            "left"
+        ) \
+        .select(
+            F.col("EMP_ID"),
+            F.col("SHIFT_DATE"), 
+            F.col("new_manager_id").alias("MANAGER_ID")  # Use the new manager_id from HR
+        )
+    
+    # Step 2: Create temp view for source
+    source_df.createOrReplaceTempView("temp_source")
+    
+    # Step 3: Perform merge using emp_id and shift_date as keys
+    spark.sql("""
+    MERGE INTO gold_dashboard.analytics_emp_login_logout AS target
+    USING temp_source AS source
+    ON target.EMP_ID = source.EMP_ID 
+        AND target.SHIFT_DATE = source.SHIFT_DATE
+    WHEN MATCHED THEN 
+        UPDATE SET target.MANAGER_ID = source.MANAGER_ID
+    """)
+    
+    print("Bulk update completed!")
+
+
 Perfect! Here's the code for Option 1 (manager updates only during login/logout calculations) and a separate script for bulk updating existing data.
 
 Option 1: Manager Updates Only During Login/Logout Calculations
