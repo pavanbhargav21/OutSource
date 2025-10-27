@@ -1,4 +1,292 @@
 
+Here’s a clean and well-structured draft of your concept, written as a clear functional and technical explanation.
+
+
+---
+
+Feature: Manager-Based Dashboard Access Control
+
+Objective
+
+Restrict dashboard access for managers based on the number of employees actively running the agent in the past 30 days. This ensures that only managers with a minimum level of agent activity within their team can access the dashboard.
+
+
+---
+
+Data Source: LoginLogout Table
+
+Column Name	Description
+
+EmployeeID	Unique identifier of the employee running the agent
+ManagerID	Unique identifier of the employee’s reporting manager
+ShiftDate	Date on which the employee ran the agent
+LoginTime	Timestamp of agent start/login
+LogoutTime	Timestamp of agent stop/logout
+
+
+> Each record represents an instance of an employee running the agent on a given day.
+
+
+
+
+---
+
+Logic Flow
+
+1. Add Manager Reference
+
+Include a ManagerID column in the LoginLogout table.
+
+On each agent run (login event), determine the employee’s manager and insert that ManagerID along with the record.
+
+
+
+2. Identify Active Employees
+
+For each manager, identify all unique employees (EmployeeID) who have at least one LoginLogout entry in the past 30 days.
+
+
+
+3. Calculate Agent Run Count
+
+For each manager:
+
+Count how many distinct employees under them have logged agent runs within the past 30 days.
+
+Example:
+
+SELECT 
+    ManagerID, 
+    COUNT(DISTINCT EmployeeID) AS ActiveEmployeeCount
+FROM LoginLogout
+WHERE ShiftDate >= CURDATE() - INTERVAL 30 DAY
+GROUP BY ManagerID;
+
+
+
+
+4. Apply Access Restriction
+
+Define the minimum active employee threshold: 4 employees.
+
+If a manager’s ActiveEmployeeCount < 4, block their access to the dashboard.
+
+If the count is 4 or more, grant access as usual.
+
+
+
+5. Notify Restricted Managers
+
+When a manager with insufficient active employees attempts to access the dashboard:
+
+Display a message such as:
+
+> “Dashboard access is temporarily restricted. Fewer than 4 employees in your team have been active in the past 30 days.”
+
+
+
+
+
+
+
+
+---
+
+Example Scenario
+
+ManagerID	Employee Count (Last 30 Days)	Access
+
+MGR101	8	✅ Granted
+MGR102	3	❌ Blocked
+MGR103	5	✅ Granted
+
+
+
+---
+
+Implementation Notes
+
+This logic can be implemented:
+
+In backend (Python/Flask) as part of the dashboard API route — check access before returning data.
+
+In frontend (Vue.js) — handle the access flag in API response and display a notification popup if blocked.
+
+
+The 30-day check should be rolling, always calculated from the current system date.
+
+To optimize performance, consider caching results daily since the data changes minimally.
+
+
+
+---
+
+Would you like me to include a sample Flask backend implementation (SQLAlchemy + Flask route) that performs this check and returns an access flag to the dashboard frontend?
+
+
+
+
+Perfect — that adds an important layer of client-side state handling. Here’s a revised and properly structured draft that incorporates your cookie-based logic for maintaining and validating counts.
+
+
+---
+
+Feature: Dashboard Access Control Based on Active Employee Count (Cookie-Based Logic)
+
+Objective
+
+Restrict dashboard access for managers based on the number of employees actively running the agent within the past 30 days.
+Access is dynamically checked and maintained using cookies to reduce database load and ensure smooth user experience.
+
+
+---
+
+Data Source: LoginLogout Table
+
+Column Name	Description
+
+EmployeeID	Unique identifier of the employee running the agent
+ManagerID	Manager to whom the employee reports
+ShiftDate	Date when the employee ran the agent
+LoginTime	Timestamp when the agent was started
+LogoutTime	Timestamp when the agent was stopped
+
+
+Each entry indicates that the agent was active for that employee on the specified date.
+
+
+---
+
+System Flow
+
+1. Daily Cookie Validation
+
+On each day when a manager logs in or accesses the dashboard:
+
+The system checks for two cookies:
+
+HRCount → total number of employees mapped under the manager.
+
+PulseAgentCount → number of employees who ran the agent in the last 30 days.
+
+
+If the cookies do not exist or are older than 24 hours, they are refreshed.
+
+
+
+
+---
+
+2. Cookie Refresh Logic
+
+When a cookie refresh is triggered:
+
+1. Backend query runs to compute the agent count for the manager:
+
+SELECT 
+    ManagerID, 
+    COUNT(DISTINCT EmployeeID) AS ActiveEmployeeCount
+FROM LoginLogout
+WHERE ShiftDate >= CURDATE() - INTERVAL 30 DAY
+GROUP BY ManagerID;
+
+
+2. The backend returns:
+
+HRCount: total employees under the manager (from HR or mapping table)
+
+PulseAgentCount: number of employees who ran the agent in the last 30 days
+
+
+
+3. The frontend updates cookies:
+
+document.cookie = `HRCount=${hrCount}; max-age=86400`; // 1 day
+document.cookie = `PulseAgentCount=${activeCount}; max-age=86400`;
+
+
+
+
+
+---
+
+3. Access Decision
+
+On dashboard load or login click:
+
+The system compares the stored cookie values:
+
+if (parseInt(getCookie('PulseAgentCount')) < 4) {
+    showAccessBlockedMessage();
+    redirectToLoginPage();
+} else {
+    grantDashboardAccess();
+}
+
+
+If the PulseAgentCount is less than 4, access is blocked, and the manager is redirected to the login page with a notification.
+
+
+
+---
+
+4. Notification Message
+
+When access is restricted:
+
+> “Access Denied: Dashboard is unavailable because fewer than 4 employees in your team have been active (agent run) in the past 30 days.”
+
+
+
+
+---
+
+5. Example Flow
+
+1. Manager logs in → system checks cookies
+
+
+2. Cookies missing or outdated → backend query triggered, cookies updated
+
+
+3. Counts evaluated:
+
+HRCount = 10
+
+PulseAgentCount = 3
+
+
+
+4. Access Result: Blocked
+
+
+5. Next day, if new employees run the agent → count updates, access unlocked.
+
+
+
+
+---
+
+6. Benefits of Cookie-Based Approach
+
+✅ Reduces frequent backend calls
+✅ Provides daily snapshot for consistent behavior
+✅ Keeps logic lightweight on the client side
+✅ Enables smooth redirection and notification handling
+
+
+---
+
+Would you like me to extend this draft to show a sample implementation — for example,
+
+a Flask route (/check-access) that returns HR and agent counts, and
+
+a corresponding Vue.js or JavaScript snippet that updates cookies and checks access?
+
+
+
+
+
 Hi [Team/Name],
 
 Currently, our backend web application connects to the SQL Warehouse to execute all dashboard queries. These queries involve operations like joins and aggregations, and the processed data is stored in Delta Lake tables.
