@@ -1,4 +1,25 @@
 
+
+
+Root Cause Analysis / Incident Explanation:
+During the Login-Logout process, the application was expected to fetch the PulseAgentCount from the empLoginLogout table. However, due to a branch version mismatch, the deployed code in PROD was referencing the PulseLoginLogout_BKP (backup) table instead of the main table.
+
+This occurred because different environments (UAT, DEV, and PROD) had inconsistent versions of the codebase. While merging the DEV branch into PROD, the reference to the backup table was unintentionally included. As a result, the application retrieved incorrect data from the backup table.
+
+Resolution:
+Once the issue was identified, we immediately disabled affected users from accessing the Login module to prevent further data inconsistencies. The code was then hotfixed and redeployed to reference the correct empLoginLogout table.
+
+Verification:
+Post-deployment, validation was performed with production users, including managers and three employees, confirming that the Login-Logout functionality and PulseAgentCount values were working correctly.
+
+Current Status:
+✅ Issue resolved
+✅ Functionality verified in PROD
+✅ Code base aligned across environments
+
+
+
+
 Here’s a clean and well-structured draft of your concept, written as a clear functional and technical explanation.
 
 
