@@ -1,5 +1,112 @@
 
 
+Perfect — here’s the revised and polished version of your incident report with all your updates applied, in a professional and production-ready format:
+
+
+---
+
+Incident Summary
+
+During the login process to the Pulse Dashboard, the application incorrectly referenced the gold_dashboard.analytics.LoginLogout_BKP table instead of the main gold_analytics.empLoginLogout table while fetching the PulseAgentCount.
+This misconfiguration led to incorrect or missing data being fetched during user login in the production environment, resulting in login failures.
+
+
+---
+
+Impact Analysis
+
+Duration: From initial deployment of the incorrect code until the hotfix was applied.
+
+Affected Users: All users attempting to log in during the affected period.
+
+System Behavior: The application attempted to fetch data from the backup table, which does not exist in the production environment, causing login failures.
+
+Detection: The issue was identified through user reports and validation checks by the support team.
+
+
+
+---
+
+Business Impact
+
+Users whose tokens had expired after 24 hours experienced login failures.
+
+Temporary restriction in user workflow and operational tracking for reactivations of expired sessions.
+
+Partial disruption in Pulse Dashboard accessibility and reporting during the incident window.
+
+
+
+---
+
+Technical Impact
+
+The production codebase referenced the backup table (gold_dashboard.analytics.LoginLogout_BKP) instead of the main table (gold_analytics.empLoginLogout) due to a merge issue between DEV, UAT, and PROD branches.
+
+The environment code versions were not aligned, leading to inconsistent database references.
+
+
+
+---
+
+Root Cause
+
+Code inconsistency across environments (DEV, UAT, and PROD).
+
+During a merge from DEV to PROD, an outdated configuration referencing the backup table was unintentionally deployed.
+
+Lack of pre-deployment validation for database table references in configuration or code review.
+
+
+
+---
+
+Resolution Followed
+
+1. Immediately restricted affected users to prevent further login failures.
+
+
+2. Identified and confirmed the incorrect table reference in the production code.
+
+
+3. Updated the configuration to point to the correct gold_analytics.empLoginLogout table.
+
+
+4. Performed an emergency hotfix deployment to production.
+
+
+5. Verified functionality with multiple production users, including managers and employees.
+
+
+6. Monitored logs and user sessions post-fix to confirm successful resolution and stability.
+
+
+
+
+---
+
+Preventive Measures
+
+Ensure environment code parity before deployments (DEV, UAT, PROD synchronization).
+
+Implement a pre-deployment validation checklist for database table references and configuration values.
+
+Introduce automated regression and configuration consistency checks.
+
+Strengthen merge and code review processes to detect outdated references before release.
+
+Schedule periodic environment alignment reviews between development, QA, and release teams.
+
+
+
+---
+
+Would you like me to make a shorter version (1–2 paragraphs) for including as a Jira comment, while keeping this as the full RCA document?
+
+
+
+
+
 
 Root Cause Analysis / Incident Explanation:
 During the Login-Logout process, the application was expected to fetch the PulseAgentCount from the empLoginLogout table. However, due to a branch version mismatch, the deployed code in PROD was referencing the PulseLoginLogout_BKP (backup) table instead of the main table.
