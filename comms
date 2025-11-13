@@ -1,5 +1,139 @@
 
 
+Here are 30 clear, manager-friendly, insight-driven questions you can use for your GNI Bot to query the Pulse Dashboard.
+I’ve grouped them by theme so they are easy to plug into your bot’s logic later.
+
+
+---
+
+✅ Team Working Time & Productivity Questions
+
+1. What is my team’s total working time for this week?
+
+
+2. How much active time vs idle time has my team logged this week?
+
+
+3. How much total screen lock time did my team have this week?
+
+
+4. Which team member has the lowest working time this week?
+
+
+5. Which team member has the highest idle time this week?
+
+
+6. Show the day-wise breakdown of working, active, idle, and lock time for my team this week.
+
+
+7. Compare my team’s working time for this week vs last week.
+
+
+8. Which week in the past four months had the lowest working time for my team?
+
+
+9. Which week in the past four months had the highest idle time?
+
+
+10. Show the month-wise trend of working, active, idle, and lock time for the last four months.
+
+
+
+
+---
+
+✅ Team Comparison & Multi-Team Questions
+
+11. Show the working and idle time comparison between all my teams.
+
+
+12. Which team performed best based on active time percentage?
+
+
+13. Which team had the highest screen lock duration this week?
+
+
+14. Compare application usage across all my teams.
+
+
+15. Which team spent the most time on non-productive applications?
+
+
+
+
+---
+
+✅ Application & Category Usage Questions
+
+16. Which are the top 10 applications used by my team this week?
+
+
+17. How much time did my team spend on productive vs non-productive categories this week?
+
+
+18. Show the category-wise usage trend for the last 30 days.
+
+
+19. Which applications caused the highest idle time?
+
+
+20. Which team member spent the most time on unnecessary or flagged applications?
+
+
+21. Show productive vs non-productive application usage for each day this week.
+
+
+
+
+---
+
+✅ Keystroke & Mouse Activity Questions
+
+22. What is my team’s hourly keystroke activity for this week?
+
+
+23. How many mouse clicks did my team perform per hour today?
+
+
+24. How many times did my team use error-handling keys like backspace, delete, and escape today?
+
+
+25. Show copy and paste usage trends for my team this week.
+
+
+26. Show enter-key usage per hour for each team member.
+
+
+27. Which team member has unusual keystroke patterns compared to the team average?
+
+
+
+
+---
+
+✅ System Performance & Resource Questions
+
+28. Which team member’s system has the highest RAM usage this week?
+
+
+29. Compare CPU, RAM, and disk usage across all team members.
+
+
+30. Show the trend of active vs window-focus vs idle time for each team member.
+
+
+
+
+---
+
+Want more?
+
+I can generate 40+, 50+, or even categorized templates depending on what your GNI bot expects (like short questions, long questions, or API-friendly versions).
+
+
+
+
+
 Perfect — here’s the revised and polished version of your incident report with all your updates applied, in a professional and production-ready format:
 
 
