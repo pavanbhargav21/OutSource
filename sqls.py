@@ -1,5 +1,103 @@
 
 
+WITH team_info AS (
+    SELECT 
+        tt.team_id,
+        tt.team_name,
+        tt.color_code,
+        tt.manager_id
+    FROM gold_dashboard.analytics_team_tagging tt
+    WHERE tt.manager_id = :manager_id
+),
+
+emp_mapping AS (
+    SELECT 
+        em.manager_id,
+        em.emp_id,
+        em.team_id
+    FROM gold_dashboard.analytics_emp_mapping em
+    WHERE em.manager_id = :manager_id
+),
+
+emp_data AS (
+    SELECT 
+        e.emp_id,
+        e.shift_date,
+        CAST(e.emp_login_time AS TIMESTAMP) AS login_ts,
+        CAST(e.emp_logout_time AS TIMESTAMP) AS logout_ts
+    FROM gold_dashboard.analytics_emp_login_logout e
+    INNER JOIN emp_mapping m ON e.emp_id = m.emp_id
+    WHERE e.shift_date = :curr_date
+),
+
+time_range AS (
+    SELECT
+        date_trunc('hour', MIN(login_ts)) AS start_time,
+        date_trunc('hour', MAX(logout_ts)) AS end_time
+    FROM emp_data
+),
+
+hour_slots AS (
+    SELECT 
+        explode(sequence(start_time, end_time, interval 1 hour)) AS hour_start
+    FROM time_range
+),
+
+hourly_data AS (
+    SELECT
+        hour(h.hour_start) AS hour_of_day,
+        COUNT(e.emp_id) AS active_emp_count
+    FROM hour_slots h
+    LEFT JOIN emp_data e
+        ON e.login_ts <= h.hour_start + INTERVAL 1 HOUR
+        AND e.logout_ts > h.hour_start
+    GROUP BY hour(h.hour_start)
+    ORDER BY hour_of_day
+),
+
+final_json AS (
+    SELECT 
+        t.team_name,
+        t.color_code,
+        h.hour_of_day,
+        h.active_emp_count
+    FROM hourly_data h
+    CROSS JOIN team_info t
+),
+
+agg_json AS (
+    SELECT
+        team_name,
+        color_code,
+        map_from_entries(
+            array_sort(
+                collect_list(
+                    struct(
+                        lpad(CAST(hour_of_day AS STRING), 2, '0') || ':00' AS hour_of_day,
+                        active_emp_count
+                    )
+                ),
+                (left, right) ->
+                    CASE
+                        WHEN left.hour_of_day < right.hour_of_day THEN -1
+                        WHEN left.hour_of_day > right.hour_of_day THEN 1
+                        ELSE 0
+                    END
+            )
+        ) AS availableData
+    FROM final_json
+    GROUP BY team_name, color_code
+)
+
+SELECT * FROM agg_json;
+
+
+
+
+
+
+
+
 import pandas as pd
 import json
 
