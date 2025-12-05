@@ -1,5 +1,23 @@
 
 
+subq = (
+    session.query(EmployeeInfo.func_mgr_id)
+    .join(EmployeeShiftInfo, EmployeeShiftInfo.emp_id == EmployeeInfo.emplid)
+    .distinct()
+).subquery()
+
+employees = (
+    session.query(EmployeeInfo.emplid)
+    .join(subq, EmployeeInfo.func_mgr_id == subq.c.func_mgr_id)
+    .filter(EmployeeInfo.termination_dt.is_(None))
+    .distinct()
+    .all()
+)
+
+
+
+
+
 WITH team_info AS (
     SELECT 
         tt.team_id,
