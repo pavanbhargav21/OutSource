@@ -1,5 +1,60 @@
 
 
+
+# ---------------------- GET EMPLOYEES WITH ORIGINAL LOGIC (NO .in_()) ---------------------- #
+
+# Subquery to extract distinct func_mgr_id for employees who already have shifts
+subq_func_mgr = (
+    session.query(EmployeeInfo.func_mgr_id)
+    .join(EmployeeShiftInfo, EmployeeShiftInfo.emp_id == EmployeeInfo.emplid)
+    .distinct()
+).subquery()
+
+# Main employee query — only active employees whose manager is in subquery
+employees = (
+    session.query(EmployeeInfo.emplid)
+    .join(subq_func_mgr, EmployeeInfo.func_mgr_id == subq_func_mgr.c.func_mgr_id)
+    .filter(EmployeeInfo.termination_dt.is_(None))
+    .distinct()
+).all()
+
+employee_ids = [emp.emplid for emp in employees]
+logger.info(f"Employee Count: {len(employee_ids)}")
+
+if not employee_ids:
+    logger.info("No employees found for shift processing.")
+    return jsonify({"message": "No employees found", "status": "no_changes"}), 200
+
+# ---------------------- FETCH LAST WEEK + CURRENT WEEK SHIFTS ---------------------- #
+
+last_week_shifts = (
+    session.query(EmployeeShiftInfo)
+    .join(EmployeeInfo, EmployeeShiftInfo.emp_id == EmployeeInfo.emplid)
+    .join(subq_func_mgr, EmployeeInfo.func_mgr_id == subq_func_mgr.c.func_mgr_id)
+    .filter(
+        EmployeeInfo.termination_dt.is_(None),
+        EmployeeShiftInfo.shift_date >= last_monday_dt,
+        EmployeeShiftInfo.shift_date <= last_sunday_dt
+    )
+    .all()
+)
+
+current_week_shifts = (
+    session.query(EmployeeShiftInfo)
+    .join(EmployeeInfo, EmployeeShiftInfo.emp_id == EmployeeInfo.emplid)
+    .join(subq_func_mgr, EmployeeInfo.func_mgr_id == subq_func_mgr.c.func_mgr_id)
+    .filter(
+        EmployeeInfo.termination_dt.is_(None),
+        EmployeeShiftInfo.shift_date >= current_monday_dt,
+        EmployeeShiftInfo.shift_date <= current_sunday_dt
+    )
+    .all()
+)
+
+logger.info(f"Last Week Shifts: {len(last_week_shifts)}, Current Week Shifts: {len(current_week_shifts)}")
+
+
+
 subq = (
     session.query(EmployeeInfo.func_mgr_id)
     .join(EmployeeShiftInfo, EmployeeShiftInfo.emp_id == EmployeeInfo.emplid)
