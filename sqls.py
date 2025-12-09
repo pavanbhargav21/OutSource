@@ -1,5 +1,101 @@
 
 
+WITH FilteredEmployees AS (
+    SELECT
+        emplid,
+        name
+    FROM inbound.hr_employee_central
+    WHERE func_mgr_id = :func_mgr_id
+      AND (termination_dt > current_timestamp() OR termination_dt IS NULL)
+),
+
+EmployeeLoginTimes AS (
+    SELECT
+        e.emplid,
+        ell.shift_date,
+        ell.emp_login_time,
+        ell.emp_logout_time
+    FROM FilteredEmployees e
+    JOIN gold_deshboard.analytics_emp_login_logout ell
+        ON e.emplid = ell.emp_id
+    WHERE ell.shift_date BETWEEN :start_date AND :end_date
+),
+
+dateRange AS (
+    SELECT
+        date_add(:start_date, n) AS cal_date
+    FROM (
+        SELECT posexplode(
+            split(
+                space(datediff(:end_date, :start_date)), 
+                ''
+            )
+        ) AS (n, _)
+    ) t
+),
+
+-- 1) PER EMPLOYEE PER DATE
+DailyAverages AS (
+    SELECT
+        ecd.emp_id,
+        elt.shift_date AS cal_date,
+        AVG(ecd.cpu_used_pct)  AS avg_cpu_used_pct,
+        AVG(ecd.ram_used_pct)  AS avg_ram_used_pct,
+        AVG(ecd.disk_used_pct) AS avg_disk_used_pct
+    FROM sys_trace.emp_cpudata ecd
+    JOIN EmployeeLoginTimes elt
+        ON ecd.emp_id = elt.emplid
+       AND ecd.created_on >= elt.emp_login_time
+       AND ecd.created_on <= elt.emp_logout_time
+    WHERE ecd.emp_id IN (SELECT emplid FROM FilteredEmployees)
+      AND elt.shift_date BETWEEN :start_date AND :end_date
+    GROUP BY
+        ecd.emp_id,
+        elt.shift_date
+),
+
+-- 2) OVERALL AVERAGE PER DATE (THIS IS THE IMPORTANT FIX)
+OverallDailyAverages AS (
+    SELECT
+        cal_date,
+        AVG(avg_cpu_used_pct)  AS avg_cpu_used_pct,
+        AVG(avg_ram_used_pct)  AS avg_ram_used_pct,
+        AVG(avg_disk_used_pct) AS avg_disk_used_pct
+    FROM DailyAverages
+    GROUP BY cal_date
+),
+
+-- 3) ONE ROW PER DATE
+FinalData AS (
+    SELECT
+        dr.cal_date,
+        COALESCE(oda.avg_cpu_used_pct,  0) AS avg_cpu_used_pct,
+        COALESCE(oda.avg_ram_used_pct,  0) AS avg_ram_used_pct,
+        COALESCE(oda.avg_disk_used_pct, 0) AS avg_disk_used_pct
+    FROM dateRange dr
+    LEFT JOIN OverallDailyAverages oda
+        ON dr.cal_date = oda.cal_date
+)
+
+SELECT
+    to_json(
+        named_struct(
+            'empCount',
+            (SELECT COUNT(*) FROM FilteredEmployees),
+            'cpu_utilization_data',
+            collect_list(
+                named_struct(
+                    'cal_date',          CAST(fd.cal_date AS string),
+                    'avg_cpu_used_pct',  fd.avg_cpu_used_pct,
+                    'avg_ram_used_pct',  fd.avg_ram_used_pct,
+                    'avg_disk_used_pct', fd.avg_disk_used_pct
+                )
+            )
+        )
+    ) AS json_response
+FROM FinalData fd;
+
+
 
 # ---------------------- GET EMPLOYEES WITH ORIGINAL LOGIC (NO .in_()) ---------------------- #
 
