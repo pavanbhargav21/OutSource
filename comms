@@ -1,4 +1,354 @@
 
+
+Sure. Below is a clear, structured implementation plan that you can use for design review, CAB approval, or stakeholder communication. I’ve organized it into phases, with dependencies, downtime handling, and validation checkpoints explicitly called out.
+
+
+---
+
+Implementation Plan: Migration from Hourly to 30-Minute Pipelines
+
+Objective
+
+Migrate Gold dashboard data pipelines from hourly intervals to 30-minute intervals, update dependent CDM pipelines, backend APIs, and dashboard queries, ensuring data consistency and minimal disruption.
+
+
+---
+
+Phase 0: Pre-Implementation Preparation (Mandatory)
+
+0.1 Impact Analysis & Alignment
+
+Identify all Gold tables currently refreshed on an hourly basis.
+
+Identify:
+
+Dashboards consuming hourly data
+
+APIs querying Gold / CDM tables
+
+Backend calculations dependent on hourly aggregations
+
+
+Confirm new 30-minute table structure, naming, and schema compatibility.
+
+Align stakeholders on:
+
+Required downtime window
+
+Data backfill duration
+
+Rollback plan
+
+
+
+0.2 Change Freeze
+
+Freeze:
+
+Dashboard query changes
+
+API schema changes
+
+CDM logic changes
+
+
+No dependent deployments until Phase 1 completes successfully.
+
+
+
+---
+
+Phase 1: Deploy 30-Minute Gold Pipelines (First & Critical Step)
+
+1.1 Deploy 30-Minute Pipelines
+
+Deploy new or modified pipelines that:
+
+Refresh Gold tables every 30 minutes
+
+Either:
+
+Replace existing hourly tables, or
+
+Create parallel 30-minute tables (preferred for safety)
+
+
+
+
+1.2 Historical Data Backfill
+
+Load historical data into 30-minute tables.
+
+This step is mandatory before allowing any consumer access.
+
+During this period:
+
+Hourly dashboards and APIs must not query the Gold layer.
+
+
+
+1.3 Downtime Window (Planned)
+
+Put dashboard in maintenance / read-only mode or disable refresh.
+
+APIs should:
+
+Be temporarily disabled, or
+
+Return maintenance response
+
+
+Reason:
+
+Dashboards still expect hourly intervals
+
+30-minute history is still loading → data inconsistency risk
+
+
+
+1.4 Validation
+
+Validate:
+
+Row counts vs hourly aggregates
+
+Time-window correctness (no gaps or overlaps)
+
+SLA adherence (30-minute refresh stability)
+
+
+
+Exit Criteria
+
+30-minute Gold tables fully populated (historical + incremental)
+
+Data quality checks passed
+
+
+
+---
+
+Phase 2: Update Dashboard Queries & API Logic
+
+2.1 Dashboard Query Updates
+
+Modify dashboard queries to:
+
+Consume 30-minute granularity
+
+Adjust:
+
+Time filters
+
+Aggregations
+
+Windowing logic
+
+
+
+Ensure backward logic expecting hourly buckets is removed.
+
+
+2.2 API Changes
+
+Update APIs to:
+
+Query 30-minute Gold tables
+
+Handle new time intervals correctly
+
+
+Validate:
+
+API response correctness
+
+Performance impact due to increased data points
+
+
+
+2.3 Validation
+
+Test dashboards against:
+
+Short time ranges
+
+Long historical ranges
+
+
+Validate API responses against expected metrics.
+
+
+Exit Criteria
+
+Dashboard loads correctly using 30-minute data
+
+APIs return correct and consistent results
+
+
+
+---
+
+Phase 3: CDM Pipelines Deployment
+
+3.1 CDM Pipeline Alignment
+
+Modify CDM pipelines to:
+
+Consume only the new 30-minute Gold tables
+
+Remove any dependency on hourly tables
+
+
+Ensure CDM logic accounts for:
+
+Increased data frequency
+
+Correct rollups where required
+
+
+
+3.2 Deploy CDM Pipelines
+
+Deploy CDM pipelines after Phase 2 completion.
+
+Run full CDM refresh.
+
+
+3.3 Validation
+
+Validate:
+
+CDM table counts
+
+Aggregated values vs Gold layer
+
+Downstream dependency readiness
+
+
+
+Exit Criteria
+
+CDM pipelines stable and fully aligned with 30-minute data
+
+
+
+---
+
+Phase 4: Backend Deployment
+
+4.1 Backend Logic Updates
+
+Update backend services to:
+
+Use CDM tables built on 30-minute data
+
+Use 30-minute Gold tables where CDM is not applicable
+
+
+Update:
+
+Calculations
+
+Time-based logic
+
+Caching strategies (if any)
+
+
+
+4.2 Deploy Backend
+
+Deploy backend changes after CDM validation.
+
+Enable APIs for production traffic.
+
+
+4.3 End-to-End Validation
+
+Validate:
+
+Dashboard → API → Backend → CDM → Gold flow
+
+Performance under expected load
+
+Data correctness for multiple time windows
+
+
+
+
+---
+
+Phase 5: Go-Live & Monitoring
+
+5.1 Enable Dashboards
+
+Remove maintenance mode.
+
+Enable scheduled refresh.
+
+
+5.2 Monitoring & Support
+
+Monitor:
+
+Pipeline failures
+
+API latency
+
+Dashboard load performance
+
+
+Keep rollback option available for a defined observation window.
+
+
+
+---
+
+Rollback Strategy (High Level)
+
+Re-enable hourly pipelines (if kept in parallel).
+
+Switch APIs and dashboards back to hourly tables.
+
+Disable 30-minute pipelines if critical issues arise.
+
+
+
+---
+
+Summary Flow (High Level Order)
+
+1. Deploy 30-minute Gold pipelines
+
+
+2. Backfill historical data (downtime required)
+
+
+3. Update dashboard queries & APIs
+
+
+4. Deploy CDM pipelines using 30-minute data
+
+
+5. Deploy backend changes
+
+
+6. Go-live & monitor
+
+
+
+
+---
+
+If you want, I can:
+
+Convert this into a one-page CAB document
+
+Create a timeline with estimated durations
+
+Rewrite this in executive-level language or technical runbook format
+
+
+
 Absolutely — here is a strong, practical list of KPIs / analytics metrics for monitoring usage of your application (dashboards, APIs, features, filters, pages, departments, etc.). These are very commonly used in enterprise monitoring dashboards.
 
 
