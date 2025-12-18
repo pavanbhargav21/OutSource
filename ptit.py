@@ -1,4 +1,1157 @@
 
+
+COMPLETE CODE: Day Employee Alerts
+
+```python
+# day_emp_alerts_complete.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, lit, udf, to_json, struct, array, countDistinct
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType, BooleanType, TimestampType, MapType
+import json
+from datetime import datetime, timedelta
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class DayEmpAlertsProcessor:
+    def __init__(self, spark):
+        self.spark = spark
+        self.alert_messages = {
+            1: "Quick tip! You're not taking enough breaks. Try adding short pauses to stay productive.",
+            2: "Heads up! Your active time is low. Review your tasks or engagement level.",
+            3: "You've been working hard! Try balancing your workload to avoid burnout.",
+            4: "Heads up! Your activity is low and idle time is high. Check for engagement or technical issues.",
+            5: "Quick tip! Your session shows low active and idle time. Check for system issues or increase task engagement.",
+            6: "Heads up! Your schedule shows high activity and idle time. This may indicate task balancing or tool issues.",
+            7: "Quick tip! Your active time is low, idle time is high, and you're missing breaks. Check your setup to improve engagement.",
+            8: "Quick tip! You're working long hours with idle stretches and missing breaks. Time to rebalance your workload.",
+            9: "Quick tip! System interaction is low and breaks are limited. Check your setup or connectivity.",
+            10: "Heads up! Your activity is low and idle time is high. Check for engagement or technical challenges.",
+            11: "Quick tip! Your session had low activity and idle time. Check for system issues or increase engagement.",
+            12: "Heads up! High activity mixed with idle periods suggests task or tool inefficiencies.",
+            13: "Quick tip! You're missing breaks and activity is low. Check your setup to boost engagement and well-being.",
+            14: "Quick tip! You've been working hard with few breaks. Try balancing your workload for a healthier routine."
+        }
+    
+    def get_updated_records(self):
+        """
+        Get all emp_id and shift_date that need recalculation from loginlogout
+        """
+        logger.info("Fetching updated records from loginlogout...")
+        
+        four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        query = f"""
+            SELECT DISTINCT 
+                emp_id,
+                shift_date,
+                manager_id
+            FROM loginlogout 
+            WHERE updated_on > '{four_hours_ago}'
+            AND logintime IS NOT NULL
+            AND logouttime IS NOT NULL
+            AND shift_date IS NOT NULL
+        """
+        
+        updated_df = self.spark.sql(query)
+        logger.info(f"Found {updated_df.count()} employee-date combinations to process")
+        
+        return updated_df
+    
+    def get_day_emp_data(self, trigger_df):
+        """
+        Get day_emp data for all triggered records
+        """
+        logger.info("Fetching day_emp data for triggered records...")
+        
+        # Create temp view
+        trigger_df.createOrReplaceTempView("trigger_records")
+        
+        query = """
+            SELECT 
+                de.emp_id,
+                de.shift_date,
+                tr.manager_id,
+                de.total_time,
+                de.active_time,
+                de.idle_time,
+                de.lock_time,
+                de.expected_shift_time,
+                de.expected_break_time,
+                de.updated_at
+            FROM day_emp de
+            INNER JOIN trigger_records tr 
+                ON de.emp_id = tr.emp_id 
+                AND de.shift_date = tr.shift_date
+            WHERE de.active_time IS NOT NULL
+        """
+        
+        day_data = self.spark.sql(query)
+        logger.info(f"Found {day_data.count()} matching records in day_emp")
+        
+        return day_data
+    
+    def calculate_alerts(self, day_data_df):
+        """
+        Calculate all 14 alert conditions for batch of records
+        """
+        logger.info("Calculating alert conditions...")
+        
+        # Calculate Active Time Percentage Ratio
+        df = day_data_df.withColumn(
+            "total_interaction_time",
+            col("active_time") + col("idle_time") + col("lock_time")
+        ).withColumn(
+            "active_time_percent_ratio",
+            when(col("total_interaction_time") > 0,
+                 col("active_time") * 100.0 / col("total_interaction_time")
+            ).otherwise(0)
+        )
+        
+        # ALERT 1: Few Breaks
+        df = df.withColumn(
+            "alert_1",
+            (col("idle_time") + col("lock_time")) < col("expected_break_time")
+        )
+        
+        # ALERT 2: Low Active Time
+        df = df.withColumn(
+            "alert_2",
+            col("active_time") < col("expected_shift_time")
+        )
+        
+        # ALERT 3: High Active Time
+        df = df.withColumn(
+            "alert_3",
+            col("active_time") > col("expected_shift_time")
+        )
+        
+        # ALERT 4: Low Active & High Idle Time
+        df = df.withColumn(
+            "alert_4",
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") < 90)
+        )
+        
+        # ALERT 5: Low Active & Low Idle Time
+        df = df.withColumn(
+            "alert_5",
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") > 90)
+        )
+        
+        # ALERT 6: High Active & High Idle Time
+        df = df.withColumn(
+            "alert_6",
+            (col("active_time") > (1.1 * col("expected_shift_time"))) &
+            (col("idle_time") > 1.0)
+        )
+        
+        # ALERT 7: Few Breaks + Low Active & High Idle Time
+        df = df.withColumn(
+            "alert_7",
+            ((col("idle_time") + col("lock_time")) < col("expected_break_time")) &
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") < 90)
+        )
+        
+        # ALERT 8: Few Breaks + High Active & High Idle Time
+        df = df.withColumn(
+            "alert_8",
+            ((col("idle_time") + col("lock_time")) < col("expected_break_time")) &
+            (col("active_time") > (1.1 * col("expected_shift_time"))) &
+            (col("idle_time") > 1.0)
+        )
+        
+        # ALERT 9: Few Breaks + Low Active & Low Idle Time
+        df = df.withColumn(
+            "alert_9",
+            ((col("idle_time") + col("lock_time")) < col("expected_break_time")) &
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") > 90)
+        )
+        
+        # ALERT 10: Low Active + High Idle Time (Low Active combined)
+        df = df.withColumn(
+            "alert_10",
+            (col("active_time") < col("expected_shift_time")) &
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") < 90)
+        )
+        
+        # ALERT 11: Low Active + Low Idle Time (Low Active combined)
+        df = df.withColumn(
+            "alert_11",
+            (col("active_time") < col("expected_shift_time")) &
+            (col("active_time") < (0.9 * col("expected_shift_time"))) &
+            (col("active_time_percent_ratio") > 90)
+        )
+        
+        # ALERT 12: High Active + High Idle Time (High Active combined)
+        df = df.withColumn(
+            "alert_12",
+            (col("active_time") > (1.1 * col("expected_shift_time"))) &
+            (col("idle_time") > 1.0) &
+            (col("active_time") > col("expected_shift_time"))
+        )
+        
+        # ALERT 13: Low Active + Few Breaks
+        df = df.withColumn(
+            "alert_13",
+            ((col("idle_time") + col("lock_time")) < col("expected_break_time")) &
+            (col("active_time") < col("expected_shift_time"))
+        )
+        
+        # ALERT 14: High Active + Few Breaks
+        df = df.withColumn(
+            "alert_14",
+            ((col("idle_time") + col("lock_time")) < col("expected_break_time")) &
+            (col("active_time") > col("expected_shift_time"))
+        )
+        
+        return df
+    
+    def determine_final_alert(self, row):
+        """
+        UDF to determine final alert type with priority rules
+        """
+        # Check complex alerts first (7-14)
+        for alert_id in range(7, 15):
+            if getattr(row, f'alert_{alert_id}', False):
+                return alert_id
+        
+        # Check basic alerts (1-6)
+        for alert_id in range(1, 7):
+            if getattr(row, f'alert_{alert_id}', False):
+                return alert_id
+        
+        return None
+    
+    def consolidate_alerts(self, df):
+        """
+        Apply priority rules and determine final alert
+        """
+        logger.info("Consolidating alerts with priority rules...")
+        
+        # Register UDF
+        from pyspark.sql.functions import pandas_udf, PandasUDFType
+        import pandas as pd
+        
+        @pandas_udf(IntegerType(), PandasUDFType.SCALAR)
+        def get_final_alert_pandas(
+            a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14
+        ):
+            results = []
+            for i in range(len(a1)):
+                # Check complex alerts first (7-14)
+                for alert_id in range(7, 15):
+                    if locals()[f'a{alert_id}'][i]:
+                        results.append(alert_id)
+                        break
+                else:
+                    # Check basic alerts (1-6)
+                    for alert_id in range(1, 7):
+                        if locals()[f'a{alert_id}'][i]:
+                            results.append(alert_id)
+                            break
+                    else:
+                        results.append(None)
+            return pd.Series(results)
+        
+        # Apply the pandas UDF
+        df = df.withColumn(
+            "final_alert_type",
+            get_final_alert_pandas(
+                *[col(f"alert_{i}") for i in range(1, 15)]
+            )
+        )
+        
+        # Alternative: Simple UDF if pandas not available
+        # @udf(IntegerType())
+        # def get_final_alert_simple(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14):
+        #     alerts = [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14]
+        #     for i in range(6, 14):  # Check 7-14 first (index 6-13)
+        #         if alerts[i]:
+        #             return i + 1
+        #     for i in range(6):  # Check 1-6 (index 0-5)
+        #         if alerts[i]:
+        #             return i + 1
+        #     return None
+        
+        return df
+    
+    def generate_alert_json(self, row):
+        """
+        Generate complete alert JSON for a record
+        """
+        try:
+            alert_type = int(row.final_alert_type) if row.final_alert_type else None
+            
+            # Build conditions checked dict
+            conditions_checked = {}
+            for i in range(1, 15):
+                conditions_checked[f'alert_{i}'] = bool(getattr(row, f'alert_{i}', False))
+            
+            # Build condition details
+            condition_details = {
+                "active_time": float(row.active_time),
+                "idle_time": float(row.idle_time),
+                "lock_time": float(row.lock_time),
+                "expected_shift_time": float(row.expected_shift_time),
+                "expected_break_time": float(row.expected_break_time),
+                "active_time_percent": float(row.active_time_percent_ratio) if hasattr(row, 'active_time_percent_ratio') else 0,
+                "total_interaction": float(row.active_time + row.idle_time + row.lock_time)
+            }
+            
+            # Add condition-specific details
+            if alert_type == 1:
+                condition_details["break_analysis"] = {
+                    "actual_break": float(row.idle_time + row.lock_time),
+                    "expected_break": float(row.expected_break_time),
+                    "deficit": float(row.expected_break_time - (row.idle_time + row.lock_time))
+                }
+            
+            # Build final JSON
+            alert_json = {
+                "alert_type": alert_type,
+                "severity": "MEDIUM" if alert_type else None,
+                "conditions_checked": conditions_checked,
+                "condition_details": condition_details,
+                "alert_message": self.alert_messages.get(alert_type) if alert_type else None,
+                "calculated_at": datetime.now().isoformat(),
+                "data_source": {
+                    "emp_id": str(row.emp_id),
+                    "shift_date": str(row.shift_date),
+                    "manager_id": str(row.manager_id)
+                }
+            }
+            
+            return json.dumps(alert_json)
+        except Exception as e:
+            logger.error(f"Error generating alert JSON: {str(e)}")
+            return json.dumps({"error": str(e)})
+    
+    def prepare_final_df(self, df):
+        """
+        Prepare final DataFrame for update
+        """
+        logger.info("Preparing final DataFrame...")
+        
+        # Register JSON generation UDF
+        generate_json_udf = udf(self.generate_alert_json, StringType())
+        
+        final_df = df.withColumn(
+            "alerts_json",
+            generate_json_udf(struct([col(c) for c in df.columns]))
+        ).withColumn(
+            "alert_type",
+            col("final_alert_type")
+        ).withColumn(
+            "alert_severity",
+            when(col("final_alert_type").isNotNull(), "MEDIUM").otherwise(None)
+        ).withColumn(
+            "alert_updated_at",
+            lit(datetime.now())
+        ).select(
+            "emp_id",
+            "shift_date",
+            "alert_type",
+            "alert_severity",
+            "alerts_json",
+            "alert_updated_at"
+        )
+        
+        return final_df
+    
+    def update_day_emp_table(self, final_df):
+        """
+        Update day_emp table with alerts
+        """
+        logger.info("Updating day_emp table...")
+        
+        # Create temp view
+        final_df.createOrReplaceTempView("alerts_final")
+        
+        # First, count records to update
+        count_query = """
+            SELECT COUNT(*) as update_count
+            FROM day_emp de
+            INNER JOIN alerts_final af 
+                ON de.emp_id = af.emp_id 
+                AND de.shift_date = af.shift_date
+        """
+        
+        update_count = self.spark.sql(count_query).first().update_count
+        logger.info(f"Will update {update_count} existing records")
+        
+        # Update existing records
+        update_query = """
+            UPDATE day_emp de
+            SET de.alert_type = af.alert_type,
+                de.alert_severity = af.alert_severity,
+                de.alerts_json = af.alerts_json,
+                de.alert_updated_at = af.alert_updated_at
+            FROM alerts_final af
+            WHERE de.emp_id = af.emp_id
+                AND de.shift_date = af.shift_date
+        """
+        
+        self.spark.sql(update_query)
+        
+        # Insert new records (if any)
+        insert_query = """
+            INSERT INTO day_emp (emp_id, shift_date, alert_type, alert_severity, 
+                               alerts_json, alert_updated_at)
+            SELECT 
+                af.emp_id,
+                af.shift_date,
+                af.alert_type,
+                af.alert_severity,
+                af.alerts_json,
+                af.alert_updated_at
+            FROM alerts_final af
+            WHERE NOT EXISTS (
+                SELECT 1 
+                FROM day_emp de 
+                WHERE de.emp_id = af.emp_id 
+                    AND de.shift_date = af.shift_date
+            )
+        """
+        
+        insert_result = self.spark.sql(insert_query)
+        
+        # Get total affected count
+        total_query = """
+            SELECT COUNT(*) as total_updated
+            FROM day_emp de
+            INNER JOIN alerts_final af 
+                ON de.emp_id = af.emp_id 
+                AND de.shift_date = af.shift_date
+            WHERE de.alert_updated_at = af.alert_updated_at
+        """
+        
+        total_updated = self.spark.sql(total_query).first().total_updated
+        
+        logger.info(f"Successfully updated {total_updated} records in day_emp")
+        return total_updated
+    
+    def run(self):
+        """
+        Main execution method
+        """
+        logger.info("Starting Day Employee Alerts Processing...")
+        start_time = datetime.now()
+        
+        try:
+            # Step 1: Get updated records
+            trigger_df = self.get_updated_records()
+            if trigger_df.count() == 0:
+                logger.info("No updates found. Exiting.")
+                return {"status": "skipped", "processed": 0}
+            
+            # Step 2: Get day_emp data
+            day_data_df = self.get_day_emp_data(trigger_df)
+            if day_data_df.count() == 0:
+                logger.info("No day_emp data found. Exiting.")
+                return {"status": "skipped", "processed": 0}
+            
+            # Step 3: Calculate alerts
+            alerts_df = self.calculate_alerts(day_data_df)
+            
+            # Step 4: Consolidate alerts
+            consolidated_df = self.consolidate_alerts(alerts_df)
+            
+            # Step 5: Prepare final DataFrame
+            final_df = self.prepare_final_df(consolidated_df)
+            
+            # Step 6: Update table
+            processed_count = self.update_day_emp_table(final_df)
+            
+            # Calculate duration
+            duration = (datetime.now() - start_time).total_seconds()
+            
+            # Summary
+            alert_distribution = final_df.groupBy("alert_type").count().collect()
+            alert_summary = {str(row.alert_type): row["count"] for row in alert_distribution}
+            
+            logger.info(f"Processing completed in {duration:.2f} seconds")
+            logger.info(f"Alert distribution: {alert_summary}")
+            
+            return {
+                "status": "success",
+                "processed": processed_count,
+                "alert_distribution": alert_summary,
+                "duration_seconds": duration,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in Day Employee Alerts processing: {str(e)}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Main execution
+if __name__ == "__main__":
+    # Initialize Spark
+    spark = SparkSession.builder \
+        .appName("DayEmpAlerts") \
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+        .config("spark.sql.shuffle.partitions", "50") \
+        .enableHiveSupport() \
+        .getOrCreate()
+    
+    # Run processor
+    processor = DayEmpAlertsProcessor(spark)
+    result = processor.run()
+    
+    # Print result
+    print(json.dumps(result, indent=2))
+    
+    # Stop Spark
+    spark.stop()
+```
+
+COMPLETE CODE: Day Manager Alerts
+
+```python
+# day_mgr_alerts_complete.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, lit, udf, to_json, struct, array, collect_list, countDistinct, sum as spark_sum
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType, BooleanType, TimestampType, ArrayType
+import json
+from datetime import datetime, timedelta
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class DayMgrAlertsProcessor:
+    def __init__(self, spark):
+        self.spark = spark
+        self.team_alert_messages = {
+            1: "Quick tip! Your team could use more breaks. Encourage regular pauses to support well-being.",
+            2: "Heads up! Team activity levels have dropped. Check for workload issues or blockers.",
+            3: "Your team's been on overdrive. Check for workload surges or early burnout signs.",
+            4: "Heads up! Your team shows low activity and high idle time. Review tasks or provide support to boost engagement.",
+            5: "Heads up! Your team shows low activity and idle time. Investigate underutilisation or technical issues.",
+            6: "Heads up! Your team shows high active and idle times. Assess process efficiency or tool responsiveness.",
+            7: "Heads up! Your team shows low activity and high idle time with missed breaks. Review task clarity and tool efficiency.",
+            8: "Heads up! Your team is overactive with idle spikes and limited breaks. Watch for burnout and inefficiencies.",
+            9: "Heads up! Your team shows low interaction and limited breaks. Investigate tool or connectivity issues.",
+            10: "Heads up! Your team shows low activity and high idle time. Review workloads and support needs.",
+            11: "Heads up! Your team shows low activity and idle time. Check for underutilisation or technical concerns.",
+            12: "Heads up! Your team shows high activity and idle time. Review process efficiency and tool usage.",
+            13: "Heads up! Your team shows low activity with infrequent breaks. Address disruptions or unclear tasks.",
+            14: "Heads up! Your team is on overdrive with minimal breaks. Watch for workload surges and burnout."
+        }
+    
+    def get_updated_managers(self):
+        """
+        Get all managers that need recalculation based on updated day_emp records
+        """
+        logger.info("Fetching managers with updated day_emp data...")
+        
+        four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        query = f"""
+            SELECT DISTINCT 
+                hc.fun_mgr_id as manager_id,
+                de.shift_date
+            FROM day_emp de
+            JOIN hrcentral hc ON de.emp_id = hc.emplid
+            WHERE de.alert_updated_at > '{four_hours_ago}'
+               OR de.alert_updated_at IS NULL  -- Include first-time processing
+            GROUP BY hc.fun_mgr_id, de.shift_date
+        """
+        
+        manager_dates_df = self.spark.sql(query)
+        logger.info(f"Found {manager_dates_df.count()} manager-date combinations to process")
+        
+        return manager_dates_df
+    
+    def get_team_alert_data(self, manager_dates_df):
+        """
+        Get team alert data for all manager-date combinations
+        """
+        logger.info("Fetching team alert data...")
+        
+        # Create temp view
+        manager_dates_df.createOrReplaceTempView("manager_dates")
+        
+        # Get team sizes
+        team_sizes_query = """
+            SELECT 
+                fun_mgr_id as manager_id,
+                COUNT(DISTINCT emplid) as team_size
+            FROM hrcentral
+            WHERE fun_mgr_id IN (SELECT DISTINCT manager_id FROM manager_dates)
+            GROUP BY fun_mgr_id
+        """
+        
+        team_sizes_df = self.spark.sql(team_sizes_query)
+        
+        # Get alert data for all team members
+        team_alerts_query = """
+            WITH team_members AS (
+                SELECT 
+                    hc.fun_mgr_id as manager_id,
+                    hc.emplid as emp_id
+                FROM hrcentral hc
+                WHERE hc.fun_mgr_id IN (SELECT DISTINCT manager_id FROM manager_dates)
+            )
+            SELECT 
+                tm.manager_id,
+                de.shift_date,
+                tm.emp_id,
+                de.alert_type,
+                de.alerts_json,
+                de.alert_severity,
+                de.active_time,
+                de.idle_time,
+                de.lock_time
+            FROM team_members tm
+            LEFT JOIN day_emp de ON tm.emp_id = de.emp_id
+            INNER JOIN manager_dates md 
+                ON tm.manager_id = md.manager_id
+                AND de.shift_date = md.shift_date
+        """
+        
+        team_alerts_df = self.spark.sql(team_alerts_query)
+        
+        # Join with team sizes
+        team_data = team_alerts_df.join(
+            team_sizes_df,
+            team_alerts_df.manager_id == team_sizes_df.manager_id,
+            "left"
+        )
+        
+        logger.info(f"Found team data for {team_data.count()} employee-date-manager combinations")
+        return team_data
+    
+    def calculate_team_metrics(self, team_data_df):
+        """
+        Calculate team-level metrics and severity
+        """
+        logger.info("Calculating team metrics...")
+        
+        # Group by manager, date, and alert type
+        team_metrics = team_data_df.groupBy(
+            "manager_id", "shift_date", "alert_type", "team_size"
+        ).agg(
+            countDistinct("emp_id").alias("affected_count"),
+            collect_list("emp_id").alias("affected_employees"),
+            spark_sum("active_time").alias("total_active_time"),
+            spark_sum("idle_time").alias("total_idle_time"),
+            spark_sum("lock_time").alias("total_lock_time")
+        ).filter(
+            col("alert_type").isNotNull()  # Only include records with alerts
+        ).withColumn(
+            "affected_percentage",
+            when(col("team_size") > 0,
+                 (col("affected_count") * 100.0 / col("team_size"))
+            ).otherwise(0)
+        )
+        
+        return team_metrics
+    
+    def assign_team_severity(self, team_metrics_df):
+        """
+        Assign severity based on team percentage thresholds
+        """
+        logger.info("Assigning team severity...")
+        
+        # Apply day timeframe team severity logic
+        df = team_metrics_df.withColumn(
+            "manager_severity_day",
+            when(col("affected_percentage") >= 60, "HIGH")
+            .when((col("affected_percentage") >= 40) & (col("affected_percentage") < 60), "MEDIUM")
+            .when((col("affected_percentage") >= 20) & (col("affected_percentage") < 40), "LOW")
+            .otherwise(None)
+        ).filter(
+            col("manager_severity_day").isNotNull()  # Only keep records meeting threshold
+        )
+        
+        return df
+    
+    def generate_team_alert_json(self, row):
+        """
+        Generate team alert JSON for a manager-date-alert type combination
+        """
+        try:
+            alert_type = int(row.alert_type) if row.alert_type else None
+            
+            # Parse affected employees list
+            affected_employees = []
+            if row.affected_employees:
+                affected_employees = [str(emp_id) for emp_id in row.affected_employees]
+            
+            # Build team metrics
+            team_metrics = {
+                "team_size": int(row.team_size),
+                "affected_count": int(row.affected_count),
+                "affected_percentage": float(row.affected_percentage),
+                "total_active_time": float(row.total_active_time) if row.total_active_time else 0,
+                "total_idle_time": float(row.total_idle_time) if row.total_idle_time else 0,
+                "total_lock_time": float(row.total_lock_time) if row.total_lock_time else 0
+            }
+            
+            # Build alert JSON
+            alert_json = {
+                "alert_type": alert_type,
+                "severity": str(row.manager_severity_day),
+                "team_metrics": team_metrics,
+                "affected_employees": affected_employees,
+                "alert_message": self.team_alert_messages.get(alert_type),
+                "calculated_at": datetime.now().isoformat(),
+                "threshold_analysis": {
+                    "threshold_applied": f"{row.affected_percentage:.2f}% affected",
+                    "severity_thresholds": {
+                        "LOW": "20-40%",
+                        "MEDIUM": "40-60%", 
+                        "HIGH": "≥60%"
+                    }
+                }
+            }
+            
+            return json.dumps(alert_json)
+        except Exception as e:
+            logger.error(f"Error generating team alert JSON: {str(e)}")
+            return json.dumps({"error": str(e)})
+    
+    def prepare_manager_alerts(self, team_severity_df):
+        """
+        Prepare final manager alerts DataFrame
+        """
+        logger.info("Preparing manager alerts...")
+        
+        # Generate alert JSON for each alert type
+        generate_json_udf = udf(self.generate_team_alert_json, StringType())
+        
+        alerts_with_json = team_severity_df.withColumn(
+            "alert_json",
+            generate_json_udf(struct([col(c) for c in team_severity_df.columns]))
+        )
+        
+        # Group by manager and date to create array of alerts
+        manager_alerts = alerts_with_json.groupBy(
+            "manager_id", "shift_date", "team_size"
+        ).agg(
+            collect_list(
+                struct(
+                    col("alert_type"),
+                    col("manager_severity_day").alias("severity"),
+                    col("affected_count"),
+                    col("affected_percentage"),
+                    col("alert_json")
+                )
+            ).alias("alerts_array"),
+            spark_sum("affected_count").alias("total_affected_employees")
+        )
+        
+        # Generate final JSON for manager-date
+        @udf(StringType())
+        def generate_manager_json(alerts_array, manager_id, shift_date, team_size, total_affected):
+            try:
+                # Parse alerts array
+                alerts_list = []
+                for alert in alerts_array:
+                    alerts_list.append({
+                        "alert_type": int(alert.alert_type),
+                        "severity": str(alert.severity),
+                        "affected_count": int(alert.affected_count),
+                        "affected_percentage": float(alert.affected_percentage),
+                        "alert_details": json.loads(alert.alert_json)
+                    })
+                
+                # Calculate overall severity (highest severity among alerts)
+                severity_order = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+                overall_severity = None
+                for alert in alerts_list:
+                    if overall_severity is None or severity_order.get(alert["severity"], 0) > severity_order.get(overall_severity, 0):
+                        overall_severity = alert["severity"]
+                
+                # Build manager JSON
+                manager_json = {
+                    "manager_id": str(manager_id),
+                    "shift_date": str(shift_date),
+                    "team_size": int(team_size),
+                    "total_affected_employees": int(total_affected),
+                    "overall_severity": overall_severity,
+                    "alerts": alerts_list,
+                    "alert_summary": {
+                        "total_alerts": len(alerts_list),
+                        "high_severity_count": sum(1 for a in alerts_list if a["severity"] == "HIGH"),
+                        "medium_severity_count": sum(1 for a in alerts_list if a["severity"] == "MEDIUM"),
+                        "low_severity_count": sum(1 for a in alerts_list if a["severity"] == "LOW")
+                    },
+                    "calculated_at": datetime.now().isoformat()
+                }
+                
+                return json.dumps(manager_json)
+            except Exception as e:
+                logger.error(f"Error in generate_manager_json: {str(e)}")
+                return json.dumps({"error": str(e)})
+        
+        final_df = manager_alerts.withColumn(
+            "alerts_json",
+            generate_manager_json(
+                col("alerts_array"),
+                col("manager_id"),
+                col("shift_date"),
+                col("team_size"),
+                col("total_affected_employees")
+            )
+        ).withColumn(
+            "alert_updated_at",
+            lit(datetime.now())
+        ).select(
+            "manager_id",
+            "shift_date",
+            "team_size",
+            "alerts_json",
+            "alert_updated_at"
+        )
+        
+        return final_df
+    
+    def update_day_mgr_table(self, final_df):
+        """
+        Update day_mgr table with team alerts
+        """
+        logger.info("Updating day_mgr table...")
+        
+        # Create temp view
+        final_df.createOrReplaceTempView("manager_alerts_final")
+        
+        # Count existing records
+        count_query = """
+            SELECT COUNT(*) as update_count
+            FROM day_mgr dm
+            INNER JOIN manager_alerts_final maf 
+                ON dm.manager_id = maf.manager_id 
+                AND dm.shift_date = maf.shift_date
+        """
+        
+        update_count = self.spark.sql(count_query).first().update_count
+        logger.info(f"Will update {update_count} existing records")
+        
+        # Update existing records
+        update_query = """
+            UPDATE day_mgr dm
+            SET dm.alerts_json = maf.alerts_json,
+                dm.team_size = maf.team_size,
+                dm.alert_updated_at = maf.alert_updated_at
+            FROM manager_alerts_final maf
+            WHERE dm.manager_id = maf.manager_id
+                AND dm.shift_date = maf.shift_date
+        """
+        
+        self.spark.sql(update_query)
+        
+        # Insert new records
+        insert_query = """
+            INSERT INTO day_mgr (manager_id, shift_date, team_size, alerts_json, alert_updated_at)
+            SELECT 
+                maf.manager_id,
+                maf.shift_date,
+                maf.team_size,
+                maf.alerts_json,
+                maf.alert_updated_at
+            FROM manager_alerts_final maf
+            WHERE NOT EXISTS (
+                SELECT 1 
+                FROM day_mgr dm 
+                WHERE dm.manager_id = maf.manager_id 
+                    AND dm.shift_date = maf.shift_date
+            )
+        """
+        
+        self.spark.sql(insert_query)
+        
+        # Get total updated count
+        total_query = """
+            SELECT COUNT(*) as total_updated
+            FROM day_mgr dm
+            INNER JOIN manager_alerts_final maf 
+                ON dm.manager_id = maf.manager_id 
+                AND dm.shift_date = maf.shift_date
+            WHERE dm.alert_updated_at = maf.alert_updated_at
+        """
+        
+        total_updated = self.spark.sql(total_query).first().total_updated
+        logger.info(f"Successfully updated {total_updated} records in day_mgr")
+        
+        return total_updated
+    
+    def run(self):
+        """
+        Main execution method
+        """
+        logger.info("Starting Day Manager Alerts Processing...")
+        start_time = datetime.now()
+        
+        try:
+            # Step 1: Get updated managers
+            manager_dates_df = self.get_updated_managers()
+            if manager_dates_df.count() == 0:
+                logger.info("No managers need updating. Exiting.")
+                return {"status": "skipped", "processed": 0}
+            
+            # Step 2: Get team alert data
+            team_data_df = self.get_team_alert_data(manager_dates_df)
+            if team_data_df.count() == 0:
+                logger.info("No team alert data found. Exiting.")
+                return {"status": "skipped", "processed": 0}
+            
+            # Step 3: Calculate team metrics
+            team_metrics_df = self.calculate_team_metrics(team_data_df)
+            
+            # Step 4: Assign team severity
+            team_severity_df = self.assign_team_severity(team_metrics_df)
+            
+            # Step 5: Prepare manager alerts
+            final_df = self.prepare_manager_alerts(team_severity_df)
+            
+            # Step 6: Update day_mgr table
+            processed_count = self.update_day_mgr_table(final_df)
+            
+            # Calculate duration
+            duration = (datetime.now() - start_time).total_seconds()
+            
+            # Summary
+            manager_summary = final_df.groupBy("manager_id").count().collect()
+            manager_count = len(manager_summary)
+            
+            logger.info(f"Processing completed in {duration:.2f} seconds")
+            logger.info(f"Processed alerts for {manager_count} managers")
+            
+            return {
+                "status": "success",
+                "managers_processed": manager_count,
+                "records_processed": processed_count,
+                "duration_seconds": duration,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in Day Manager Alerts processing: {str(e)}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+# Main execution
+if __name__ == "__main__":
+    # Initialize Spark
+    spark = SparkSession.builder \
+        .appName("DayMgrAlerts") \
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+        .config("spark.sql.shuffle.partitions", "50") \
+        .enableHiveSupport() \
+        .getOrCreate()
+    
+    # Run processor
+    processor = DayMgrAlertsProcessor(spark)
+    result = processor.run()
+    
+    # Print result
+    print(json.dumps(result, indent=2))
+    
+    # Stop Spark
+    spark.stop()
+```
+
+ORCHESTRATION SCRIPT
+
+```python
+# run_daily_alerts.py
+from pyspark.sql import SparkSession
+import json
+from datetime import datetime
+import logging
+
+# Import processors
+from day_emp_alerts_complete import DayEmpAlertsProcessor
+from day_mgr_alerts_complete import DayMgrAlertsProcessor
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def main():
+    # Initialize Spark
+    spark = SparkSession.builder \
+        .appName("DailyAlertsPipeline") \
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+        .config("spark.sql.shuffle.partitions", "100") \
+        .config("spark.dynamicAllocation.enabled", "true") \
+        .config("spark.dynamicAllocation.maxExecutors", "10") \
+        .enableHiveSupport() \
+        .getOrCreate()
+    
+    overall_start = datetime.now()
+    results = {}
+    
+    try:
+        # Run Employee Alerts
+        logger.info("=" * 60)
+        logger.info("STARTING EMPLOYEE ALERTS PROCESSING")
+        logger.info("=" * 60)
+        
+        emp_processor = DayEmpAlertsProcessor(spark)
+        emp_result = emp_processor.run()
+        results["employee_alerts"] = emp_result
+        
+        if emp_result.get("status") == "failed":
+            logger.error("Employee alerts failed, skipping manager alerts")
+            results["overall_status"] = "partial_failure"
+        elif emp_result.get("processed", 0) > 0:
+            # Run Manager Alerts only if employee alerts were processed
+            logger.info("=" * 60)
+            logger.info("STARTING MANAGER ALERTS PROCESSING")
+            logger.info("=" * 60)
+            
+            mgr_processor = DayMgrAlertsProcessor(spark)
+            mgr_result = mgr_processor.run()
+            results["manager_alerts"] = mgr_result
+            
+            if mgr_result.get("status") == "success":
+                results["overall_status"] = "success"
+            else:
+                results["overall_status"] = "partial_failure"
+        else:
+            logger.info("No employee alerts to process, skipping manager alerts")
+            results["manager_alerts"] = {"status": "skipped", "reason": "no_employee_alerts"}
+            results["overall_status"] = "success"
+        
+    except Exception as e:
+        logger.error(f"Pipeline failed with error: {str(e)}", exc_info=True)
+        results["overall_status"] = "failed"
+        results["error"] = str(e)
+    
+    finally:
+        # Calculate total duration
+        total_duration = (datetime.now() - overall_start).total_seconds()
+        results["total_duration_seconds"] = total_duration
+        results["completed_at"] = datetime.now().isoformat()
+        
+        # Log summary
+        logger.info("=" * 60)
+        logger.info("PIPELINE SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Overall Status: {results.get('overall_status')}")
+        logger.info(f"Total Duration: {total_duration:.2f} seconds")
+        
+        if "employee_alerts" in results:
+            emp = results["employee_alerts"]
+            logger.info(f"Employee Alerts: {emp.get('processed', 0)} records, Status: {emp.get('status')}")
+        
+        if "manager_alerts" in results:
+            mgr = results["manager_alerts"]
+            logger.info(f"Manager Alerts: {mgr.get('records_processed', 0)} records, Status: {mgr.get('status')}")
+        
+        # Write results to file
+        with open(f"/tmp/alert_pipeline_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
+            json.dump(results, f, indent=2)
+        
+        # Print results
+        print(json.dumps(results, indent=2))
+        
+        # Stop Spark
+        spark.stop()
+    
+    return results
+
+if __name__ == "__main__":
+    main()
+```
+
+SCHEDULER CONFIGURATION
+
+```bash
+#!/bin/bash
+# run_daily_alerts.sh
+
+# Set environment
+export SPARK_HOME=/opt/spark
+export PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9-src.zip:$PYTHONPATH
+
+# Run the pipeline
+$SPARK_HOME/bin/spark-submit \
+    --master yarn \
+    --deploy-mode cluster \
+    --driver-memory 4G \
+    --executor-memory 4G \
+    --executor-cores 2 \
+    --num-executors 4 \
+    --conf spark.sql.adaptive.enabled=true \
+    --conf spark.sql.adaptive.coalescePartitions.enabled=true \
+    --conf spark.sql.adaptive.skewJoin.enabled=true \
+    --py-files day_emp_alerts_complete.py,day_mgr_alerts_complete.py \
+    run_daily_alerts.py
+```
+
+TABLE SCHEMA SETUP
+
+```sql
+-- Ensure day_emp has alert columns
+ALTER TABLE day_emp 
+ADD COLUMNS IF NOT EXISTS (
+    alert_type INT COMMENT 'Final alert type (1-14)',
+    alert_severity STRING COMMENT 'Severity level',
+    alerts_json STRING COMMENT 'Complete alert details as JSON',
+    alert_updated_at TIMESTAMP COMMENT 'When alert was last calculated'
+);
+
+-- Ensure day_mgr has alert columns  
+ALTER TABLE day_mgr
+ADD COLUMNS IF NOT EXISTS (
+    team_size INT COMMENT 'Number of team members',
+    alerts_json STRING COMMENT 'Team alert details as JSON',
+    alert_updated_at TIMESTAMP COMMENT 'When alert was last calculated'
+);
+
+-- Create indexes for performance
+CREATE INDEX IF NOT EXISTS idx_day_emp_alert_date 
+ON day_emp (shift_date, alert_type);
+
+CREATE INDEX IF NOT EXISTS idx_day_emp_alert_updated
+ON day_emp (alert_updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_day_mgr_date
+ON day_mgr (shift_date, manager_id);
+```
+
+This complete solution provides:
+
+1. Employee alerts: Calculates all 14 conditions and stores in day_emp
+2. Manager alerts: Aggregates team data and calculates severity
+3. Batch processing: Efficient processing of all records at once
+4. Error handling: Comprehensive logging and error recovery
+5. Scalability: Spark-based distributed processing
+6. Maintainability: Clean, modular code structure
+
+
+
+
+
+
+_------___-----_________
 def bulk_update_manager_ids():
     """
     Bulk update manager IDs using merge with joined DataFrame as source
