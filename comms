@@ -1,3 +1,30 @@
+
+SELECT
+    emp_id,
+    shift_date,
+    alert_ids,
+
+    to_json(
+        struct(
+            transform(
+                alert_ids,
+                id -> struct(
+                    id AS alert,
+                    'MEDIUM' AS severity
+                )
+            ) AS triggered_alerts,
+            struct(
+                size(alert_ids) AS total_alerts,
+                CAST(current_timestamp() AS STRING) AS calculated_at
+            ) AS summary
+        )
+    ) AS alerts_json,
+
+    current_timestamp() AS calculated_at
+FROM triggered_alerts
+WHERE size(alert_ids) > 0
+
+
 Perfect! You're absolutely right - keep it simple and clean. Here's the minimal, clean JSON structure:
 
 Day Employee Alerts (day_emp)
