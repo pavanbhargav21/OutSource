@@ -1,4 +1,542 @@
+Perfect! You're absolutely right - keep it simple and clean. Here's the minimal, clean JSON structure:
 
+Day Employee Alerts (day_emp)
+
+```json
+{
+  "triggered_alerts": [
+    {
+      "alert": 1,
+      "severity": "MEDIUM"
+    },
+    {
+      "alert": 4, 
+      "severity": "MEDIUM"
+    },
+    {
+      "alert": 7,
+      "severity": "MEDIUM"
+    }
+  ],
+  "summary": {
+    "total_alerts": 3,
+    "calculated_at": "2024-01-15T14:30:54Z"
+  }
+}
+```
+
+Complete Implementation
+
+```python
+# day_emp_alerts_clean.py
+from pyspark.sql import SparkSession
+from datetime import datetime, timedelta
+
+def calculate_day_emp_alerts():
+    """Calculate and store clean alerts JSON in day_emp"""
+    
+    spark = SparkSession.builder.appName("DayEmpAlerts").getOrCreate()
+    
+    # 1. Get records updated in last 4 hours
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    spark.sql(f"""
+        WITH updated_records AS (
+            SELECT DISTINCT emp_id, shift_date 
+            FROM loginlogout 
+            WHERE updated_on > '{four_hours_ago}'
+        ),
+        day_data AS (
+            SELECT 
+                de.*,
+                -- Calculate active percentage
+                CASE 
+                    WHEN (de.active_time + de.idle_time + de.lock_time) > 0 
+                    THEN (de.active_time * 100.0 / (de.active_time + de.idle_time + de.lock_time))
+                    ELSE 0 
+                END as active_percent
+            FROM day_emp de
+            JOIN updated_records ur ON de.emp_id = ur.emp_id AND de.shift_date = ur.shift_date
+        ),
+        triggered_alerts AS (
+            SELECT 
+                emp_id,
+                shift_date,
+                -- Collect ALL triggered alerts
+                ARRAY_REMOVE(ARRAY(
+                    -- Alert 1: Few Breaks
+                    CASE WHEN (idle_time + lock_time) < expected_break_time THEN 1 ELSE NULL END,
+                    
+                    -- Alert 2: Low Active Time
+                    CASE WHEN active_time < expected_shift_time THEN 2 ELSE NULL END,
+                    
+                    -- Alert 3: High Active Time
+                    CASE WHEN active_time > expected_shift_time THEN 3 ELSE NULL END,
+                    
+                    -- Alert 4: Low Active & High Idle Time
+                    CASE WHEN active_time < (0.9 * expected_shift_time) 
+                         AND active_percent < 90 THEN 4 ELSE NULL END,
+                    
+                    -- Alert 5: Low Active & Low Idle Time
+                    CASE WHEN active_time < (0.9 * expected_shift_time) 
+                         AND active_percent > 90 THEN 5 ELSE NULL END,
+                    
+                    -- Alert 6: High Active & High Idle Time
+                    CASE WHEN active_time > (1.1 * expected_shift_time) 
+                         AND idle_time > 1.0 THEN 6 ELSE NULL END,
+                    
+                    -- Alert 7: Few Breaks + Low Active & High Idle Time
+                    CASE WHEN (idle_time + lock_time) < expected_break_time
+                         AND active_time < (0.9 * expected_shift_time)
+                         AND active_percent < 90 THEN 7 ELSE NULL END,
+                    
+                    -- Alert 8: Few Breaks + High Active & High Idle Time
+                    CASE WHEN (idle_time + lock_time) < expected_break_time
+                         AND active_time > (1.1 * expected_shift_time)
+                         AND idle_time > 1.0 THEN 8 ELSE NULL END,
+                    
+                    -- Alert 9: Few Breaks + Low Active & Low Idle Time
+                    CASE WHEN (idle_time + lock_time) < expected_break_time
+                         AND active_time < (0.9 * expected_shift_time)
+                         AND active_percent > 90 THEN 9 ELSE NULL END,
+                    
+                    -- Alert 10: Low Active + High Idle Time
+                    CASE WHEN active_time < expected_shift_time
+                         AND active_time < (0.9 * expected_shift_time)
+                         AND active_percent < 90 THEN 10 ELSE NULL END,
+                    
+                    -- Alert 11: Low Active + Low Idle Time
+                    CASE WHEN active_time < expected_shift_time
+                         AND active_time < (0.9 * expected_shift_time)
+                         AND active_percent > 90 THEN 11 ELSE NULL END,
+                    
+                    -- Alert 12: High Active + High Idle Time
+                    CASE WHEN active_time > (1.1 * expected_shift_time)
+                         AND idle_time > 1.0
+                         AND active_time > expected_shift_time THEN 12 ELSE NULL END,
+                    
+                    -- Alert 13: Low Active + Few Breaks
+                    CASE WHEN (idle_time + lock_time) < expected_break_time
+                         AND active_time < expected_shift_time THEN 13 ELSE NULL END,
+                    
+                    -- Alert 14: High Active + Few Breaks
+                    CASE WHEN (idle_time + lock_time) < expected_break_time
+                         AND active_time > expected_shift_time THEN 14 ELSE NULL END
+                ), NULL) as alert_ids
+            FROM day_data
+        )
+        SELECT 
+            emp_id,
+            shift_date,
+            alert_ids,
+            -- Build clean JSON
+            CONCAT(
+                '{',
+                '"triggered_alerts":[',
+                ARRAY_JOIN(
+                    TRANSFORM(alert_ids, id -> CONCAT(
+                        '{"alert":', id, ',',
+                        '"severity":"MEDIUM"}'
+                    )),
+                    ','
+                ),
+                '],',
+                '"summary":{',
+                '"total_alerts":', SIZE(alert_ids), ',',
+                '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                '}',
+                '}'
+            ) as alerts_json,
+            CURRENT_TIMESTAMP() as calculated_at
+        FROM triggered_alerts
+        WHERE SIZE(alert_ids) > 0
+    """).createOrReplaceTempView("day_alerts_clean")
+    
+    # Update day_emp table
+    spark.sql("""
+        MERGE INTO day_emp target
+        USING day_alerts_clean source
+        ON target.emp_id = source.emp_id AND target.shift_date = source.shift_date
+        WHEN MATCHED THEN
+            UPDATE SET 
+                target.alerts_json = source.alerts_json,
+                target.alert_updated_at = source.calculated_at
+        WHEN NOT MATCHED THEN
+            INSERT (emp_id, shift_date, alerts_json, alert_updated_at)
+            VALUES (source.emp_id, source.shift_date, source.alerts_json, source.calculated_at)
+    """)
+    
+    count = spark.sql("SELECT COUNT(*) as cnt FROM day_alerts_clean").first().cnt
+    spark.stop()
+    return count
+
+if __name__ == "__main__":
+    processed = calculate_day_emp_alerts()
+    print(f"Processed {processed} records")
+```
+
+Day Manager Alerts (day_mgr)
+
+```json
+{
+  "team_alerts": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "affected_employees": 18,
+      "team_size": 25,
+      "percentage": 72.0
+    },
+    {
+      "alert": 4,
+      "severity": "MEDIUM",
+      "affected_employees": 12,
+      "team_size": 25,
+      "percentage": 48.0
+    }
+  ],
+  "summary": {
+    "total_alerts": 2,
+    "calculated_at": "2024-01-15T14:35:22Z"
+  }
+}
+```
+
+```python
+# day_mgr_alerts_clean.py
+def calculate_day_mgr_alerts():
+    """Calculate team alerts from day_emp data"""
+    
+    spark = SparkSession.builder.appName("DayMgrAlerts").getOrCreate()
+    
+    spark.sql("""
+        WITH today_alerts AS (
+            SELECT 
+                hc.fun_mgr_id as manager_id,
+                de.shift_date,
+                -- Extract alert IDs from JSON
+                GET_JSON_OBJECT(de.alerts_json, '$.triggered_alerts[*].alert') as alert_ids
+            FROM day_emp de
+            JOIN hrcentral hc ON de.emp_id = hc.emplid
+            WHERE de.alerts_json IS NOT NULL
+            AND de.shift_date = CURRENT_DATE() - 1  -- Yesterday
+        ),
+        exploded_alerts AS (
+            SELECT 
+                manager_id,
+                shift_date,
+                EXPLODE(FROM_JSON(alert_ids, 'array<int>')) as alert_id
+            FROM today_alerts
+            WHERE alert_ids IS NOT NULL
+        ),
+        team_sizes AS (
+            SELECT 
+                fun_mgr_id as manager_id,
+                COUNT(*) as team_size
+            FROM hrcentral
+            GROUP BY fun_mgr_id
+        ),
+        alert_counts AS (
+            SELECT 
+                ea.manager_id,
+                ea.shift_date,
+                ea.alert_id,
+                COUNT(*) as affected_count,
+                ts.team_size,
+                ROUND((COUNT(*) * 100.0 / ts.team_size), 1) as percentage
+            FROM exploded_alerts ea
+            JOIN team_sizes ts ON ea.manager_id = ts.manager_id
+            GROUP BY ea.manager_id, ea.shift_date, ea.alert_id, ts.team_size
+        )
+        SELECT 
+            manager_id,
+            shift_date,
+            team_size,
+            -- Build clean JSON
+            CONCAT(
+                '{',
+                '"team_alerts":[',
+                ARRAY_JOIN(
+                    COLLECT_LIST(CONCAT(
+                        '{',
+                        '"alert":', alert_id, ',',
+                        '"severity":"',
+                        CASE 
+                            WHEN percentage >= 60 THEN 'HIGH'
+                            WHEN percentage >= 40 THEN 'MEDIUM'
+                            WHEN percentage >= 20 THEN 'LOW'
+                            ELSE 'NONE'
+                        END, '",',
+                        '"affected_employees":', affected_count, ',',
+                        '"team_size":', team_size, ',',
+                        '"percentage":', percentage,
+                        '}'
+                    )),
+                    ','
+                ),
+                '],',
+                '"summary":{',
+                '"total_alerts":', COUNT(*), ',',
+                '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                '}',
+                '}'
+            ) as alerts_json,
+            CURRENT_TIMESTAMP() as calculated_at
+        FROM alert_counts
+        WHERE percentage >= 20  -- Only include if meets threshold
+        GROUP BY manager_id, shift_date, team_size
+    """).createOrReplaceTempView("mgr_alerts_clean")
+    
+    # Update day_mgr table
+    spark.sql("""
+        MERGE INTO day_mgr target
+        USING mgr_alerts_clean source
+        ON target.manager_id = source.manager_id AND target.shift_date = source.shift_date
+        WHEN MATCHED THEN
+            UPDATE SET 
+                target.alerts_json = source.alerts_json,
+                target.team_size = source.team_size,
+                target.alert_updated_at = source.calculated_at
+        WHEN NOT MATCHED THEN
+            INSERT (manager_id, shift_date, team_size, alerts_json, alert_updated_at)
+            VALUES (source.manager_id, source.shift_date, source.team_size, 
+                   source.alerts_json, source.calculated_at)
+    """)
+    
+    count = spark.sql("SELECT COUNT(*) as cnt FROM mgr_alerts_clean").first().cnt
+    spark.stop()
+    return count
+```
+
+Week Employee Alerts (week_emp)
+
+```json
+{
+  "alert_patterns": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "affected_days": 3,
+      "consecutive_days": 3
+    },
+    {
+      "alert": 4,
+      "severity": "LOW",
+      "affected_days": 1,
+      "consecutive_days": 1
+    }
+  ],
+  "summary": {
+    "total_alerts": 2,
+    "calculated_at": "2024-01-15T14:40:15Z"
+  }
+}
+```
+
+```python
+# week_emp_alerts_clean.py
+def calculate_week_emp_alerts(week_start):
+    """Calculate week patterns from day_emp alerts"""
+    
+    spark = SparkSession.builder.appName("WeekEmpAlerts").getOrCreate()
+    
+    spark.sql(f"""
+        WITH week_data AS (
+            SELECT 
+                emp_id,
+                shift_date,
+                GET_JSON_OBJECT(alerts_json, '$.triggered_alerts[*].alert') as alert_ids
+            FROM day_emp
+            WHERE shift_date BETWEEN '{week_start}' AND DATE_ADD('{week_start}', 6)
+            AND alerts_json IS NOT NULL
+        ),
+        exploded_alerts AS (
+            SELECT 
+                emp_id,
+                shift_date,
+                EXPLODE(FROM_JSON(alert_ids, 'array<int>')) as alert_id
+            FROM week_data
+            WHERE alert_ids IS NOT NULL
+        ),
+        patterns AS (
+            SELECT 
+                emp_id,
+                alert_id,
+                COUNT(DISTINCT shift_date) as affected_days,
+                MAX(consecutive_count) as consecutive_days
+            FROM (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    shift_date,
+                    COUNT(*) OVER (
+                        PARTITION BY emp_id, alert_id, grp
+                        ORDER BY shift_date
+                    ) as consecutive_count
+                FROM (
+                    SELECT 
+                        emp_id,
+                        alert_id,
+                        shift_date,
+                        DATE_SUB(shift_date, 
+                            ROW_NUMBER() OVER (
+                                PARTITION BY emp_id, alert_id
+                                ORDER BY shift_date
+                            )
+                        ) as grp
+                    FROM exploded_alerts
+                ) t
+            ) t
+            GROUP BY emp_id, alert_id
+        )
+        SELECT 
+            emp_id,
+            '{week_start}' as week_start,
+            CONCAT(
+                '{',
+                '"alert_patterns":[',
+                ARRAY_JOIN(
+                    COLLECT_LIST(CONCAT(
+                        '{',
+                        '"alert":', alert_id, ',',
+                        '"severity":"',
+                        CASE 
+                            WHEN consecutive_days >= 3 THEN 'HIGH'
+                            WHEN consecutive_days >= 2 THEN 'MEDIUM'
+                            WHEN affected_days >= 1 THEN 'LOW'
+                            ELSE 'NONE'
+                        END, '",',
+                        '"affected_days":', affected_days, ',',
+                        '"consecutive_days":', consecutive_days,
+                        '}'
+                    )),
+                    ','
+                ),
+                '],',
+                '"summary":{',
+                '"total_alerts":', COUNT(*), ',',
+                '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                '}',
+                '}'
+            ) as alerts_json,
+            CURRENT_TIMESTAMP() as calculated_at
+        FROM patterns
+        GROUP BY emp_id
+    """).createOrReplaceTempView("week_alerts_clean")
+    
+    # Update week_emp table
+    spark.sql("""
+        MERGE INTO week_emp target
+        USING week_alerts_clean source
+        ON target.emp_id = source.emp_id AND target.week_start_date = source.week_start
+        WHEN MATCHED THEN
+            UPDATE SET 
+                target.alerts_json = source.alerts_json,
+                target.alert_updated_at = source.calculated_at
+        WHEN NOT MATCHED THEN
+            INSERT (emp_id, week_start_date, alerts_json, alert_updated_at)
+            VALUES (source.emp_id, source.week_start, source.alerts_json, source.calculated_at)
+    """)
+    
+    count = spark.sql("SELECT COUNT(*) as cnt FROM week_alerts_clean").first().cnt
+    spark.stop()
+    return count
+```
+
+Week Manager Alerts (week_mgr)
+
+```json
+{
+  "team_patterns": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "max_daily_percent": 72.0,
+      "days_above_20": 3,
+      "employees_3_consecutive": 2
+    }
+  ],
+  "summary": {
+    "total_alerts": 1,
+    "calculated_at": "2024-01-15T14:45:30Z"
+  }
+}
+```
+
+Month Employee Alerts (month_emp)
+
+```json
+{
+  "month_patterns": [
+    {
+      "alert": 1,
+      "severity": "MEDIUM",
+      "total_days": 12,
+      "weekly_patterns": [
+        {"week": "2024-01-01", "days": 3, "consecutive": 3},
+        {"week": "2024-01-08", "days": 4, "consecutive": 2}
+      ]
+    }
+  ],
+  "summary": {
+    "total_alerts": 1,
+    "calculated_at": "2024-01-15T14:50:45Z"
+  }
+}
+```
+
+The Complete Pipeline
+
+```python
+# alerts_pipeline_clean.py
+from datetime import datetime, timedelta
+
+class CleanAlertsPipeline:
+    def run(self):
+        """Complete pipeline with clean JSON"""
+        
+        print("=" * 60)
+        print("CLEAN ALERTS PIPELINE")
+        print("=" * 60)
+        
+        # 1. Day Employee Alerts (BASE)
+        print("1. Calculating Day Employee Alerts...")
+        day_emp_count = calculate_day_emp_alerts()
+        print(f"   → {day_emp_count} employee-days processed")
+        
+        if day_emp_count > 0:
+            # 2. Day Manager Alerts
+            print("2. Calculating Day Manager Alerts...")
+            day_mgr_count = calculate_day_mgr_alerts()
+            print(f"   → {day_mgr_count} manager-days processed")
+            
+            # 3. Week Employee Alerts (last week)
+            week_start = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            print(f"3. Calculating Week Employee Alerts (week: {week_start})...")
+            week_emp_count = calculate_week_emp_alerts(week_start)
+            print(f"   → {week_emp_count} employee-weeks processed")
+            
+            # 4. Month Employee Alerts (current month)
+            month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+            print(f"4. Calculating Month Employee Alerts (month: {month_start})...")
+            
+        else:
+            print("No day alerts found, skipping aggregation")
+        
+        print("=" * 60)
+        print("PIPELINE COMPLETE")
+        print("=" * 60)
+```
+
+Key Benefits of This Clean Structure:
+
+1. Minimal: Only essential fields
+2. Consistent: Same structure across all tables
+3. Scalable: Easy to add new alerts
+4. Queryable: Easy to parse and analyze
+5. Readable: Simple JSON for frontend
+
+Exactly what you asked for - clean, simple, and effective!
 
 Sure. Below is a clear, structured implementation plan that you can use for design review, CAB approval, or stakeholder communication. I’ve organized it into phases, with dependencies, downtime handling, and validation checkpoints explicitly called out.
 
