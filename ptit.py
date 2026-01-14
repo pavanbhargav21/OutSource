@@ -1,4 +1,27 @@
+WHERE file_description IS NOT NULL
+  AND TRIM(file_description) <> ''
+  AND UPPER(TRIM(file_description)) NOT IN ('NA', 'N/A')
 
+  -- Exclude single-character values
+  AND LENGTH(TRIM(file_description)) > 1
+
+  -- Exclude values with only special characters
+  AND NOT REGEXP_LIKE(
+        file_description,
+        '^[^A-Za-z0-9]+$'
+      )
+
+  -- Exclude URLs
+  AND NOT REGEXP_LIKE(
+        LOWER(file_description),
+        '^(http://|https://|/)'
+      )
+
+  -- Exclude Windows / drive file paths (C:\, D:\, etc.)
+  AND NOT REGEXP_LIKE(
+        file_description,
+        '^[A-Za-z]:\\'
+      )
 
 COMPLETE CODE: Day Employee Alerts
 
