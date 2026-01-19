@@ -1,4 +1,178 @@
 
+# day_emp_pipeline_udf.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType
+import json
+from datetime import datetime, timedelta
+
+def run_day_emp_pipeline_udf():
+    """Day Employee Alerts Pipeline using UDF"""
+    
+    spark = SparkSession.builder.appName("DayEmpPipelineUDF").getOrCreate()
+    
+    # Check if day_emp needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    dates_df = spark.sql(f"""
+        SELECT DISTINCT shift_date
+        FROM day_emp 
+        WHERE updated_on > '{four_hours_ago}'
+        AND shift_date IS NOT NULL
+        ORDER BY shift_date
+    """)
+    
+    dates_to_process = dates_df.collect()
+    
+    if not dates_to_process:
+        print("No day_emp records updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    
+    # Define UDF to create alerts JSON
+    def create_alerts_json(active_time, idle_time, lock_time, expected_shift_time, 
+                          expected_break_time, active_percent):
+        """Create JSON with triggered alerts"""
+        triggered_alerts = []
+        
+        # Calculate each condition
+        if (idle_time + lock_time) < expected_break_time:
+            triggered_alerts.append(1)
+        if active_time < expected_shift_time:
+            triggered_alerts.append(2)
+        if active_time > expected_shift_time:
+            triggered_alerts.append(3)
+        if active_time < (0.9 * expected_shift_time) and active_percent < 90:
+            triggered_alerts.append(4)
+        if active_time < (0.9 * expected_shift_time) and active_percent > 90:
+            triggered_alerts.append(5)
+        if active_time > (1.1 * expected_shift_time) and idle_time > 1.0:
+            triggered_alerts.append(6)
+        if ((idle_time + lock_time) < expected_break_time and 
+            active_time < (0.9 * expected_shift_time) and 
+            active_percent < 90):
+            triggered_alerts.append(7)
+        if ((idle_time + lock_time) < expected_break_time and 
+            active_time > (1.1 * expected_shift_time) and 
+            idle_time > 1.0):
+            triggered_alerts.append(8)
+        if ((idle_time + lock_time) < expected_break_time and 
+            active_time < (0.9 * expected_shift_time) and 
+            active_percent > 90):
+            triggered_alerts.append(9)
+        if (active_time < expected_shift_time and 
+            active_time < (0.9 * expected_shift_time) and 
+            active_percent < 90):
+            triggered_alerts.append(10)
+        if (active_time < expected_shift_time and 
+            active_time < (0.9 * expected_shift_time) and 
+            active_percent > 90):
+            triggered_alerts.append(11)
+        if (active_time > (1.1 * expected_shift_time) and 
+            idle_time > 1.0 and 
+            active_time > expected_shift_time):
+            triggered_alerts.append(12)
+        if ((idle_time + lock_time) < expected_break_time and 
+            active_time < expected_shift_time):
+            triggered_alerts.append(13)
+        if ((idle_time + lock_time) < expected_break_time and 
+            active_time > expected_shift_time):
+            triggered_alerts.append(14)
+        
+        # Create JSON
+        alerts_json = {
+            "triggered_alerts": triggered_alerts,
+            "summary": {
+                "total_alerts": len(triggered_alerts),
+                "calculated_at": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(alerts_json)
+    
+    create_alerts_json_udf = udf(create_alerts_json, StringType())
+    
+    for date_row in dates_to_process:
+        shift_date = date_row.shift_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing day: {shift_date}")
+        
+        # Get data for this date
+        day_data_df = spark.sql(f"""
+            SELECT 
+                de.emp_id,
+                de.shift_date,
+                de.manager_id,
+                de.active_time,
+                de.idle_time,
+                de.lock_time,
+                de.expected_shift_time,
+                de.expected_break_time,
+                -- Calculate active percentage
+                CASE 
+                    WHEN (de.active_time + de.idle_time + de.lock_time) > 0 
+                    THEN (de.active_time * 100.0 / (de.active_time + de.idle_time + de.lock_time))
+                    ELSE 0 
+                END as active_percent
+            FROM day_emp de
+            WHERE de.shift_date = '{shift_date}'
+            AND de.updated_on > '{four_hours_ago}'
+        """)
+        
+        # Apply UDF to create alerts JSON
+        from pyspark.sql.functions import lit, current_timestamp
+        
+        alerts_df = day_data_df.withColumn(
+            "alerts_json",
+            create_alerts_json_udf(
+                col("active_time"),
+                col("idle_time"),
+                col("lock_time"),
+                col("expected_shift_time"),
+                col("expected_break_time"),
+                col("active_percent")
+            )
+        ).withColumn(
+            "calculated_at",
+            current_timestamp()
+        ).filter(
+            "alerts_json LIKE '%\"triggered_alerts\":[%' AND alerts_json NOT LIKE '%\"triggered_alerts\":[]%'"
+        )
+        
+        # Create temp view
+        alerts_df.createOrReplaceTempView(f"day_emp_results_{shift_date.replace('-', '_')}")
+        
+        # Insert/Update day_alerts table
+        spark.sql(f"""
+            MERGE INTO day_alerts target
+            USING day_emp_results_{shift_date.replace('-', '_')} source
+            ON target.emp_id = source.emp_id AND target.shift_date = source.shift_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (emp_id, shift_date, alerts_json, updated_on)
+                VALUES (source.emp_id, source.shift_date, source.alerts_json, source.calculated_at)
+        """)
+        
+        count = alerts_df.count()
+        results[shift_date] = count
+        
+        print(f"  → Processed {count} records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Day Employee Pipeline completed: {total} records across {len(results)} dates")
+    return {"status": "success", "processed": total, "by_date": results}
+
+
+
+
+
 ACTUAL RESPONSES IN EACH TABLE'S ALERTS_JSON COLUMN
 
 1. day_alerts Table
