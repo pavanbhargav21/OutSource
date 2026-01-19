@@ -1,4 +1,1212 @@
 
+COMPLETE CODE FOR ALL 6 PIPELINES
+
+1. Day Employee Alerts Pipeline
+
+```python
+# day_emp_pipeline.py
+from pyspark.sql import SparkSession
+from datetime import datetime, timedelta
+
+def run_day_emp_pipeline():
+    """Day Employee Alerts Pipeline - Simple array format"""
+    
+    spark = SparkSession.builder.appName("DayEmpPipeline").getOrCreate()
+    
+    # Check if day_emp needs processing (updated in last 4 hours)
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get dates with recent updates
+    dates_to_process = spark.sql(f"""
+        SELECT DISTINCT shift_date
+        FROM day_emp 
+        WHERE updated_on > '{four_hours_ago}'
+        AND shift_date IS NOT NULL
+        ORDER BY shift_date
+    """).collect()
+    
+    if not dates_to_process:
+        print("No day_emp records updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    
+    for date_row in dates_to_process:
+        shift_date = date_row.shift_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing day: {shift_date}")
+        
+        # Calculate alerts for this date
+        spark.sql(f"""
+            WITH date_data AS (
+                SELECT 
+                    de.emp_id,
+                    de.shift_date,
+                    de.manager_id,
+                    de.active_time,
+                    de.idle_time,
+                    de.lock_time,
+                    de.expected_shift_time,
+                    de.expected_break_time,
+                    -- Calculate active percentage
+                    CASE 
+                        WHEN (de.active_time + de.idle_time + de.lock_time) > 0 
+                        THEN (de.active_time * 100.0 / (de.active_time + de.idle_time + de.lock_time))
+                        ELSE 0 
+                    END as active_percent
+                FROM day_emp de
+                WHERE de.shift_date = '{shift_date}'
+                AND de.updated_on > '{four_hours_ago}'
+            ),
+            alerts_calc AS (
+                SELECT 
+                    emp_id,
+                    shift_date,
+                    manager_id,
+                    -- All 14 alerts as simple array
+                    ARRAY_REMOVE(ARRAY(
+                        -- Alert 1: Few Breaks
+                        CASE WHEN (idle_time + lock_time) < expected_break_time THEN 1 ELSE NULL END,
+                        
+                        -- Alert 2: Low Active Time
+                        CASE WHEN active_time < expected_shift_time THEN 2 ELSE NULL END,
+                        
+                        -- Alert 3: High Active Time
+                        CASE WHEN active_time > expected_shift_time THEN 3 ELSE NULL END,
+                        
+                        -- Alert 4: Low Active & High Idle Time
+                        CASE WHEN active_time < (0.9 * expected_shift_time) 
+                             AND active_percent < 90 THEN 4 ELSE NULL END,
+                        
+                        -- Alert 5: Low Active & Low Idle Time
+                        CASE WHEN active_time < (0.9 * expected_shift_time) 
+                             AND active_percent > 90 THEN 5 ELSE NULL END,
+                        
+                        -- Alert 6: High Active & High Idle Time
+                        CASE WHEN active_time > (1.1 * expected_shift_time) 
+                             AND idle_time > 1.0 THEN 6 ELSE NULL END,
+                        
+                        -- Alert 7: Few Breaks + Low Active & High Idle Time
+                        CASE WHEN (idle_time + lock_time) < expected_break_time
+                             AND active_time < (0.9 * expected_shift_time)
+                             AND active_percent < 90 THEN 7 ELSE NULL END,
+                        
+                        -- Alert 8: Few Breaks + High Active & High Idle Time
+                        CASE WHEN (idle_time + lock_time) < expected_break_time
+                             AND active_time > (1.1 * expected_shift_time)
+                             AND idle_time > 1.0 THEN 8 ELSE NULL END,
+                        
+                        -- Alert 9: Few Breaks + Low Active & Low Idle Time
+                        CASE WHEN (idle_time + lock_time) < expected_break_time
+                             AND active_time < (0.9 * expected_shift_time)
+                             AND active_percent > 90 THEN 9 ELSE NULL END,
+                        
+                        -- Alert 10: Low Active + High Idle Time
+                        CASE WHEN active_time < expected_shift_time
+                             AND active_time < (0.9 * expected_shift_time)
+                             AND active_percent < 90 THEN 10 ELSE NULL END,
+                        
+                        -- Alert 11: Low Active + Low Idle Time
+                        CASE WHEN active_time < expected_shift_time
+                             AND active_time < (0.9 * expected_shift_time)
+                             AND active_percent > 90 THEN 11 ELSE NULL END,
+                        
+                        -- Alert 12: High Active + High Idle Time
+                        CASE WHEN active_time > (1.1 * expected_shift_time)
+                             AND idle_time > 1.0
+                             AND active_time > expected_shift_time THEN 12 ELSE NULL END,
+                        
+                        -- Alert 13: Low Active + Few Breaks
+                        CASE WHEN (idle_time + lock_time) < expected_break_time
+                             AND active_time < expected_shift_time THEN 13 ELSE NULL END,
+                        
+                        -- Alert 14: High Active + Few Breaks
+                        CASE WHEN (idle_time + lock_time) < expected_break_time
+                             AND active_time > expected_shift_time THEN 14 ELSE NULL END
+                    ), NULL) as alert_ids
+                FROM date_data
+            )
+            SELECT 
+                emp_id,
+                shift_date,
+                manager_id,
+                -- Build simple JSON with array
+                CONCAT(
+                    '{',
+                    '"triggered_alerts":', 
+                    CASE 
+                        WHEN SIZE(alert_ids) > 0 THEN 
+                            CONCAT('[', ARRAY_JOIN(alert_ids, ','), ']')
+                        ELSE '[]'
+                    END, ',',
+                    '"summary":{',
+                    '"total_alerts":', SIZE(alert_ids), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM alerts_calc
+            WHERE SIZE(alert_ids) > 0
+        """).createOrReplaceTempView(f"day_emp_results_{shift_date.replace('-', '_')}")
+        
+        # Insert/Update day_alerts table
+        spark.sql(f"""
+            MERGE INTO day_alerts target
+            USING day_emp_results_{shift_date.replace('-', '_')} source
+            ON target.emp_id = source.emp_id AND target.shift_date = source.shift_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (emp_id, shift_date, alerts_json, updated_on)
+                VALUES (source.emp_id, source.shift_date, source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM day_emp_results_{shift_date.replace('-', '_')}").first().cnt
+        results[shift_date] = count
+        
+        print(f"  → Processed {count} records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Day Employee Pipeline completed: {total} records across {len(results)} dates")
+    return {"status": "success", "processed": total, "by_date": results}
+```
+
+2. Day Manager Alerts Pipeline
+
+```python
+# day_mgr_pipeline.py
+def run_day_mgr_pipeline():
+    """Day Manager Alerts Pipeline - From day_alerts"""
+    
+    spark = SparkSession.builder.appName("DayMgrPipeline").getOrCreate()
+    
+    # Check if day_alerts needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get dates with recent day_alerts updates
+    dates_to_process = spark.sql(f"""
+        SELECT DISTINCT shift_date
+        FROM day_alerts 
+        WHERE updated_on > '{four_hours_ago}'
+        AND shift_date IS NOT NULL
+        ORDER BY shift_date
+    """).collect()
+    
+    if not dates_to_process:
+        print("No day_alerts updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    
+    for date_row in dates_to_process:
+        shift_date = date_row.shift_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing day manager alerts for: {shift_date}")
+        
+        # Calculate team alerts for this date
+        spark.sql(f"""
+            WITH day_alert_data AS (
+                SELECT 
+                    de.emp_id,
+                    de.manager_id,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) as alert_ids
+                FROM day_alerts da
+                JOIN day_emp de ON da.emp_id = de.emp_id AND da.shift_date = de.shift_date
+                WHERE da.shift_date = '{shift_date}'
+                AND da.updated_on > '{four_hours_ago}'
+                AND de.manager_id IS NOT NULL
+            ),
+            exploded_alerts AS (
+                SELECT 
+                    manager_id,
+                    alert_id
+                FROM day_alert_data
+                LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+            ),
+            team_sizes AS (
+                SELECT 
+                    manager_id,
+                    COUNT(DISTINCT emp_id) as team_size
+                FROM day_emp 
+                WHERE shift_date = '{shift_date}'
+                AND manager_id IS NOT NULL
+                GROUP BY manager_id
+            ),
+            alert_counts AS (
+                SELECT 
+                    ea.manager_id,
+                    ea.alert_id,
+                    COUNT(DISTINCT dad.emp_id) as affected_count,
+                    ts.team_size
+                FROM exploded_alerts ea
+                JOIN day_alert_data dad ON ea.manager_id = dad.manager_id 
+                    AND ea.alert_id IN dad.alert_ids
+                JOIN team_sizes ts ON ea.manager_id = ts.manager_id
+                GROUP BY ea.manager_id, ea.alert_id, ts.team_size
+            )
+            SELECT 
+                manager_id,
+                '{shift_date}' as shift_date,
+                team_size,
+                -- Build team alerts JSON
+                CONCAT(
+                    '{',
+                    '"team_alerts":[',
+                    ARRAY_JOIN(
+                        COLLECT_LIST(CONCAT(
+                            '{',
+                            '"alert":', alert_id, ',',
+                            '"severity":"',
+                            CASE 
+                                WHEN (affected_count * 100.0 / team_size) >= 60 THEN 'HIGH'
+                                WHEN (affected_count * 100.0 / team_size) >= 40 THEN 'MEDIUM'
+                                WHEN (affected_count * 100.0 / team_size) >= 20 THEN 'LOW'
+                                ELSE 'NONE'
+                            END, '",',
+                            '"affected_employees":', affected_count, ',',
+                            '"team_size":', team_size, ',',
+                            '"percentage":', ROUND((affected_count * 100.0 / team_size), 1),
+                            '}'
+                        )),
+                        ','
+                    ),
+                    '],',
+                    '"summary":{',
+                    '"total_alerts":', COUNT(*), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM alert_counts
+            WHERE (affected_count * 100.0 / team_size) >= 20
+            GROUP BY manager_id, team_size
+        """).createOrReplaceTempView(f"day_mgr_results_{shift_date.replace('-', '_')}")
+        
+        # Insert/Update day_mgr_alerts table
+        spark.sql(f"""
+            MERGE INTO day_mgr_alerts target
+            USING day_mgr_results_{shift_date.replace('-', '_')} source
+            ON target.manager_id = source.manager_id AND target.shift_date = source.shift_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.team_size = source.team_size,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (manager_id, shift_date, team_size, alerts_json, updated_on)
+                VALUES (source.manager_id, source.shift_date, source.team_size, 
+                       source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM day_mgr_results_{shift_date.replace('-', '_')}").first().cnt
+        results[shift_date] = count
+        
+        print(f"  → Processed {count} manager records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Day Manager Pipeline completed: {total} records across {len(results)} dates")
+    return {"status": "success", "processed": total, "by_date": results}
+```
+
+3. Week Employee Alerts Pipeline
+
+```python
+# week_emp_pipeline.py
+def run_week_emp_pipeline():
+    """Week Employee Alerts Pipeline - Patterns from day_alerts"""
+    
+    spark = SparkSession.builder.appName("WeekEmpPipeline").getOrCreate()
+    
+    # Check if week_alerts needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get weeks with recent updates
+    weeks_to_process = spark.sql(f"""
+        SELECT DISTINCT week_start_date
+        FROM week_alerts 
+        WHERE updated_on > '{four_hours_ago}'
+        ORDER BY week_start_date
+    """).collect()
+    
+    if not weeks_to_process:
+        print("No week_alerts updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    yesterday = (datetime.now() - timedelta(days=1)).date()
+    
+    for week_row in weeks_to_process:
+        week_start = week_row.week_start_date
+        week_start_str = week_start.strftime('%Y-%m-%d')
+        
+        # Week end: min(week_start + 6 days, yesterday)
+        week_end_date = min(week_start + timedelta(days=6), yesterday)
+        week_end_str = week_end_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing week: {week_start_str} to {week_end_str}")
+        
+        # Get employees with recent week_alerts updates
+        spark.sql(f"""
+            SELECT DISTINCT emp_id
+            FROM week_alerts 
+            WHERE week_start_date = '{week_start_str}'
+            AND updated_on > '{four_hours_ago}'
+        """).createOrReplaceTempView(f"week_emps_{week_start_str.replace('-', '_')}")
+        
+        # Calculate week patterns
+        spark.sql(f"""
+            WITH week_data AS (
+                SELECT 
+                    da.emp_id,
+                    da.shift_date,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) as alert_ids
+                FROM day_alerts da
+                JOIN week_emps_{week_start_str.replace('-', '_')} we ON da.emp_id = we.emp_id
+                WHERE da.shift_date BETWEEN '{week_start_str}' AND '{week_end_str}'
+                AND da.shift_date <= '{yesterday.strftime('%Y-%m-%d')}'
+            ),
+            exploded_data AS (
+                SELECT 
+                    emp_id,
+                    shift_date,
+                    alert_id
+                FROM week_data
+                LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+            ),
+            patterns AS (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    COUNT(DISTINCT shift_date) as affected_days,
+                    MAX(consecutive_count) as max_consecutive
+                FROM (
+                    SELECT 
+                        emp_id,
+                        alert_id,
+                        shift_date,
+                        COUNT(*) OVER (
+                            PARTITION BY emp_id, alert_id, grp
+                            ORDER BY shift_date
+                        ) as consecutive_count
+                    FROM (
+                        SELECT 
+                            emp_id,
+                            alert_id,
+                            shift_date,
+                            DATE_SUB(shift_date, 
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY emp_id, alert_id
+                                    ORDER BY shift_date
+                                )
+                            ) as grp
+                        FROM exploded_data
+                    ) t
+                ) t
+                GROUP BY emp_id, alert_id
+            )
+            SELECT 
+                emp_id,
+                '{week_start_str}' as week_start_date,
+                -- Build week patterns JSON
+                CONCAT(
+                    '{',
+                    '"alert_patterns":[',
+                    ARRAY_JOIN(
+                        COLLECT_LIST(CONCAT(
+                            '{',
+                            '"alert":', alert_id, ',',
+                            '"severity":"',
+                            CASE 
+                                WHEN max_consecutive >= 3 THEN 'HIGH'
+                                WHEN max_consecutive >= 2 THEN 'MEDIUM'
+                                WHEN affected_days >= 1 THEN 'LOW'
+                                ELSE 'NONE'
+                            END, '",',
+                            '"affected_days":', affected_days, ',',
+                            '"consecutive_days":', max_consecutive,
+                            '}'
+                        )),
+                        ','
+                    ),
+                    '],',
+                    '"summary":{',
+                    '"total_alerts":', COUNT(*), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM patterns
+            WHERE affected_days > 0
+            GROUP BY emp_id
+        """).createOrReplaceTempView(f"week_emp_results_{week_start_str.replace('-', '_')}")
+        
+        # Update week_alerts table
+        spark.sql(f"""
+            MERGE INTO week_alerts target
+            USING week_emp_results_{week_start_str.replace('-', '_')} source
+            ON target.emp_id = source.emp_id AND target.week_start_date = source.week_start_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (emp_id, week_start_date, alerts_json, updated_on)
+                VALUES (source.emp_id, source.week_start_date, source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM week_emp_results_{week_start_str.replace('-', '_')}").first().cnt
+        results[week_start_str] = count
+        
+        print(f"  → Processed {count} employee records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Week Employee Pipeline completed: {total} records across {len(results)} weeks")
+    return {"status": "success", "processed": total, "by_week": results}
+```
+
+4. Week Manager Alerts Pipeline
+
+```python
+# week_mgr_pipeline.py
+def run_week_mgr_pipeline():
+    """Week Manager Alerts Pipeline - Team patterns from day_alerts"""
+    
+    spark = SparkSession.builder.appName("WeekMgrPipeline").getOrCreate()
+    
+    # Check if week_mgr_alerts needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get weeks with recent updates
+    weeks_to_process = spark.sql(f"""
+        SELECT DISTINCT week_start_date
+        FROM week_mgr_alerts 
+        WHERE updated_on > '{four_hours_ago}'
+        ORDER BY week_start_date
+    """).collect()
+    
+    if not weeks_to_process:
+        print("No week_mgr_alerts updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    yesterday = (datetime.now() - timedelta(days=1)).date()
+    
+    for week_row in weeks_to_process:
+        week_start = week_row.week_start_date
+        week_start_str = week_start.strftime('%Y-%m-%d')
+        
+        # Week end: min(week_start + 6 days, yesterday)
+        week_end_date = min(week_start + timedelta(days=6), yesterday)
+        week_end_str = week_end_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing week manager alerts: {week_start_str} to {week_end_str}")
+        
+        # Calculate week manager patterns
+        spark.sql(f"""
+            WITH week_data AS (
+                SELECT 
+                    de.manager_id,
+                    da.shift_date,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) as alert_ids
+                FROM day_alerts da
+                JOIN day_emp de ON da.emp_id = de.emp_id AND da.shift_date = de.shift_date
+                WHERE da.shift_date BETWEEN '{week_start_str}' AND '{week_end_str}'
+                AND da.shift_date <= '{yesterday.strftime('%Y-%m-%d')}'
+                AND de.manager_id IS NOT NULL
+            ),
+            daily_stats AS (
+                SELECT 
+                    manager_id,
+                    shift_date,
+                    alert_id,
+                    COUNT(DISTINCT de.emp_id) as daily_affected,
+                    (SELECT COUNT(DISTINCT emp_id) 
+                     FROM day_emp 
+                     WHERE manager_id = wd.manager_id 
+                     AND shift_date = wd.shift_date) as daily_team_size
+                FROM week_data wd
+                LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+                JOIN day_emp de ON wd.manager_id = de.manager_id 
+                    AND wd.shift_date = de.shift_date
+                    AND wd.alert_id IN (
+                        SELECT alert FROM (
+                            SELECT EXPLODE(alert_ids) as alert 
+                            FROM week_data wd2 
+                            WHERE wd2.manager_id = wd.manager_id 
+                            AND wd2.shift_date = wd.shift_date
+                        ) t
+                    )
+                GROUP BY manager_id, shift_date, alert_id
+            ),
+            week_patterns AS (
+                SELECT 
+                    manager_id,
+                    alert_id,
+                    MAX((daily_affected * 100.0 / NULLIF(daily_team_size, 0))) as max_daily_percent,
+                    SUM(CASE WHEN (daily_affected * 100.0 / NULLIF(daily_team_size, 0)) >= 20 THEN 1 ELSE 0 END) as days_above_20
+                FROM daily_stats
+                GROUP BY manager_id, alert_id
+            )
+            SELECT 
+                manager_id,
+                '{week_start_str}' as week_start_date,
+                -- Build week manager JSON
+                CONCAT(
+                    '{',
+                    '"team_patterns":[',
+                    ARRAY_JOIN(
+                        COLLECT_LIST(CONCAT(
+                            '{',
+                            '"alert":', alert_id, ',',
+                            '"severity":"',
+                            CASE 
+                                WHEN (max_daily_percent >= 60 AND days_above_20 >= 3) THEN 'HIGH'
+                                WHEN (max_daily_percent >= 40 AND max_daily_percent < 60 AND days_above_20 >= 3) THEN 'MEDIUM'
+                                WHEN (max_daily_percent >= 20 AND max_daily_percent < 40 AND days_above_20 >= 1) THEN 'LOW'
+                                ELSE 'NONE'
+                            END, '",',
+                            '"max_daily_percent":', ROUND(max_daily_percent, 1), ',',
+                            '"days_above_20":', days_above_20,
+                            '}'
+                        )),
+                        ','
+                    ),
+                    '],',
+                    '"summary":{',
+                    '"total_alerts":', COUNT(*), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM week_patterns
+            WHERE days_above_20 > 0
+            GROUP BY manager_id
+        """).createOrReplaceTempView(f"week_mgr_results_{week_start_str.replace('-', '_')}")
+        
+        # Update week_mgr_alerts table
+        spark.sql(f"""
+            MERGE INTO week_mgr_alerts target
+            USING week_mgr_results_{week_start_str.replace('-', '_')} source
+            ON target.manager_id = source.manager_id AND target.week_start_date = source.week_start_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (manager_id, week_start_date, alerts_json, updated_on)
+                VALUES (source.manager_id, source.week_start_date, source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM week_mgr_results_{week_start_str.replace('-', '_')}").first().cnt
+        results[week_start_str] = count
+        
+        print(f"  → Processed {count} manager records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Week Manager Pipeline completed: {total} records across {len(results)} weeks")
+    return {"status": "success", "processed": total, "by_week": results}
+```
+
+5. Month Employee Alerts Pipeline
+
+```python
+# month_emp_pipeline.py
+def run_month_emp_pipeline():
+    """Month Employee Alerts Pipeline - Monthly patterns"""
+    
+    spark = SparkSession.builder.appName("MonthEmpPipeline").getOrCreate()
+    
+    # Check if month_alerts needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get months with recent updates
+    months_to_process = spark.sql(f"""
+        SELECT DISTINCT month_start_date
+        FROM month_alerts 
+        WHERE updated_on > '{four_hours_ago}'
+        ORDER BY month_start_date
+    """).collect()
+    
+    if not months_to_process:
+        print("No month_alerts updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    yesterday = (datetime.now() - timedelta(days=1)).date()
+    
+    for month_row in months_to_process:
+        month_start = month_row.month_start_date
+        month_start_str = month_start.strftime('%Y-%m-%d')
+        
+        # Determine month end
+        if month_start.month == datetime.now().month and month_start.year == datetime.now().year:
+            # Current month: until yesterday
+            month_end_date = yesterday
+        else:
+            # Past month: last day of month
+            month_end_date = month_start + timedelta(days=31)
+            month_end_date = month_end_date.replace(day=1) - timedelta(days=1)
+        
+        month_end_str = month_end_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing month: {month_start_str} to {month_end_str}")
+        
+        # Get employees with recent month_alerts updates
+        spark.sql(f"""
+            SELECT DISTINCT emp_id
+            FROM month_alerts 
+            WHERE month_start_date = '{month_start_str}'
+            AND updated_on > '{four_hours_ago}'
+        """).createOrReplaceTempView(f"month_emps_{month_start_str.replace('-', '_')}")
+        
+        # Calculate month patterns
+        spark.sql(f"""
+            WITH month_data AS (
+                SELECT 
+                    da.emp_id,
+                    da.shift_date,
+                    DATE_TRUNC('week', da.shift_date) as week_start,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) as alert_ids
+                FROM day_alerts da
+                JOIN month_emps_{month_start_str.replace('-', '_')} me ON da.emp_id = me.emp_id
+                WHERE da.shift_date BETWEEN '{month_start_str}' AND '{month_end_str}'
+                AND da.shift_date <= '{yesterday.strftime('%Y-%m-%d')}'
+            ),
+            exploded_data AS (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    shift_date,
+                    week_start
+                FROM month_data
+                LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+            ),
+            weekly_stats AS (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    week_start,
+                    COUNT(DISTINCT shift_date) as affected_days_in_week,
+                    MAX(consecutive_days) as max_consecutive_in_week
+                FROM (
+                    SELECT 
+                        emp_id,
+                        alert_id,
+                        week_start,
+                        shift_date,
+                        COUNT(*) OVER (
+                            PARTITION BY emp_id, alert_id, week_start, grp
+                            ORDER BY shift_date
+                        ) as consecutive_days
+                    FROM (
+                        SELECT 
+                            emp_id,
+                            alert_id,
+                            week_start,
+                            shift_date,
+                            DATE_SUB(shift_date, 
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY emp_id, alert_id, week_start
+                                    ORDER BY shift_date
+                                )
+                            ) as grp
+                        FROM exploded_data
+                    ) t
+                ) t
+                GROUP BY emp_id, alert_id, week_start
+            ),
+            monthly_stats AS (
+                SELECT 
+                    ed.emp_id,
+                    ed.alert_id,
+                    COUNT(DISTINCT ed.shift_date) as total_days_in_month,
+                    COLLECT_LIST(STRUCT(
+                        ws.week_start,
+                        ws.affected_days_in_week,
+                        ws.max_consecutive_in_week
+                    )) as weekly_patterns
+                FROM exploded_data ed
+                JOIN weekly_stats ws ON ed.emp_id = ws.emp_id 
+                    AND ed.alert_id = ws.alert_id 
+                    AND ed.week_start = ws.week_start
+                GROUP BY ed.emp_id, ed.alert_id
+            ),
+            patterns AS (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    total_days_in_month,
+                    weekly_patterns,
+                    -- Check consecutive week patterns
+                    EXISTS (
+                        SELECT 1
+                        FROM UNNEST(weekly_patterns) w1
+                        CROSS JOIN UNNEST(weekly_patterns) w2
+                        WHERE w1.week_start = DATE_SUB(w2.week_start, 7)
+                        AND w1.max_consecutive_in_week >= 3
+                        AND w2.max_consecutive_in_week >= 3
+                    ) as has_high_pattern,
+                    EXISTS (
+                        SELECT 1
+                        FROM UNNEST(weekly_patterns) w1
+                        CROSS JOIN UNNEST(weekly_patterns) w2
+                        WHERE w1.week_start = DATE_SUB(w2.week_start, 7)
+                        AND w1.max_consecutive_in_week >= 2
+                        AND w2.max_consecutive_in_week >= 2
+                    ) as has_medium_pattern,
+                    EXISTS (
+                        SELECT 1
+                        FROM UNNEST(weekly_patterns) w1
+                        CROSS JOIN UNNEST(weekly_patterns) w2
+                        WHERE w1.week_start = DATE_SUB(w2.week_start, 7)
+                        AND w1.affected_days_in_week >= 1
+                        AND w2.affected_days_in_week >= 1
+                    ) as has_low_pattern
+                FROM monthly_stats
+            ),
+            severity_assigned AS (
+                SELECT 
+                    emp_id,
+                    alert_id,
+                    total_days_in_month,
+                    weekly_patterns,
+                    CASE 
+                        WHEN total_days_in_month >= 18 OR has_high_pattern THEN 'HIGH'
+                        WHEN total_days_in_month >= 12 OR has_medium_pattern THEN 'MEDIUM'
+                        WHEN total_days_in_month >= 6 OR has_low_pattern THEN 'LOW'
+                        ELSE NULL
+                    END as severity_month
+                FROM patterns
+                WHERE total_days_in_month >= 6 OR has_low_pattern
+            )
+            SELECT 
+                emp_id,
+                '{month_start_str}' as month_start_date,
+                -- Build month patterns JSON
+                CONCAT(
+                    '{',
+                    '"month_patterns":[',
+                    ARRAY_JOIN(
+                        COLLECT_LIST(CONCAT(
+                            '{',
+                            '"alert":', alert_id, ',',
+                            '"severity":"', severity_month, '",',
+                            '"total_days":', total_days_in_month, ',',
+                            '"weekly_patterns":[',
+                            ARRAY_JOIN(
+                                TRANSFORM(weekly_patterns, wp -> CONCAT(
+                                    '{',
+                                    '"week":"', wp.week_start, '",',
+                                    '"affected_days":', wp.affected_days_in_week, ',',
+                                    '"consecutive_days":', wp.max_consecutive_in_week,
+                                    '}'
+                                )),
+                                ','
+                            ),
+                            ']',
+                            '}'
+                        )),
+                        ','
+                    ),
+                    '],',
+                    '"summary":{',
+                    '"total_alerts":', COUNT(*), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM severity_assigned
+            WHERE severity_month IS NOT NULL
+            GROUP BY emp_id
+        """).createOrReplaceTempView(f"month_emp_results_{month_start_str.replace('-', '_')}")
+        
+        # Update month_alerts table
+        spark.sql(f"""
+            MERGE INTO month_alerts target
+            USING month_emp_results_{month_start_str.replace('-', '_')} source
+            ON target.emp_id = source.emp_id AND target.month_start_date = source.month_start_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (emp_id, month_start_date, alerts_json, updated_on)
+                VALUES (source.emp_id, source.month_start_date, source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM month_emp_results_{month_start_str.replace('-', '_')}").first().cnt
+        results[month_start_str] = count
+        
+        print(f"  → Processed {count} employee records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Month Employee Pipeline completed: {total} records across {len(results)} months")
+    return {"status": "success", "processed": total, "by_month": results}
+```
+
+6. Month Manager Alerts Pipeline
+
+```python
+# month_mgr_pipeline.py
+def run_month_mgr_pipeline():
+    """Month Manager Alerts Pipeline - Team monthly patterns"""
+    
+    spark = SparkSession.builder.appName("MonthMgrPipeline").getOrCreate()
+    
+    # Check if month_mgr_alerts needs processing
+    four_hours_ago = (datetime.now() - timedelta(hours=4)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Get months with recent updates
+    months_to_process = spark.sql(f"""
+        SELECT DISTINCT month_start_date
+        FROM month_mgr_alerts 
+        WHERE updated_on > '{four_hours_ago}'
+        ORDER BY month_start_date
+    """).collect()
+    
+    if not months_to_process:
+        print("No month_mgr_alerts updated in last 4 hours. Skipping.")
+        spark.stop()
+        return {"status": "skipped"}
+    
+    results = {}
+    yesterday = (datetime.now() - timedelta(days=1)).date()
+    
+    for month_row in months_to_process:
+        month_start = month_row.month_start_date
+        month_start_str = month_start.strftime('%Y-%m-%d')
+        
+        # Determine month end
+        if month_start.month == datetime.now().month and month_start.year == datetime.now().year:
+            # Current month: until yesterday
+            month_end_date = yesterday
+        else:
+            # Past month: last day of month
+            month_end_date = month_start + timedelta(days=31)
+            month_end_date = month_end_date.replace(day=1) - timedelta(days=1)
+        
+        month_end_str = month_end_date.strftime('%Y-%m-%d')
+        
+        print(f"Processing month manager alerts: {month_start_str} to {month_end_str}")
+        
+        # Calculate month manager patterns
+        spark.sql(f"""
+            WITH month_data AS (
+                SELECT 
+                    de.manager_id,
+                    de.emp_id,
+                    da.shift_date,
+                    DATE_TRUNC('week', da.shift_date) as week_start,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) as alert_ids
+                FROM day_alerts da
+                JOIN day_emp de ON da.emp_id = de.emp_id AND da.shift_date = de.shift_date
+                WHERE da.shift_date BETWEEN '{month_start_str}' AND '{month_end_str}'
+                AND da.shift_date <= '{yesterday.strftime('%Y-%m-%d')}'
+                AND de.manager_id IS NOT NULL
+            ),
+            team_sizes AS (
+                SELECT 
+                    manager_id,
+                    COUNT(DISTINCT emp_id) as team_size
+                FROM day_emp 
+                WHERE shift_date BETWEEN '{month_start_str}' AND '{month_end_str}'
+                AND manager_id IN (SELECT DISTINCT manager_id FROM month_data)
+                GROUP BY manager_id
+            ),
+            -- Condition 1: % of team affected for ≥6 days
+            team_days_affected AS (
+                SELECT 
+                    manager_id,
+                    alert_id,
+                    COUNT(DISTINCT shift_date) as team_affected_days
+                FROM (
+                    SELECT 
+                        manager_id,
+                        shift_date,
+                        alert_id
+                    FROM month_data
+                    LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+                ) t
+                GROUP BY manager_id, alert_id
+            ),
+            team_percentage AS (
+                SELECT 
+                    tda.manager_id,
+                    tda.alert_id,
+                    tda.team_affected_days,
+                    ts.team_size,
+                    (tda.team_affected_days * 100.0 / ts.team_size) as percentage_affected
+                FROM team_days_affected tda
+                JOIN team_sizes ts ON tda.manager_id = ts.manager_id
+                WHERE tda.team_affected_days >= 6
+            ),
+            -- Condition 2: Individuals with 3 consecutive days across 2 weeks
+            individual_patterns AS (
+                SELECT 
+                    manager_id,
+                    alert_id,
+                    COUNT(DISTINCT emp_id) as individuals_with_3_consecutive
+                FROM (
+                    SELECT 
+                        manager_id,
+                        emp_id,
+                        alert_id,
+                        COUNT(DISTINCT week_start) as weeks_count
+                    FROM (
+                        SELECT 
+                            manager_id,
+                            emp_id,
+                            alert_id,
+                            week_start,
+                            MAX(consecutive_days) as max_consecutive
+                        FROM (
+                            SELECT 
+                                manager_id,
+                                emp_id,
+                                alert_id,
+                                week_start,
+                                shift_date,
+                                COUNT(*) OVER (
+                                    PARTITION BY manager_id, emp_id, alert_id, week_start, grp
+                                    ORDER BY shift_date
+                                ) as consecutive_days
+                            FROM (
+                                SELECT 
+                                    manager_id,
+                                    emp_id,
+                                    alert_id,
+                                    week_start,
+                                    shift_date,
+                                    DATE_SUB(shift_date, 
+                                        ROW_NUMBER() OVER (
+                                            PARTITION BY manager_id, emp_id, alert_id, week_start
+                                            ORDER BY shift_date
+                                        )
+                                    ) as grp
+                                FROM month_data
+                                LATERAL VIEW EXPLODE(alert_ids) t AS alert_id
+                            ) t
+                        ) t
+                        GROUP BY manager_id, emp_id, alert_id, week_start
+                        HAVING MAX(consecutive_days) >= 3
+                    ) t
+                    GROUP BY manager_id, emp_id, alert_id
+                    HAVING COUNT(DISTINCT week_start) >= 2
+                ) t
+                GROUP BY manager_id, alert_id
+            ),
+            combined_metrics AS (
+                SELECT 
+                    COALESCE(tp.manager_id, ip.manager_id) as manager_id,
+                    COALESCE(tp.alert_id, ip.alert_id) as alert_id,
+                    COALESCE(tp.team_affected_days, 0) as team_affected_days,
+                    COALESCE(tp.team_size, 0) as team_size,
+                    COALESCE(tp.percentage_affected, 0) as percentage_affected,
+                    COALESCE(ip.individuals_with_3_consecutive, 0) as individuals_count
+                FROM team_percentage tp
+                FULL OUTER JOIN individual_patterns ip 
+                    ON tp.manager_id = ip.manager_id AND tp.alert_id = ip.alert_id
+            ),
+            severity_assigned AS (
+                SELECT 
+                    manager_id,
+                    alert_id,
+                    team_affected_days,
+                    team_size,
+                    percentage_affected,
+                    individuals_count,
+                    CASE 
+                        -- HIGH: ≥60% team affected OR ≥3 individuals with pattern
+                        WHEN percentage_affected >= 60 OR individuals_count >= 3 THEN 'HIGH'
+                        -- MEDIUM: 40-60% team affected OR 2 individuals with pattern
+                        WHEN (percentage_affected >= 40 AND percentage_affected < 60) 
+                             OR individuals_count >= 2 THEN 'MEDIUM'
+                        -- LOW: 20-40% team affected OR 1 individual with pattern
+                        WHEN (percentage_affected >= 20 AND percentage_affected < 40) 
+                             OR individuals_count >= 1 THEN 'LOW'
+                        ELSE NULL
+                    END as severity_month
+                FROM combined_metrics
+                WHERE (percentage_affected >= 20 AND team_affected_days >= 6) 
+                   OR individuals_count >= 1
+            )
+            SELECT 
+                manager_id,
+                '{month_start_str}' as month_start_date,
+                team_size,
+                -- Build month manager JSON
+                CONCAT(
+                    '{',
+                    '"month_team_patterns":[',
+                    ARRAY_JOIN(
+                        COLLECT_LIST(CONCAT(
+                            '{',
+                            '"alert":', alert_id, ',',
+                            '"severity":"', severity_month, '",',
+                            '"metrics":{',
+                            '"team_affected_days":', team_affected_days, ',',
+                            '"team_size":', team_size, ',',
+                            '"percentage_affected":', ROUND(percentage_affected, 1), ',',
+                            '"individuals_with_3_consecutive":', individuals_count,
+                            '}',
+                            '}'
+                        )),
+                        ','
+                    ),
+                    '],',
+                    '"summary":{',
+                    '"total_alerts":', COUNT(*), ',',
+                    '"calculated_at":"', CURRENT_TIMESTAMP(), '"',
+                    '}',
+                    '}'
+                ) as alerts_json,
+                CURRENT_TIMESTAMP() as calculated_at
+            FROM severity_assigned
+            WHERE severity_month IS NOT NULL
+            GROUP BY manager_id, team_size
+        """).createOrReplaceTempView(f"month_mgr_results_{month_start_str.replace('-', '_')}")
+        
+        # Update month_mgr_alerts table
+        spark.sql(f"""
+            MERGE INTO month_mgr_alerts target
+            USING month_mgr_results_{month_start_str.replace('-', '_')} source
+            ON target.manager_id = source.manager_id AND target.month_start_date = source.month_start_date
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.alerts_json = source.alerts_json,
+                    target.team_size = source.team_size,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (manager_id, month_start_date, team_size, alerts_json, updated_on)
+                VALUES (source.manager_id, source.month_start_date, source.team_size, 
+                       source.alerts_json, source.calculated_at)
+        """)
+        
+        count = spark.sql(f"SELECT COUNT(*) as cnt FROM month_mgr_results_{month_start_str.replace('-', '_')}").first().cnt
+        results[month_start_str] = count
+        
+        print(f"  → Processed {count} manager records")
+    
+    spark.stop()
+    
+    total = sum(results.values())
+    print(f"\n✓ Month Manager Pipeline completed: {total} records across {len(results)} months")
+    return {"status": "success", "processed": total, "by_month": results}
+```
+
+Complete Orchestration
+
+```python
+# main_orchestrator.py
+from datetime import datetime
+
+def run_all_pipelines():
+    """Run all 6 pipelines"""
+    
+    print("=" * 60)
+    print("ALERTS PROCESSING PIPELINE")
+    print("=" * 60)
+    print(f"Started at: {datetime.now()}")
+    print()
+    
+    all_results = {}
+    
+    try:
+        # 1. Day Employee Alerts
+        print("1. DAY EMPLOYEE ALERTS")
+        print("-" * 40)
+        all_results['day_emp'] = run_day_emp_pipeline()
+        
+        # 2. Day Manager Alerts
+        print("\n2. DAY MANAGER ALERTS")
+        print("-" * 40)
+        all_results['day_mgr'] = run_day_mgr_pipeline()
+        
+        # 3. Week Employee Alerts
+        print("\n3. WEEK EMPLOYEE ALERTS")
+        print("-" * 40)
+        all_results['week_emp'] = run_week_emp_pipeline()
+        
+        # 4. Week Manager Alerts
+        print("\n4. WEEK MANAGER ALERTS")
+        print("-" * 40)
+        all_results['week_mgr'] = run_week_mgr_pipeline()
+        
+        # 5. Month Employee Alerts
+        print("\n5. MONTH EMPLOYEE ALERTS")
+        print("-" * 40)
+        all_results['month_emp'] = run_month_emp_pipeline()
+        
+        # 6. Month Manager Alerts
+        print("\n6. MONTH MANAGER ALERTS")
+        print("-" * 40)
+        all_results['month_mgr'] = run_month_mgr_pipeline()
+        
+        all_results['overall_status'] = 'success'
+        
+    except Exception as e:
+        print(f"\n✗ Pipeline failed: {str(e)}")
+        all_results['overall_status'] = 'failed'
+        all_results['error'] = str(e)
+    
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    
+    for pipeline, result in all_results.items():
+        if isinstance(result, dict) and 'processed' in result:
+            print(f"{pipeline}: {result['processed']} records")
+    
+    print(f"\nCompleted at: {datetime.now()}")
+    return all_results
+
+if __name__ == "__main__":
+    results = run_all_pipelines()
+```
+
+This is the complete implementation for all 6 pipelines with the clean JSON structure you specified!
+
+
+
+
+
 SELECT
     emp_id,
     shift_date,
