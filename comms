@@ -1,4 +1,429 @@
 
+ACTUAL RESPONSES IN EACH TABLE'S ALERTS_JSON COLUMN
+
+1. day_alerts Table
+
+```json
+{
+  "triggered_alerts": [1, 4, 7, 13],
+  "summary": {
+    "total_alerts": 4,
+    "calculated_at": "2024-01-15T14:30:54Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- emp_id: "E001"
+-- shift_date: "2024-01-15"
+-- alerts_json: '{"triggered_alerts":[1,4,7,13],"summary":{"total_alerts":4,"calculated_at":"2024-01-15T14:30:54Z"}}'
+-- updated_on: "2024-01-15 14:30:54"
+```
+
+2. week_alerts Table
+
+```json
+{
+  "alert_patterns": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "affected_days": 3,
+      "consecutive_days": 3
+    },
+    {
+      "alert": 4,
+      "severity": "LOW",
+      "affected_days": 1,
+      "consecutive_days": 1
+    }
+  ],
+  "summary": {
+    "total_alerts": 2,
+    "calculated_at": "2024-01-15T14:40:15Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- emp_id: "E001"
+-- week_start_date: "2024-01-08"
+-- alerts_json: '{"alert_patterns":[{"alert":1,"severity":"HIGH","affected_days":3,"consecutive_days":3},{"alert":4,"severity":"LOW","affected_days":1,"consecutive_days":1}],"summary":{"total_alerts":2,"calculated_at":"2024-01-15T14:40:15Z"}}'
+-- updated_on: "2024-01-15 14:40:15"
+```
+
+3. month_alerts Table
+
+```json
+{
+  "month_patterns": [
+    {
+      "alert": 1,
+      "severity": "MEDIUM",
+      "total_days": 12,
+      "weekly_patterns": [
+        {
+          "week": "2024-01-01",
+          "affected_days": 3,
+          "consecutive_days": 3
+        },
+        {
+          "week": "2024-01-08",
+          "affected_days": 4,
+          "consecutive_days": 2
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_alerts": 1,
+    "calculated_at": "2024-01-31T23:59:59Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- emp_id: "E001"
+-- month_start_date: "2024-01-01"
+-- alerts_json: '{"month_patterns":[{"alert":1,"severity":"MEDIUM","total_days":12,"weekly_patterns":[{"week":"2024-01-01","affected_days":3,"consecutive_days":3},{"week":"2024-01-08","affected_days":4,"consecutive_days":2}]}],"summary":{"total_alerts":1,"calculated_at":"2024-01-31T23:59:59Z"}}'
+-- updated_on: "2024-01-31 23:59:59"
+```
+
+4. day_mgr_alerts Table
+
+```json
+{
+  "team_alerts": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "affected_employees": 18,
+      "team_size": 25,
+      "percentage": 72.0
+    },
+    {
+      "alert": 4,
+      "severity": "MEDIUM",
+      "affected_employees": 12,
+      "team_size": 25,
+      "percentage": 48.0
+    }
+  ],
+  "summary": {
+    "total_alerts": 2,
+    "calculated_at": "2024-01-15T14:35:22Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- manager_id: "M001"
+-- shift_date: "2024-01-15"
+-- team_size: 25
+-- alerts_json: '{"team_alerts":[{"alert":1,"severity":"HIGH","affected_employees":18,"team_size":25,"percentage":72.0},{"alert":4,"severity":"MEDIUM","affected_employees":12,"team_size":25,"percentage":48.0}],"summary":{"total_alerts":2,"calculated_at":"2024-01-15T14:35:22Z"}}'
+-- updated_on: "2024-01-15 14:35:22"
+```
+
+5. week_mgr_alerts Table
+
+```json
+{
+  "team_patterns": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "max_daily_percent": 72.0,
+      "days_above_20": 3,
+      "employees_3_consecutive": 2
+    }
+  ],
+  "summary": {
+    "total_alerts": 1,
+    "calculated_at": "2024-01-15T14:45:30Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- manager_id: "M001"
+-- week_start_date: "2024-01-08"
+-- team_size: 25
+-- alerts_json: '{"team_patterns":[{"alert":1,"severity":"HIGH","max_daily_percent":72.0,"days_above_20":3,"employees_3_consecutive":2}],"summary":{"total_alerts":1,"calculated_at":"2024-01-15T14:45:30Z"}}'
+-- updated_on: "2024-01-15 14:45:30"
+```
+
+6. month_mgr_alerts Table
+
+```json
+{
+  "month_team_patterns": [
+    {
+      "alert": 1,
+      "severity": "HIGH",
+      "metrics": {
+        "team_affected_days": 18,
+        "team_size": 25,
+        "percentage_affected": 72.0,
+        "individuals_with_3_consecutive": 3
+      }
+    }
+  ],
+  "summary": {
+    "total_alerts": 1,
+    "calculated_at": "2024-01-31T23:59:59Z"
+  }
+}
+```
+
+Actual database row:
+
+```sql
+-- manager_id: "M001"
+-- month_start_date: "2024-01-01"
+-- team_size: 25
+-- alerts_json: '{"month_team_patterns":[{"alert":1,"severity":"HIGH","metrics":{"team_affected_days":18,"team_size":25,"percentage_affected":72.0,"individuals_with_3_consecutive":3}}],"summary":{"total_alerts":1,"calculated_at":"2024-01-31T23:59:59Z"}}'
+-- updated_on: "2024-01-31 23:59:59"
+```
+
+---
+
+COMPLETE TABLE SCHEMA WITH SAMPLE DATA
+
+```sql
+-- 1. day_alerts table
+CREATE TABLE day_alerts (
+    emp_id VARCHAR(50),
+    shift_date DATE,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO day_alerts VALUES 
+('E001', '2024-01-15', 
+ '{"triggered_alerts":[1,4,7,13],"summary":{"total_alerts":4,"calculated_at":"2024-01-15T14:30:54Z"}}',
+ '2024-01-15 14:30:54'),
+
+('E002', '2024-01-15', 
+ '{"triggered_alerts":[2,5],"summary":{"total_alerts":2,"calculated_at":"2024-01-15T14:30:54Z"}}',
+ '2024-01-15 14:30:54'),
+
+('E003', '2024-01-15', 
+ '{"triggered_alerts":[],"summary":{"total_alerts":0,"calculated_at":"2024-01-15T14:30:54Z"}}',
+ '2024-01-15 14:30:54');
+
+-- 2. week_alerts table  
+CREATE TABLE week_alerts (
+    emp_id VARCHAR(50),
+    week_start_date DATE,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO week_alerts VALUES
+('E001', '2024-01-08',
+ '{"alert_patterns":[{"alert":1,"severity":"HIGH","affected_days":3,"consecutive_days":3},{"alert":4,"severity":"LOW","affected_days":1,"consecutive_days":1}],"summary":{"total_alerts":2,"calculated_at":"2024-01-15T14:40:15Z"}}',
+ '2024-01-15 14:40:15'),
+
+('E002', '2024-01-08',
+ '{"alert_patterns":[{"alert":2,"severity":"MEDIUM","affected_days":2,"consecutive_days":2}],"summary":{"total_alerts":1,"calculated_at":"2024-01-15T14:40:15Z"}}',
+ '2024-01-15 14:40:15');
+
+-- 3. month_alerts table
+CREATE TABLE month_alerts (
+    emp_id VARCHAR(50),
+    month_start_date DATE,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO month_alerts VALUES
+('E001', '2024-01-01',
+ '{"month_patterns":[{"alert":1,"severity":"MEDIUM","total_days":12,"weekly_patterns":[{"week":"2024-01-01","affected_days":3,"consecutive_days":3},{"week":"2024-01-08","affected_days":4,"consecutive_days":2}]}],"summary":{"total_alerts":1,"calculated_at":"2024-01-31T23:59:59Z"}}',
+ '2024-01-31 23:59:59');
+
+-- 4. day_mgr_alerts table
+CREATE TABLE day_mgr_alerts (
+    manager_id VARCHAR(50),
+    shift_date DATE,
+    team_size INT,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO day_mgr_alerts VALUES
+('M001', '2024-01-15', 25,
+ '{"team_alerts":[{"alert":1,"severity":"HIGH","affected_employees":18,"team_size":25,"percentage":72.0},{"alert":4,"severity":"MEDIUM","affected_employees":12,"team_size":25,"percentage":48.0}],"summary":{"total_alerts":2,"calculated_at":"2024-01-15T14:35:22Z"}}',
+ '2024-01-15 14:35:22'),
+
+('M002', '2024-01-15', 30,
+ '{"team_alerts":[{"alert":2,"severity":"LOW","affected_employees":8,"team_size":30,"percentage":26.7}],"summary":{"total_alerts":1,"calculated_at":"2024-01-15T14:35:22Z"}}',
+ '2024-01-15 14:35:22');
+
+-- 5. week_mgr_alerts table
+CREATE TABLE week_mgr_alerts (
+    manager_id VARCHAR(50),
+    week_start_date DATE,
+    team_size INT,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO week_mgr_alerts VALUES
+('M001', '2024-01-08', 25,
+ '{"team_patterns":[{"alert":1,"severity":"HIGH","max_daily_percent":72.0,"days_above_20":3,"employees_3_consecutive":2}],"summary":{"total_alerts":1,"calculated_at":"2024-01-15T14:45:30Z"}}',
+ '2024-01-15 14:45:30');
+
+-- 6. month_mgr_alerts table
+CREATE TABLE month_mgr_alerts (
+    manager_id VARCHAR(50),
+    month_start_date DATE,
+    team_size INT,
+    alerts_json STRING,
+    updated_on TIMESTAMP
+);
+
+INSERT INTO month_mgr_alerts VALUES
+('M001', '2024-01-01', 25,
+ '{"month_team_patterns":[{"alert":1,"severity":"HIGH","metrics":{"team_affected_days":18,"team_size":25,"percentage_affected":72.0,"individuals_with_3_consecutive":3}}],"summary":{"total_alerts":1,"calculated_at":"2024-01-31T23:59:59Z"}}',
+ '2024-01-31 23:59:59');
+```
+
+---
+
+HOW TO QUERY THESE JSON FIELDS
+
+1. Check if employee has specific alert on a day
+
+```sql
+-- Check if employee E001 had alert 1 on Jan 15
+SELECT emp_id
+FROM day_alerts 
+WHERE emp_id = 'E001'
+AND shift_date = '2024-01-15'
+AND JSON_EXTRACT(alerts_json, '$.triggered_alerts') LIKE '%1%';
+
+-- Or using JSON functions
+SELECT emp_id
+FROM day_alerts 
+WHERE emp_id = 'E001'
+AND shift_date = '2024-01-15'
+AND EXISTS (
+  SELECT 1
+  FROM JSON_TABLE(
+    JSON_EXTRACT(alerts_json, '$.triggered_alerts'),
+    '$[*]' COLUMNS (alert INT PATH '$')
+  ) AS alerts
+  WHERE alert = 1
+);
+```
+
+2. Get all managers with HIGH severity alerts today
+
+```sql
+SELECT manager_id, shift_date, alerts_json
+FROM day_mgr_alerts
+WHERE shift_date = '2024-01-15'
+AND JSON_EXTRACT(alerts_json, '$.team_alerts[*].severity') LIKE '%HIGH%';
+```
+
+3. Count alerts by type for a week
+
+```sql
+SELECT 
+  alert_id,
+  COUNT(*) as employee_count
+FROM (
+  SELECT 
+    emp_id,
+    JSON_EXTRACT(pattern, '$.alert') as alert_id
+  FROM week_alerts
+  LATERAL VIEW EXPLODE(
+    FROM_JSON(
+      JSON_EXTRACT(alerts_json, '$.alert_patterns'),
+      'array<struct<alert:int,severity:string,affected_days:int,consecutive_days:int>>'
+    )
+  ) AS pattern
+  WHERE week_start_date = '2024-01-08'
+) t
+GROUP BY alert_id
+ORDER BY employee_count DESC;
+```
+
+4. Get manager summary for UI
+
+```sql
+SELECT 
+  manager_id,
+  week_start_date,
+  JSON_EXTRACT(alerts_json, '$.summary.total_alerts') as total_alerts,
+  JSON_EXTRACT(alerts_json, '$.team_patterns') as patterns
+FROM week_mgr_alerts
+WHERE week_start_date = '2024-01-08'
+ORDER BY total_alerts DESC;
+```
+
+---
+
+REAL-WORLD EXAMPLE OUTPUTS
+
+For Employee Dashboard:
+
+```json
+{
+  "employee_id": "E001",
+  "today_alerts": [1, 4, 7, 13],
+  "week_summary": {
+    "patterns": [
+      {"alert": 1, "severity": "HIGH", "affected_days": 3},
+      {"alert": 4, "severity": "LOW", "affected_days": 1}
+    ]
+  },
+  "month_summary": {
+    "patterns": [
+      {"alert": 1, "severity": "MEDIUM", "total_days": 12}
+    ]
+  }
+}
+```
+
+For Manager Dashboard:
+
+```json
+{
+  "manager_id": "M001",
+  "today_summary": {
+    "team_alerts": [
+      {"alert": 1, "severity": "HIGH", "affected_percentage": 72.0},
+      {"alert": 4, "severity": "MEDIUM", "affected_percentage": 48.0}
+    ]
+  },
+  "week_summary": {
+    "team_patterns": [
+      {"alert": 1, "severity": "HIGH", "max_daily_percent": 72.0}
+    ]
+  },
+  "month_summary": {
+    "team_patterns": [
+      {"alert": 1, "severity": "HIGH", "percentage_affected": 72.0}
+    ]
+  }
+}
+```
+
+These are the actual, real JSON responses stored in each table's alerts_json column! Clean, consistent, and easy to query.
+
+
+
 COMPLETE CODE FOR ALL 6 PIPELINES
 
 1. Day Employee Alerts Pipeline
