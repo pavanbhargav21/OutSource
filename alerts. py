@@ -1,0 +1,394 @@
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType, ArrayType, IntegerType
+import json
+from datetime import datetime
+
+# UDF for Employee Day Alert Calculation
+def calculate_employee_day_alerts(active_time, idle_time, lock_time, 
+                                 expected_shift_time, expected_break_time):
+    """
+    Calculate day alerts for an employee and return JSON string
+    """
+    # Calculate active percentage
+    total_time = active_time + idle_time + lock_time
+    active_percent = (active_time * 100.0 / total_time) if total_time > 0 else 0
+    
+    triggered_alerts = []
+    
+    # Alert 1: Few Breaks
+    if (idle_time + lock_time) < expected_break_time:
+        triggered_alerts.append(1)
+    
+    # Alert 2: Low Active Time
+    if active_time < expected_shift_time:
+        triggered_alerts.append(2)
+    
+    # Alert 3: High Active Time
+    if active_time > expected_shift_time:
+        triggered_alerts.append(3)
+    
+    # Alert 4: Low Active & High Idle Time
+    if active_time < (0.9 * expected_shift_time) and active_percent < 90:
+        triggered_alerts.append(4)
+    
+    # Alert 5: Low Active & Low Idle Time
+    if active_time < (0.9 * expected_shift_time) and active_percent > 90:
+        triggered_alerts.append(5)
+    
+    # Alert 6: High Active & High Idle Time
+    if active_time > (1.1 * expected_shift_time) and idle_time > 1.0:
+        triggered_alerts.append(6)
+    
+    # Alert 7: Few Breaks + Low Active & High Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent < 90):
+        triggered_alerts.append(7)
+    
+    # Alert 8: Few Breaks + High Active & High Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time > (1.1 * expected_shift_time) and 
+        idle_time > 1.0):
+        triggered_alerts.append(8)
+    
+    # Alert 9: Few Breaks + Low Active & Low Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent > 90):
+        triggered_alerts.append(9)
+    
+    # Alert 10: Low Active + High Idle Time
+    if (active_time < expected_shift_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent < 90):
+        triggered_alerts.append(10)
+    
+    # Alert 11: Low Active + Low Idle Time
+    if (active_time < expected_shift_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent > 90):
+        triggered_alerts.append(11)
+    
+    # Alert 12: High Active + High Idle Time
+    if (active_time > (1.1 * expected_shift_time) and 
+        idle_time > 1.0 and 
+        active_time > expected_shift_time):
+        triggered_alerts.append(12)
+    
+    # Alert 13: Low Active + Few Breaks
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < expected_shift_time):
+        triggered_alerts.append(13)
+    
+    # Alert 14: High Active + Few Breaks
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time > expected_shift_time):
+        triggered_alerts.append(14)
+    
+    # Create JSON structure exactly as you specified
+    alerts_json = {
+        "triggered_alerts": triggered_alerts,
+        "summary": {
+            "total_alerts": len(triggered_alerts),
+            "calculated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+    }
+    
+    return json.dumps(alerts_json)
+
+# Register the UDF
+employee_day_alerts_udf = udf(calculate_employee_day_alerts, StringType())
+
+# Alternative: UDF that returns just alert IDs array
+def get_employee_day_alert_ids(active_time, idle_time, lock_time, 
+                              expected_shift_time, expected_break_time):
+    """
+    Return just the alert IDs array without JSON
+    """
+    # Calculate active percentage
+    total_time = active_time + idle_time + lock_time
+    active_percent = (active_time * 100.0 / total_time) if total_time > 0 else 0
+    
+    triggered_alerts = []
+    
+    # Alert 1: Few Breaks
+    if (idle_time + lock_time) < expected_break_time:
+        triggered_alerts.append(1)
+    
+    # Alert 2: Low Active Time
+    if active_time < expected_shift_time:
+        triggered_alerts.append(2)
+    
+    # Alert 3: High Active Time
+    if active_time > expected_shift_time:
+        triggered_alerts.append(3)
+    
+    # Alert 4: Low Active & High Idle Time
+    if active_time < (0.9 * expected_shift_time) and active_percent < 90:
+        triggered_alerts.append(4)
+    
+    # Alert 5: Low Active & Low Idle Time
+    if active_time < (0.9 * expected_shift_time) and active_percent > 90:
+        triggered_alerts.append(5)
+    
+    # Alert 6: High Active & High Idle Time
+    if active_time > (1.1 * expected_shift_time) and idle_time > 1.0:
+        triggered_alerts.append(6)
+    
+    # Alert 7: Few Breaks + Low Active & High Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent < 90):
+        triggered_alerts.append(7)
+    
+    # Alert 8: Few Breaks + High Active & High Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time > (1.1 * expected_shift_time) and 
+        idle_time > 1.0):
+        triggered_alerts.append(8)
+    
+    # Alert 9: Few Breaks + Low Active & Low Idle Time
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent > 90):
+        triggered_alerts.append(9)
+    
+    # Alert 10: Low Active + High Idle Time
+    if (active_time < expected_shift_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent < 90):
+        triggered_alerts.append(10)
+    
+    # Alert 11: Low Active + Low Idle Time
+    if (active_time < expected_shift_time and 
+        active_time < (0.9 * expected_shift_time) and 
+        active_percent > 90):
+        triggered_alerts.append(11)
+    
+    # Alert 12: High Active + High Idle Time
+    if (active_time > (1.1 * expected_shift_time) and 
+        idle_time > 1.0 and 
+        active_time > expected_shift_time):
+        triggered_alerts.append(12)
+    
+    # Alert 13: Low Active + Few Breaks
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time < expected_shift_time):
+        triggered_alerts.append(13)
+    
+    # Alert 14: High Active + Few Breaks
+    if ((idle_time + lock_time) < expected_break_time and 
+        active_time > expected_shift_time):
+        triggered_alerts.append(14)
+    
+    return triggered_alerts
+
+alert_ids_udf = udf(get_employee_day_alert_ids, ArrayType(IntegerType()))
+
+
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType, MapType, StringType, IntegerType, FloatType
+import json
+from datetime import datetime
+
+def calculate_manager_day_alerts(alert_ids_list, team_size):
+    """
+    Calculate manager day alerts from employee alert IDs
+    alert_ids_list: list of alert ID arrays for all team members
+    team_size: total number of team members
+    """
+    if not alert_ids_list or team_size == 0:
+        return json.dumps({"team_alerts": [], "summary": {"total_alerts": 0, "calculated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")}})
+    
+    # Count occurrences of each alert across team
+    alert_counts = {}
+    for alert_ids in alert_ids_list:
+        if alert_ids:
+            for alert_id in alert_ids:
+                alert_counts[alert_id] = alert_counts.get(alert_id, 0) + 1
+    
+    team_alerts = []
+    
+    for alert_id, affected_count in alert_counts.items():
+        percentage = (affected_count * 100.0) / team_size
+        
+        # Determine severity based on percentage
+        if percentage >= 60:
+            severity = "HIGH"
+        elif percentage >= 40:
+            severity = "MEDIUM"
+        elif percentage >= 20:
+            severity = "LOW"
+        else:
+            continue  # Skip alerts affecting <20% of team
+        
+        team_alerts.append({
+            "alert": int(alert_id),
+            "severity": severity,
+            "affected_employees": int(affected_count),
+            "team_size": int(team_size),
+            "percentage": round(float(percentage), 1)
+        })
+    
+    # Sort by alert ID
+    team_alerts.sort(key=lambda x: x["alert"])
+    
+    # Create JSON structure exactly as you specified
+    manager_json = {
+        "team_alerts": team_alerts,
+        "summary": {
+            "total_alerts": len(team_alerts),
+            "calculated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+    }
+    
+    return json.dumps(manager_json)
+
+# Register the UDF
+manager_day_alerts_udf = udf(calculate_manager_day_alerts, StringType())
+
+# Alternative: Simplified version if you have aggregated data
+def calculate_manager_simple(alert_id_counts, team_size):
+    """
+    Simplified version where alert_id_counts is a map of {alert_id: count}
+    """
+    team_alerts = []
+    
+    for alert_id_str, count in alert_id_counts.items():
+        if count:
+            alert_id = int(alert_id_str)
+            affected_count = int(count)
+            percentage = (affected_count * 100.0) / team_size
+            
+            if percentage >= 60:
+                severity = "HIGH"
+            elif percentage >= 40:
+                severity = "MEDIUM"
+            elif percentage >= 20:
+                severity = "LOW"
+            else:
+                continue
+            
+            team_alerts.append({
+                "alert": alert_id,
+                "severity": severity,
+                "affected_employees": affected_count,
+                "team_size": int(team_size),
+                "percentage": round(float(percentage), 1)
+            })
+    
+    manager_json = {
+        "team_alerts": team_alerts,
+        "summary": {
+            "total_alerts": len(team_alerts),
+            "calculated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+    }
+    
+    return json.dumps(manager_json)
+
+manager_simple_udf = udf(calculate_manager_simple, StringType())
+
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, collect_list, current_timestamp
+from datetime import datetime, timedelta
+
+def run_day_pipeline_with_udf():
+    spark = SparkSession.builder.appName("AlertPipelineUDF").getOrCreate()
+    
+    # 1. Employee Day Alerts
+    print("Processing Employee Day Alerts...")
+    
+    # Get data
+    employee_data = spark.sql("""
+        SELECT 
+            emp_id,
+            shift_date,
+            manager_id,
+            active_time,
+            idle_time,
+            lock_time,
+            expected_shift_time,
+            expected_break_time
+        FROM day_emp
+        WHERE shift_date = CURRENT_DATE() - INTERVAL 1 DAY
+    """)
+    
+    # Apply employee UDF
+    employee_alerts = employee_data.withColumn(
+        "alerts_json",
+        employee_day_alerts_udf(
+            col("active_time"),
+            col("idle_time"),
+            col("lock_time"),
+            col("expected_shift_time"),
+            col("expected_break_time")
+        )
+    ).withColumn(
+        "updated_on",
+        current_timestamp()
+    )
+    
+    # Save to day_alerts table
+    employee_alerts.select("emp_id", "shift_date", "alerts_json", "updated_on") \
+        .write.mode("overwrite") \
+        .saveAsTable("day_alerts")
+    
+    print(f"Employee alerts processed: {employee_alerts.count()}")
+    
+    # 2. Manager Day Alerts
+    print("\nProcessing Manager Day Alerts...")
+    
+    # Aggregate by manager
+    manager_data = spark.sql("""
+        WITH employee_alerts AS (
+            SELECT 
+                de.emp_id,
+                de.manager_id,
+                de.shift_date,
+                FROM_JSON(da.alerts_json, 'STRUCT<triggered_alerts:ARRAY<INT>, summary:STRUCT<total_alerts:INT, calculated_at:STRING>>') as alerts
+            FROM day_alerts da
+            JOIN day_emp de ON da.emp_id = de.emp_id AND da.shift_date = de.shift_date
+            WHERE da.shift_date = CURRENT_DATE() - INTERVAL 1 DAY
+            AND de.manager_id IS NOT NULL
+        ),
+        team_sizes AS (
+            SELECT 
+                manager_id,
+                COUNT(DISTINCT emp_id) as team_size
+            FROM day_emp
+            WHERE shift_date = CURRENT_DATE() - INTERVAL 1 DAY
+            GROUP BY manager_id
+        )
+        SELECT 
+            ea.manager_id,
+            ea.shift_date,
+            COLLECT_LIST(alerts.triggered_alerts) as alert_arrays,
+            ts.team_size
+        FROM employee_alerts ea
+        JOIN team_sizes ts ON ea.manager_id = ts.manager_id
+        GROUP BY ea.manager_id, ea.shift_date, ts.team_size
+    """)
+    
+    # Apply manager UDF
+    manager_alerts = manager_data.withColumn(
+        "alerts_json",
+        manager_day_alerts_udf(col("alert_arrays"), col("team_size"))
+    ).withColumn(
+        "updated_on",
+        current_timestamp()
+    )
+    
+    # Save to day_mgr_alerts table
+    manager_alerts.select("manager_id", "shift_date", "team_size", "alerts_json", "updated_on") \
+        .write.mode("overwrite") \
+        .saveAsTable("day_mgr_alerts")
+    
+    print(f"Manager alerts processed: {manager_alerts.count()}")
+    
+    spark.stop()
+    return {
+        "employee_records": employee_alerts.count(),
+        "manager_records": manager_alerts.count()
+    }
