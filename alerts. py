@@ -1,3 +1,25 @@
+ALTER TABLE dashboard.manager_reports_monthly
+ADD COLUMNS (
+  alerts_json STRUCT<
+    month_team_patterns: ARRAY<STRUCT<
+      alert: INT,
+      severity: STRING,
+      metrics: STRUCT<
+        team_affected_days: INT,
+        team_size: INT,
+        percentage_affected: DOUBLE,
+        individuals_with_3_consecutive: INT
+      >
+    >>,
+    summary: STRUCT<
+      total_alerts: INT,
+      calculated_at: TIMESTAMP
+    >
+  >
+);
+
+
+
 
 # month_mgr_pipeline.py
 
