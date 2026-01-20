@@ -1,4 +1,569 @@
 
+# month_mgr_pipeline.py
+
+from pyspark.sql import SparkSession
+
+
+def run_month_mgr_pipeline():
+    """
+    Month Manager Alerts Pipeline
+    - Single pass
+    - STRUCT based (alerts_json)
+    - Uses dashboard.emp_reports_daily
+    - Uses dashboard.manager_reports_monthly
+    """
+
+    spark = (
+        SparkSession.builder
+        .appName("MonthMgrPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("▶ Starting Month Manager Pipeline")
+
+        # ------------------------------------------------------------
+        # Step 1: Build monthly manager alerts (single SQL)
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            CREATE OR REPLACE TEMP VIEW month_mgr_alerts_calc AS
+            WITH mgr_months_to_process AS (
+                SELECT DISTINCT
+                    manager_id,
+                    month_start
+                FROM dashboard.manager_reports_monthly
+                WHERE updated_on > current_timestamp() - INTERVAL 4 HOURS
+                  AND manager_id IS NOT NULL
+                  AND month_start IS NOT NULL
+            ),
+
+            month_bounds AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    CASE
+                        -- current month → yesterday
+                        WHEN month_start = DATE_TRUNC('MONTH', current_date())
+                             THEN DATE_SUB(current_date(), 1)
+                        -- past months → last day of month
+                        ELSE LAST_DAY(month_start)
+                    END AS month_end
+                FROM mgr_months_to_process
+            ),
+
+            month_data AS (
+                SELECT
+                    d.manager_id,
+                    d.emp_id,
+                    m.month_start,
+                    d.day_start,
+                    DATE_TRUNC('WEEK', d.day_start) AS week_start,
+                    d.alerts_json.triggered_alerts AS alert_ids
+                FROM dashboard.emp_reports_daily d
+                JOIN month_bounds m
+                  ON d.manager_id = m.manager_id
+                 AND d.day_start BETWEEN m.month_start AND m.month_end
+                WHERE d.alerts_json.triggered_alerts IS NOT NULL
+                  AND SIZE(d.alerts_json.triggered_alerts) > 0
+            ),
+
+            exploded_data AS (
+                SELECT
+                    manager_id,
+                    emp_id,
+                    month_start,
+                    day_start,
+                    week_start,
+                    EXPLODE(alert_ids) AS alert_id
+                FROM month_data
+            ),
+
+            team_sizes AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    COUNT(DISTINCT emp_id) AS team_size
+                FROM month_data
+                GROUP BY manager_id, month_start
+            ),
+
+            team_days_affected AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    COUNT(DISTINCT day_start) AS team_affected_days
+                FROM exploded_data
+                GROUP BY manager_id, month_start, alert_id
+            ),
+
+            team_percentage AS (
+                SELECT
+                    tda.manager_id,
+                    tda.month_start,
+                    tda.alert_id,
+                    tda.team_affected_days,
+                    ts.team_size,
+                    (tda.team_affected_days * 100.0 / ts.team_size) AS percentage_affected
+                FROM team_days_affected tda
+                JOIN team_sizes ts
+                  ON tda.manager_id = ts.manager_id
+                 AND tda.month_start = ts.month_start
+                WHERE tda.team_affected_days >= 6
+            ),
+
+            individual_streak_base AS (
+                SELECT
+                    manager_id,
+                    emp_id,
+                    month_start,
+                    alert_id,
+                    week_start,
+                    day_start,
+                    DATE_SUB(
+                        day_start,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY manager_id, emp_id, alert_id, week_start
+                            ORDER BY day_start
+                        )
+                    ) AS grp
+                FROM exploded_data
+            ),
+
+            individual_streaks AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    emp_id,
+                    alert_id,
+                    week_start,
+                    COUNT(*) AS consecutive_days
+                FROM individual_streak_base
+                GROUP BY manager_id, month_start, emp_id, alert_id, week_start, grp
+            ),
+
+            individuals_across_weeks AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    COUNT(DISTINCT emp_id) AS individuals_with_3_consecutive
+                FROM individual_streaks
+                WHERE consecutive_days >= 3
+                GROUP BY manager_id, month_start, alert_id
+                HAVING COUNT(DISTINCT week_start) >= 2
+            ),
+
+            combined_metrics AS (
+                SELECT
+                    COALESCE(tp.manager_id, iw.manager_id) AS manager_id,
+                    COALESCE(tp.month_start, iw.month_start) AS month_start,
+                    COALESCE(tp.alert_id, iw.alert_id) AS alert_id,
+                    COALESCE(tp.team_affected_days, 0) AS team_affected_days,
+                    COALESCE(tp.team_size, 0) AS team_size,
+                    COALESCE(tp.percentage_affected, 0) AS percentage_affected,
+                    COALESCE(iw.individuals_with_3_consecutive, 0)
+                        AS individuals_with_3_consecutive
+                FROM team_percentage tp
+                FULL OUTER JOIN individuals_across_weeks iw
+                  ON tp.manager_id = iw.manager_id
+                 AND tp.month_start = iw.month_start
+                 AND tp.alert_id = iw.alert_id
+            ),
+
+            severity_assigned AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    team_affected_days,
+                    team_size,
+                    ROUND(percentage_affected, 1) AS percentage_affected,
+                    individuals_with_3_consecutive,
+                    CASE
+                        WHEN (percentage_affected >= 60 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 3 THEN 'HIGH'
+                        WHEN (percentage_affected >= 40 AND percentage_affected < 60 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 2 THEN 'MEDIUM'
+                        WHEN (percentage_affected >= 20 AND percentage_affected < 40 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 1 THEN 'LOW'
+                        ELSE NULL
+                    END AS severity
+                FROM combined_metrics
+                WHERE (percentage_affected >= 20 AND team_affected_days >= 6)
+                   OR individuals_with_3_consecutive >= 1
+            ),
+
+            final_results AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    MAX(team_size) AS team_size,
+                    named_struct(
+                        'month_team_patterns',
+                        collect_list(
+                            named_struct(
+                                'alert', alert_id,
+                                'severity', severity,
+                                'metrics',
+                                named_struct(
+                                    'team_affected_days', team_affected_days,
+                                    'team_size', team_size,
+                                    'percentage_affected', percentage_affected,
+                                    'individuals_with_3_consecutive',
+                                        individuals_with_3_consecutive
+                                )
+                            )
+                        ),
+                        'summary',
+                        named_struct(
+                            'total_alerts', COUNT(*),
+                            'calculated_at', current_timestamp()
+                        )
+                    ) AS alerts_json,
+                    current_timestamp() AS calculated_at
+                FROM severity_assigned
+                WHERE severity IS NOT NULL
+                GROUP BY manager_id, month_start
+            )
+
+            SELECT * FROM final_results
+        """)
+
+        # ------------------------------------------------------------
+        # Step 2: MERGE into dashboard.manager_reports_monthly
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            MERGE INTO dashboard.manager_reports_monthly target
+            USING month_mgr_alerts_calc source
+            ON target.manager_id = source.manager_id
+           AND target.month_start = source.month_start
+            WHEN MATCHED THEN
+              UPDATE SET
+                target.alerts_json = source.alerts_json,
+                target.team_size = source.team_size,
+                target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+              INSERT (
+                manager_id,
+                month_start,
+                team_size,
+                alerts_json,
+                updated_on
+              )
+              VALUES (
+                source.manager_id,
+                source.month_start,
+                source.team_size,
+                source.alerts_json,
+                source.calculated_at
+              )
+        """)
+
+        processed = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM month_mgr_alerts_calc"
+        ).first().cnt
+
+        print("✓ Month Manager Pipeline completed successfully")
+        print(f"✓ Records processed: {processed}")
+
+        return {
+            "status": "success",
+            "processed": processed
+        }
+
+    finally:
+        spark.stop()
+
+
+
+
+
+# month_mgr_pipeline.py
+
+from pyspark.sql import SparkSession
+
+
+def run_month_mgr_pipeline():
+    """
+    Month Manager Alerts Pipeline
+    - Single pass
+    - STRUCT based (alerts_json)
+    - Uses dashboard.emp_reports_daily
+    - Uses dashboard.manager_reports_monthly
+    """
+
+    spark = (
+        SparkSession.builder
+        .appName("MonthMgrPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("▶ Starting Month Manager Pipeline")
+
+        # ------------------------------------------------------------
+        # Step 1: Build monthly manager alerts (single SQL)
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            CREATE OR REPLACE TEMP VIEW month_mgr_alerts_calc AS
+            WITH mgr_months_to_process AS (
+                SELECT DISTINCT
+                    manager_id,
+                    month_start
+                FROM dashboard.manager_reports_monthly
+                WHERE updated_on > current_timestamp() - INTERVAL 4 HOURS
+                  AND manager_id IS NOT NULL
+                  AND month_start IS NOT NULL
+            ),
+
+            month_bounds AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    CASE
+                        -- current month → yesterday
+                        WHEN month_start = DATE_TRUNC('MONTH', current_date())
+                             THEN DATE_SUB(current_date(), 1)
+                        -- past months → last day of month
+                        ELSE LAST_DAY(month_start)
+                    END AS month_end
+                FROM mgr_months_to_process
+            ),
+
+            month_data AS (
+                SELECT
+                    d.manager_id,
+                    d.emp_id,
+                    m.month_start,
+                    d.day_start,
+                    DATE_TRUNC('WEEK', d.day_start) AS week_start,
+                    d.alerts_json.triggered_alerts AS alert_ids
+                FROM dashboard.emp_reports_daily d
+                JOIN month_bounds m
+                  ON d.manager_id = m.manager_id
+                 AND d.day_start BETWEEN m.month_start AND m.month_end
+                WHERE d.alerts_json.triggered_alerts IS NOT NULL
+                  AND SIZE(d.alerts_json.triggered_alerts) > 0
+            ),
+
+            exploded_data AS (
+                SELECT
+                    manager_id,
+                    emp_id,
+                    month_start,
+                    day_start,
+                    week_start,
+                    EXPLODE(alert_ids) AS alert_id
+                FROM month_data
+            ),
+
+            team_sizes AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    COUNT(DISTINCT emp_id) AS team_size
+                FROM month_data
+                GROUP BY manager_id, month_start
+            ),
+
+            team_days_affected AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    COUNT(DISTINCT day_start) AS team_affected_days
+                FROM exploded_data
+                GROUP BY manager_id, month_start, alert_id
+            ),
+
+            team_percentage AS (
+                SELECT
+                    tda.manager_id,
+                    tda.month_start,
+                    tda.alert_id,
+                    tda.team_affected_days,
+                    ts.team_size,
+                    (tda.team_affected_days * 100.0 / ts.team_size) AS percentage_affected
+                FROM team_days_affected tda
+                JOIN team_sizes ts
+                  ON tda.manager_id = ts.manager_id
+                 AND tda.month_start = ts.month_start
+                WHERE tda.team_affected_days >= 6
+            ),
+
+            individual_streak_base AS (
+                SELECT
+                    manager_id,
+                    emp_id,
+                    month_start,
+                    alert_id,
+                    week_start,
+                    day_start,
+                    DATE_SUB(
+                        day_start,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY manager_id, emp_id, alert_id, week_start
+                            ORDER BY day_start
+                        )
+                    ) AS grp
+                FROM exploded_data
+            ),
+
+            individual_streaks AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    emp_id,
+                    alert_id,
+                    week_start,
+                    COUNT(*) AS consecutive_days
+                FROM individual_streak_base
+                GROUP BY manager_id, month_start, emp_id, alert_id, week_start, grp
+            ),
+
+            individuals_across_weeks AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    COUNT(DISTINCT emp_id) AS individuals_with_3_consecutive
+                FROM individual_streaks
+                WHERE consecutive_days >= 3
+                GROUP BY manager_id, month_start, alert_id
+                HAVING COUNT(DISTINCT week_start) >= 2
+            ),
+
+            combined_metrics AS (
+                SELECT
+                    COALESCE(tp.manager_id, iw.manager_id) AS manager_id,
+                    COALESCE(tp.month_start, iw.month_start) AS month_start,
+                    COALESCE(tp.alert_id, iw.alert_id) AS alert_id,
+                    COALESCE(tp.team_affected_days, 0) AS team_affected_days,
+                    COALESCE(tp.team_size, 0) AS team_size,
+                    COALESCE(tp.percentage_affected, 0) AS percentage_affected,
+                    COALESCE(iw.individuals_with_3_consecutive, 0)
+                        AS individuals_with_3_consecutive
+                FROM team_percentage tp
+                FULL OUTER JOIN individuals_across_weeks iw
+                  ON tp.manager_id = iw.manager_id
+                 AND tp.month_start = iw.month_start
+                 AND tp.alert_id = iw.alert_id
+            ),
+
+            severity_assigned AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    alert_id,
+                    team_affected_days,
+                    team_size,
+                    ROUND(percentage_affected, 1) AS percentage_affected,
+                    individuals_with_3_consecutive,
+                    CASE
+                        WHEN (percentage_affected >= 60 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 3 THEN 'HIGH'
+                        WHEN (percentage_affected >= 40 AND percentage_affected < 60 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 2 THEN 'MEDIUM'
+                        WHEN (percentage_affected >= 20 AND percentage_affected < 40 AND team_affected_days >= 6)
+                             OR individuals_with_3_consecutive >= 1 THEN 'LOW'
+                        ELSE NULL
+                    END AS severity
+                FROM combined_metrics
+                WHERE (percentage_affected >= 20 AND team_affected_days >= 6)
+                   OR individuals_with_3_consecutive >= 1
+            ),
+
+            final_results AS (
+                SELECT
+                    manager_id,
+                    month_start,
+                    MAX(team_size) AS team_size,
+                    named_struct(
+                        'month_team_patterns',
+                        collect_list(
+                            named_struct(
+                                'alert', alert_id,
+                                'severity', severity,
+                                'metrics',
+                                named_struct(
+                                    'team_affected_days', team_affected_days,
+                                    'team_size', team_size,
+                                    'percentage_affected', percentage_affected,
+                                    'individuals_with_3_consecutive',
+                                        individuals_with_3_consecutive
+                                )
+                            )
+                        ),
+                        'summary',
+                        named_struct(
+                            'total_alerts', COUNT(*),
+                            'calculated_at', current_timestamp()
+                        )
+                    ) AS alerts_json,
+                    current_timestamp() AS calculated_at
+                FROM severity_assigned
+                WHERE severity IS NOT NULL
+                GROUP BY manager_id, month_start
+            )
+
+            SELECT * FROM final_results
+        """)
+
+        # ------------------------------------------------------------
+        # Step 2: MERGE into dashboard.manager_reports_monthly
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            MERGE INTO dashboard.manager_reports_monthly target
+            USING month_mgr_alerts_calc source
+            ON target.manager_id = source.manager_id
+           AND target.month_start = source.month_start
+            WHEN MATCHED THEN
+              UPDATE SET
+                target.alerts_json = source.alerts_json,
+                target.team_size = source.team_size,
+                target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+              INSERT (
+                manager_id,
+                month_start,
+                team_size,
+                alerts_json,
+                updated_on
+              )
+              VALUES (
+                source.manager_id,
+                source.month_start,
+                source.team_size,
+                source.alerts_json,
+                source.calculated_at
+              )
+        """)
+
+        processed = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM month_mgr_alerts_calc"
+        ).first().cnt
+
+        print("✓ Month Manager Pipeline completed successfully")
+        print(f"✓ Records processed: {processed}")
+
+        return {
+            "status": "success",
+            "processed": processed
+        }
+
+    finally:
+        spark.stop()
+
+
+
+
 
 # month_emp_pipeline.py
 
