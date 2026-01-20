@@ -1,4 +1,287 @@
 
+# week_mgr_pipeline.py
+
+from pyspark.sql import SparkSession
+
+
+def run_week_mgr_pipeline():
+    """
+    Weekly Manager Alerts Pipeline
+    - Single pass
+    - STRUCT based
+    - Correct week_end logic
+    """
+
+    spark = (
+        SparkSession.builder
+        .appName("WeekMgrPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("▶ Starting Weekly Manager Pipeline")
+
+        # ------------------------------------------------------------
+        # Step 1: Compute weekly manager alerts
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            CREATE OR REPLACE TEMP VIEW week_mgr_alerts_calc AS
+            WITH mgr_weeks_to_process AS (
+                SELECT DISTINCT
+                    manager_id,
+                    week_start
+                FROM dashboard.mgr_reports_weekly
+                WHERE updated_on > current_timestamp() - INTERVAL 4 HOURS
+                  AND manager_id IS NOT NULL
+                  AND week_start IS NOT NULL
+            ),
+
+            week_bounds AS (
+                SELECT
+                    manager_id,
+                    week_start,
+                    CASE
+                        WHEN week_start = DATE_TRUNC('WEEK', current_date())
+                             THEN DATE_SUB(current_date(), 1)
+                        ELSE DATE_ADD(week_start, 6)
+                    END AS week_end
+                FROM mgr_weeks_to_process
+            ),
+
+            week_data AS (
+                SELECT
+                    d.manager_id,
+                    d.emp_id,
+                    w.week_start,
+                    d.day_start,
+                    d.alerts.triggered_alerts AS alert_ids
+                FROM dashboard.emp_reports_daily d
+                JOIN week_bounds w
+                  ON d.manager_id = w.manager_id
+                 AND d.day_start BETWEEN w.week_start AND w.week_end
+                WHERE d.alerts.triggered_alerts IS NOT NULL
+                  AND SIZE(d.alerts.triggered_alerts) > 0
+            ),
+
+            exploded_data AS (
+                SELECT
+                    manager_id,
+                    emp_id,
+                    week_start,
+                    day_start,
+                    EXPLODE(alert_ids) AS alert_id
+                FROM week_data
+            ),
+
+            daily_team_sizes AS (
+                SELECT
+                    manager_id,
+                    week_start,
+                    day_start,
+                    COUNT(DISTINCT emp_id) AS daily_team_size
+                FROM week_data
+                GROUP BY manager_id, week_start, day_start
+            ),
+
+            daily_stats AS (
+                SELECT
+                    e.manager_id,
+                    e.week_start,
+                    e.day_start,
+                    e.alert_id,
+                    COUNT(DISTINCT e.emp_id) AS daily_affected,
+                    ts.daily_team_size,
+                    (COUNT(DISTINCT e.emp_id) * 100.0 / ts.daily_team_size) AS daily_percentage
+                FROM exploded_data e
+                JOIN daily_team_sizes ts
+                  ON e.manager_id = ts.manager_id
+                 AND e.week_start = ts.week_start
+                 AND e.day_start = ts.day_start
+                GROUP BY
+                    e.manager_id,
+                    e.week_start,
+                    e.day_start,
+                    e.alert_id,
+                    ts.daily_team_size
+            ),
+
+            weekly_patterns AS (
+                SELECT
+                    manager_id,
+                    week_start,
+                    alert_id,
+                    MAX(daily_percentage) AS max_daily_percent,
+                    SUM(CASE WHEN daily_percentage >= 20 THEN 1 ELSE 0 END) AS days_above_20,
+                    SUM(CASE WHEN daily_percentage >= 40 THEN 1 ELSE 0 END) AS days_above_40,
+                    SUM(CASE WHEN daily_percentage >= 60 THEN 1 ELSE 0 END) AS days_above_60
+                FROM daily_stats
+                GROUP BY manager_id, week_start, alert_id
+            ),
+
+            individual_streaks AS (
+                SELECT
+                    manager_id,
+                    alert_id,
+                    emp_id,
+                    MAX(consecutive_days) AS max_consecutive
+                FROM (
+                    SELECT
+                        manager_id,
+                        emp_id,
+                        alert_id,
+                        day_start,
+                        COUNT(*) OVER (
+                            PARTITION BY manager_id, emp_id, alert_id, grp
+                            ORDER BY day_start
+                        ) AS consecutive_days
+                    FROM (
+                        SELECT
+                            manager_id,
+                            emp_id,
+                            alert_id,
+                            day_start,
+                            DATE_SUB(
+                                day_start,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY manager_id, emp_id, alert_id
+                                    ORDER BY day_start
+                                )
+                            ) AS grp
+                        FROM exploded_data
+                    ) t
+                ) t
+                GROUP BY manager_id, alert_id, emp_id
+            ),
+
+            individual_patterns AS (
+                SELECT
+                    manager_id,
+                    alert_id,
+                    COUNT(DISTINCT emp_id) AS employees_3_consecutive
+                FROM individual_streaks
+                WHERE max_consecutive >= 3
+                GROUP BY manager_id, alert_id
+            ),
+
+            combined_metrics AS (
+                SELECT
+                    wp.manager_id,
+                    wp.week_start,
+                    wp.alert_id,
+                    wp.max_daily_percent,
+                    wp.days_above_20,
+                    COALESCE(ip.employees_3_consecutive, 0) AS employees_3_consecutive,
+                    CASE
+                        WHEN (wp.max_daily_percent >= 60 AND wp.days_above_60 >= 3)
+                             OR COALESCE(ip.employees_3_consecutive, 0) >= 3 THEN 'HIGH'
+                        WHEN (wp.max_daily_percent >= 40 AND wp.days_above_40 >= 3)
+                             OR COALESCE(ip.employees_3_consecutive, 0) >= 2 THEN 'MEDIUM'
+                        WHEN (wp.max_daily_percent >= 20 AND wp.days_above_20 >= 1)
+                             OR COALESCE(ip.employees_3_consecutive, 0) >= 1 THEN 'LOW'
+                        ELSE NULL
+                    END AS severity
+                FROM weekly_patterns wp
+                LEFT JOIN individual_patterns ip
+                  ON wp.manager_id = ip.manager_id
+                 AND wp.alert_id = ip.alert_id
+            ),
+
+            final_results AS (
+                SELECT
+                    manager_id,
+                    week_start,
+                    named_struct(
+                        'team_patterns',
+                        collect_list(
+                            named_struct(
+                                'alert', alert_id,
+                                'severity', severity,
+                                'max_daily_percent', ROUND(max_daily_percent, 1),
+                                'days_above_20', days_above_20,
+                                'employees_3_consecutive', employees_3_consecutive
+                            )
+                        ),
+                        'summary',
+                        named_struct(
+                            'total_alerts', COUNT(*),
+                            'calculated_at', current_timestamp()
+                        )
+                    ) AS alerts,
+                    current_timestamp() AS calculated_at
+                FROM combined_metrics
+                WHERE severity IS NOT NULL
+                GROUP BY manager_id, week_start
+            )
+
+            SELECT * FROM final_results
+        """)
+
+        # ------------------------------------------------------------
+        # Step 2: MERGE into weekly manager table
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            MERGE INTO dashboard.mgr_reports_weekly target
+            USING week_mgr_alerts_calc source
+            ON target.manager_id = source.manager_id
+           AND target.week_start = source.week_start
+            WHEN MATCHED THEN
+              UPDATE SET
+                target.alerts = source.alerts,
+                target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+              INSERT (
+                manager_id,
+                week_start,
+                alerts,
+                updated_on
+              )
+              VALUES (
+                source.manager_id,
+                source.week_start,
+                source.alerts,
+                source.calculated_at
+              )
+        """)
+
+        processed = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM week_mgr_alerts_calc"
+        ).first().cnt
+
+        print("✓ Weekly Manager Pipeline completed successfully")
+        print(f"✓ Records processed: {processed}")
+
+        return {
+            "status": "success",
+            "processed": processed
+        }
+
+    finally:
+        spark.stop()
+
+
+ALTER TABLE dashboard.mgr_reports_weekly
+ADD COLUMNS (
+  alerts STRUCT<
+    team_patterns: ARRAY<STRUCT<
+      alert: INT,
+      severity: STRING,
+      max_daily_percent: DOUBLE,
+      days_above_20: INT,
+      employees_3_consecutive: INT
+    >>,
+    summary: STRUCT<
+      total_alerts: INT,
+      calculated_at: TIMESTAMP
+    >
+  >
+);
+
+
+
+
 # week_emp_pipeline.py
 
 from pyspark.sql import SparkSession
