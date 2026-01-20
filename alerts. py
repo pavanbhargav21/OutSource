@@ -1,4 +1,257 @@
 
+
+# month_emp_pipeline.py
+
+from pyspark.sql import SparkSession
+
+
+def run_month_emp_pipeline():
+    """
+    Month Employee Alerts Pipeline
+    - Single pass
+    - STRUCT based
+    - No loops
+    """
+
+    spark = (
+        SparkSession.builder
+        .appName("MonthEmpPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("▶ Starting Month Employee Pipeline")
+
+        # ------------------------------------------------------------
+        # Step 1: Build monthly alerts in ONE SQL
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            CREATE OR REPLACE TEMP VIEW month_emp_alerts_calc AS
+            WITH emp_months_to_process AS (
+                SELECT DISTINCT
+                    emp_id,
+                    month_start_date
+                FROM month_emp
+                WHERE updated_on > current_timestamp() - INTERVAL 4 HOURS
+                  AND emp_id IS NOT NULL
+                  AND month_start_date IS NOT NULL
+            ),
+
+            month_bounds AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    CASE
+                        -- current month → yesterday
+                        WHEN month_start_date = DATE_TRUNC('MONTH', current_date())
+                             THEN DATE_SUB(current_date(), 1)
+                        -- past months → last day of month
+                        ELSE LAST_DAY(month_start_date)
+                    END AS month_end_date
+                FROM emp_months_to_process
+            ),
+
+            month_data AS (
+                SELECT
+                    d.emp_id,
+                    m.month_start_date,
+                    d.shift_date,
+                    DATE_TRUNC('WEEK', d.shift_date) AS week_start,
+                    d.alerts_json.triggered_alerts AS alert_ids
+                FROM day_emp d
+                JOIN month_bounds m
+                  ON d.emp_id = m.emp_id
+                 AND d.shift_date BETWEEN m.month_start_date AND m.month_end_date
+                WHERE d.alerts_json.triggered_alerts IS NOT NULL
+                  AND SIZE(d.alerts_json.triggered_alerts) > 0
+            ),
+
+            exploded_data AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    shift_date,
+                    week_start,
+                    EXPLODE(alert_ids) AS alert_id
+                FROM month_data
+            ),
+
+            weekly_streak_base AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    alert_id,
+                    week_start,
+                    shift_date,
+                    DATE_SUB(
+                        shift_date,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY emp_id, month_start_date, alert_id, week_start
+                            ORDER BY shift_date
+                        )
+                    ) AS grp
+                FROM exploded_data
+            ),
+
+            weekly_stats AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    alert_id,
+                    week_start,
+                    COUNT(DISTINCT shift_date) AS affected_days_in_week,
+                    COUNT(*) AS max_consecutive_in_week
+                FROM weekly_streak_base
+                GROUP BY emp_id, month_start_date, alert_id, week_start, grp
+            ),
+
+            weekly_aggregated AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    alert_id,
+                    week_start,
+                    MAX(affected_days_in_week) AS affected_days_in_week,
+                    MAX(max_consecutive_in_week) AS max_consecutive_in_week
+                FROM weekly_stats
+                GROUP BY emp_id, month_start_date, alert_id, week_start
+            ),
+
+            monthly_aggregates AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    alert_id,
+                    COUNT(DISTINCT shift_date) AS total_affected_days,
+                    COLLECT_LIST(
+                        named_struct(
+                            'week_start', week_start,
+                            'affected_days', affected_days_in_week,
+                            'consecutive_days', max_consecutive_in_week
+                        )
+                    ) AS weekly_patterns
+                FROM exploded_data e
+                JOIN weekly_aggregated w
+                  ON e.emp_id = w.emp_id
+                 AND e.month_start_date = w.month_start_date
+                 AND e.alert_id = w.alert_id
+                 AND e.week_start = w.week_start
+                GROUP BY emp_id, month_start_date, alert_id
+            ),
+
+            severity_assigned AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    alert_id,
+                    total_affected_days,
+                    weekly_patterns,
+                    CASE
+                        WHEN total_affected_days >= 18 THEN 'HIGH'
+                        WHEN total_affected_days >= 12 THEN 'MEDIUM'
+                        WHEN total_affected_days >= 6  THEN 'LOW'
+                        ELSE NULL
+                    END AS severity
+                FROM monthly_aggregates
+                WHERE total_affected_days >= 6
+            ),
+
+            final_results AS (
+                SELECT
+                    emp_id,
+                    month_start_date,
+                    named_struct(
+                        'month_patterns',
+                        collect_list(
+                            named_struct(
+                                'alert', alert_id,
+                                'severity', severity,
+                                'total_days', total_affected_days,
+                                'weekly_patterns', weekly_patterns
+                            )
+                        ),
+                        'summary',
+                        named_struct(
+                            'total_alerts', COUNT(*),
+                            'calculated_at', current_timestamp()
+                        )
+                    ) AS alerts_json,
+                    current_timestamp() AS calculated_at
+                FROM severity_assigned
+                WHERE severity IS NOT NULL
+                GROUP BY emp_id, month_start_date
+            )
+
+            SELECT * FROM final_results
+        """)
+
+        # ------------------------------------------------------------
+        # Step 2: MERGE into month_emp
+        # ------------------------------------------------------------
+
+        spark.sql("""
+            MERGE INTO month_emp target
+            USING month_emp_alerts_calc source
+            ON target.emp_id = source.emp_id
+           AND target.month_start_date = source.month_start_date
+            WHEN MATCHED THEN
+              UPDATE SET
+                target.alerts_json = source.alerts_json,
+                target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+              INSERT (
+                emp_id,
+                month_start_date,
+                alerts_json,
+                updated_on
+              )
+              VALUES (
+                source.emp_id,
+                source.month_start_date,
+                source.alerts_json,
+                source.calculated_at
+              )
+        """)
+
+        processed = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM month_emp_alerts_calc"
+        ).first().cnt
+
+        print("✓ Month Employee Pipeline completed successfully")
+        print(f"✓ Records processed: {processed}")
+
+        return {
+            "status": "success",
+            "processed": processed
+        }
+
+    finally:
+        spark.stop()
+
+
+ALTER TABLE month_emp
+ADD COLUMNS (
+  alerts_json STRUCT<
+    month_patterns: ARRAY<STRUCT<
+      alert: INT,
+      severity: STRING,
+      total_days: INT,
+      weekly_patterns: ARRAY<STRUCT<
+        week_start: DATE,
+        affected_days: INT,
+        consecutive_days: INT
+      >>
+    >>,
+    summary: STRUCT<
+      total_alerts: INT,
+      calculated_at: TIMESTAMP
+    >
+  >
+);
+
+
 # week_mgr_pipeline.py
 
 from pyspark.sql import SparkSession
