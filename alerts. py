@@ -1,4 +1,192 @@
 
+# day_mgr_pipeline_query.py
+
+from pyspark.sql import SparkSession
+
+
+def run_day_mgr_pipeline_query():
+    """
+    Day Manager Alerts Pipeline
+    - Single pass
+    - No per-date loop
+    - Processes day_alerts updated in last 4 hours
+    """
+
+    spark = (
+        SparkSession.builder
+        .appName("DayMgrPipelineQuery")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("▶ Starting Day Manager Alerts Pipeline")
+
+        # ------------------------------------------------------------------
+        # Step 1: Compute manager alerts (single SQL)
+        # ------------------------------------------------------------------
+
+        spark.sql("""
+            CREATE OR REPLACE TEMP VIEW day_mgr_alerts_calc AS
+            WITH employee_alerts AS (
+                SELECT
+                    da.emp_id,
+                    da.shift_date,
+                    de.manager_id,
+                    FROM_JSON(
+                        GET_JSON_OBJECT(da.alerts_json, '$.triggered_alerts'),
+                        'array<int>'
+                    ) AS alert_ids
+                FROM day_alerts da
+                JOIN day_emp de
+                  ON da.emp_id = de.emp_id
+                 AND da.shift_date = de.shift_date
+                WHERE da.updated_on > current_timestamp() - INTERVAL 4 HOURS
+                  AND de.manager_id IS NOT NULL
+            ),
+
+            exploded_alerts AS (
+                SELECT
+                    manager_id,
+                    shift_date,
+                    emp_id,
+                    EXPLODE(alert_ids) AS alert_id
+                FROM employee_alerts
+                WHERE alert_ids IS NOT NULL
+                  AND SIZE(alert_ids) > 0
+            ),
+
+            team_sizes AS (
+                SELECT
+                    manager_id,
+                    shift_date,
+                    COUNT(DISTINCT emp_id) AS team_size
+                FROM day_emp
+                WHERE manager_id IS NOT NULL
+                GROUP BY manager_id, shift_date
+            ),
+
+            alert_counts AS (
+                SELECT
+                    ea.manager_id,
+                    ea.shift_date,
+                    ea.alert_id,
+                    COUNT(DISTINCT ea.emp_id) AS affected_count,
+                    ts.team_size
+                FROM exploded_alerts ea
+                JOIN team_sizes ts
+                  ON ea.manager_id = ts.manager_id
+                 AND ea.shift_date = ts.shift_date
+                GROUP BY
+                    ea.manager_id,
+                    ea.shift_date,
+                    ea.alert_id,
+                    ts.team_size
+            ),
+
+            alert_metrics AS (
+                SELECT
+                    manager_id,
+                    shift_date,
+                    alert_id,
+                    affected_count,
+                    team_size,
+                    (affected_count * 100.0 / team_size) AS percentage,
+                    CASE
+                        WHEN (affected_count * 100.0 / team_size) >= 60 THEN 'HIGH'
+                        WHEN (affected_count * 100.0 / team_size) >= 40 THEN 'MEDIUM'
+                        WHEN (affected_count * 100.0 / team_size) >= 20 THEN 'LOW'
+                        ELSE NULL
+                    END AS severity
+                FROM alert_counts
+            ),
+
+            manager_alerts AS (
+                SELECT
+                    manager_id,
+                    shift_date,
+                    MAX(team_size) AS team_size,
+                    to_json(
+                        named_struct(
+                            'team_alerts',
+                            collect_list(
+                                named_struct(
+                                    'alert', alert_id,
+                                    'severity', severity,
+                                    'affected_employees', affected_count,
+                                    'team_size', team_size,
+                                    'percentage', ROUND(percentage, 1)
+                                )
+                            ),
+                            'summary',
+                            named_struct(
+                                'total_alerts', COUNT(*),
+                                'calculated_at', current_timestamp()
+                            )
+                        )
+                    ) AS alerts_json,
+                    current_timestamp() AS calculated_at
+                FROM alert_metrics
+                WHERE severity IS NOT NULL
+                GROUP BY manager_id, shift_date
+            )
+
+            SELECT * FROM manager_alerts
+        """)
+
+        # ------------------------------------------------------------------
+        # Step 2: Merge into day_mgr_alerts
+        # ------------------------------------------------------------------
+
+        spark.sql("""
+            MERGE INTO day_mgr_alerts target
+            USING day_mgr_alerts_calc source
+            ON target.manager_id = source.manager_id
+           AND target.shift_date = source.shift_date
+            WHEN MATCHED THEN
+                UPDATE SET
+                    target.alerts_json = source.alerts_json,
+                    target.team_size = source.team_size,
+                    target.updated_on = source.calculated_at
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    manager_id,
+                    shift_date,
+                    team_size,
+                    alerts_json,
+                    updated_on
+                )
+                VALUES (
+                    source.manager_id,
+                    source.shift_date,
+                    source.team_size,
+                    source.alerts_json,
+                    source.calculated_at
+                )
+        """)
+
+        # ------------------------------------------------------------------
+        # Step 3: Metrics
+        # ------------------------------------------------------------------
+
+        processed_count = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM day_mgr_alerts_calc"
+        ).first().cnt
+
+        print("✓ Day Manager Pipeline completed successfully")
+        print(f"✓ Manager records processed: {processed_count}")
+
+        return {
+            "status": "success",
+            "processed": processed_count
+        }
+
+    finally:
+        spark.stop()
+
+
+
+
 Got it 👍
 Since here also the column is a STRUCT, the rule is the same as before:
 
