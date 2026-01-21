@@ -1,3 +1,98 @@
+
+from collections import defaultdict
+
+def build_app_usage(row):
+    curr_apps = safe_json(row["current_application_info_totals"])
+    prev_apps = safe_json(row["previous_tot_application_info"])
+
+    # Build unified mapping
+    app_tag_map = build_app_tag_mapping(
+        row.get("custom_app_mappings", [])
+    )
+
+    def aggregate(apps):
+        agg = defaultdict(float)
+
+        for app, v in apps.items():
+            if not isinstance(v, dict):
+                continue
+
+            norm_app = normalize_app_name(app)
+            tag_info = app_tag_map.get(
+                norm_app,
+                {"tag": "Unlabelled", "color": DEFAULT_TAG_COLORS["Unlabelled"]}
+            )
+
+            agg[tag_info["tag"]] += v.get("active", 0) + v.get("idle", 0)
+
+        return agg
+
+    curr = aggregate(curr_apps)
+    prev = aggregate(prev_apps)
+
+    total_curr = sum(curr.values()) or 1
+    total_prev = sum(prev.values()) or 1
+
+    app_usage = []
+
+    for tag, curr_val in curr.items():
+        prev_val = prev.get(tag, 0)
+
+        app_usage.append({
+            "tag_name": tag,
+            "percentage": round((curr_val / total_curr) * 100, 1),
+            "percentage_prev": round((prev_val / total_prev) * 100, 1),
+            "prev_trend": trend(curr_val, prev_val),
+            "prev_percent": percentage_change(curr_val, prev_val),
+            "tag_color": DEFAULT_TAG_COLORS.get(tag, "#CCCCCC")
+        })
+
+    return app_usage
+
+
+
+def build_app_tag_mapping(custom_mappings):
+    app_tag_map = {}
+
+    # 1️⃣ Custom mappings (highest priority)
+    for m in custom_mappings:
+        if not isinstance(m, dict):
+            continue
+
+        app = m.get("app_name")
+        tag = m.get("tag_name")
+        color = m.get("tag_color")
+
+        if not app or not tag:
+            continue
+
+        norm_app = normalize_app_name(app)
+
+        app_tag_map[norm_app] = {
+            "tag": tag,
+            "color": color or DEFAULT_TAG_COLORS.get(tag, "#CCCCCC")
+        }
+
+    # 2️⃣ Default mappings (only if not already mapped)
+    for tag, apps in DEFAULT_TAG_APPS.items():
+        for app in apps:
+            norm_app = normalize_app_name(app)
+
+            if norm_app not in app_tag_map:
+                app_tag_map[norm_app] = {
+                    "tag": tag,
+                    "color": DEFAULT_TAG_COLORS.get(tag, "#CCCCCC")
+                }
+
+    return app_tag_map
+
+
+
+def normalize_app_name(app: str) -> str:
+    return app.lower().replace(".exe", "")
+
+
+
 ALTER TABLE dashboard.manager_reports_monthly
 ADD COLUMNS (
   alerts_json STRUCT<
