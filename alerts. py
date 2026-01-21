@@ -1,4 +1,68 @@
+{
+  "Alerts_Employee": {
+    "1": "Quick tip! You’re not taking enough breaks. Try adding short pauses to stay productive.",
 
+    "2": "Heads up! Your active time is low. Review your tasks or engagement level.",
+
+    "3": "You’ve been working hard! Try balancing your workload to avoid burnout.",
+
+    "4": "Heads up! Your activity is low and idle time is high. Check for engagement or technical issues.",
+
+    "5": "Quick tip! Your session shows low active and idle time. Check for system issues or increase task engagement.",
+
+    "6": "Heads up! Your schedule shows high activity and idle time. This may indicate task balancing or tool issues.",
+
+    "7": "Quick tip! Your active time is low, idle time is high, and you’re missing breaks. Check your setup to improve engagement.",
+
+    "8": "Quick tip! You’re working long hours with idle stretches and missing breaks. Time to rebalance your workload.",
+
+    "9": "Quick tip! System interaction is low and breaks are limited. Check your setup or connectivity.",
+
+    "10": "Heads up! Your activity is low and idle time is high. Check for engagement or technical challenges.",
+
+    "11": "Quick tip! Your session had low activity and idle time. Check for system issues or increase engagement.",
+
+    "12": "Heads up! High activity mixed with idle periods suggests task or tool inefficiencies.",
+
+    "13": "Quick tip! You’re missing breaks and activity is low. Check your setup to boost engagement and well-being.",
+
+    "14": "Quick tip! You’ve been working hard with few breaks. Try balancing your workload for a healthier routine."
+  }
+}
+
+
+
+{
+  "Alerts_Manager": {
+    "1": "Quick tip! Your team could use more breaks. Encourage regular pauses to support well-being.",
+
+    "2": "Heads up! Team activity levels have dropped. Check for workload issues or blockers.",
+
+    "3": "Your team’s been on overdrive. Check for workload surges or early burnout signs.",
+
+    "4": "Heads up! Your team shows low activity and high idle time. Review tasks or provide support to boost engagement.",
+
+    "5": "Heads up! Your team shows low activity and idle time. Investigate underutilisation or technical issues.",
+
+    "6": "Heads up! Your team shows high active and idle times. Assess process efficiency or tool responsiveness.",
+
+    "7": "Heads up! Your team shows low activity and high idle time with missed breaks. Review task clarity and tool efficiency.",
+
+    "8": "Heads up! Your team is overactive with idle spikes and limited breaks. Watch for burnout and inefficiencies.",
+
+    "9": "Heads up! Your team shows low interaction and limited breaks. Investigate tool or connectivity issues.",
+
+    "10": "Heads up! Your team shows low activity and high idle time. Review workloads and support needs.",
+
+    "11": "Heads up! Your team shows low activity and idle time. Check for underutilisation or technical concerns.",
+
+    "12": "Heads up! Your team shows high activity and idle time. Review process efficiency and tool usage.",
+
+    "13": "Heads up! Your team shows low activity with infrequent breaks. Address disruptions or unclear tasks.",
+
+    "14": "Heads up! Your team is on overdrive with minimal breaks. Watch for workload surges and burnout."
+  }
+}
 
 
 def safe_div(n, d):
