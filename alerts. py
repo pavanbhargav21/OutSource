@@ -1,4 +1,99 @@
 
+
+
+def safe_div(n, d):
+    return round((n / d) * 100, 2) if d else 0.0
+
+
+def shift_delta(actual, expected):
+    if actual is None or expected is None:
+        return 0.0
+    return round(abs(actual - expected), 2)
+
+
+def shift_trend(actual, expected):
+    if actual is None or expected is None:
+        return "No Change"
+    if actual > expected:
+        return "Up"
+    if actual < expected:
+        return "Down"
+    return "No Change"
+
+
+def trend(curr, prev):
+    if prev in (None, 0):
+        return "No Change"
+    if curr > prev:
+        return "Up"
+    if curr < prev:
+        return "Down"
+    return "No Change"
+
+
+
+
+def build_work_summary(row):
+    # Current
+    total_work = row.get("current_total_work_time", 0)
+    active = row.get("current_total_active_time", 0)
+    idle = row.get("current_total_idle_time", 0)
+    lock = row.get("current_total_window_lock_time", 0)
+
+    within_shift = row.get("current_within_shift", 0)
+    out_shift = row.get("current_outof_shift", 0)
+
+    # Expected / pulse
+    expected_work = row.get("current_total_pulse_shift_time_seconds", 0)
+    expected_active = row.get("current_total_adjusted_active_time_seconds", 0)
+    expected_lock = row.get("current_total_adjusted_lock_time_seconds", 0)
+
+    # Previous
+    prev_work = row.get("previous_total_work_time", 0)
+    prev_active = row.get("previous_total_active_time", 0)
+    prev_idle = row.get("previous_total_idle_time", 0)
+    prev_lock = row.get("previous_total_window_lock_time", 0)
+
+    return {
+        # ── Core ─────────────────────────────
+        "total_work_time": total_work,
+        "active_time": active,
+        "idle_time": idle,
+        "work_lock_time": lock,
+
+        # ── Stretch ──────────────────────────
+        "total_in_stretch": within_shift,
+        "total_out_stretch": out_shift,
+
+        # ── Shift deviation (NEW) ────────────
+        "total_work_shift_time": shift_delta(total_work, expected_work),
+        "total_work_shift_trend": shift_trend(total_work, expected_work),
+
+        "active_shift_time": shift_delta(active, expected_active),
+        "active_shift_trend": shift_trend(active, expected_active),
+
+        "window_lock_shift_time": shift_delta(lock, expected_lock),
+        "window_lock_shift_trend": shift_trend(lock, expected_lock),
+
+        # ── Previous ─────────────────────────
+        "prev_total_work_time": prev_work,
+        "prev_active_time": prev_active,
+        "prev_idle_time": prev_idle,
+        "prev_work_lock_time": prev_lock,
+
+        # ── Period trends ────────────────────
+        "total_work_trend": trend(total_work, prev_work),
+        "active_trend": trend(active, prev_active),
+        "idle_trend": trend(idle, prev_idle),
+        "work_lock_trend": trend(lock, prev_lock),
+
+        # ── Pulse percentages (NEW) ──────────
+        "pulse_active_percent": safe_div(active, total_work),
+        "pulse_idle_percent": safe_div(idle, total_work),
+        "pulse_window_lock_percent": safe_div(lock, total_work),
+    }
+
+
 from collections import defaultdict
 
 def build_app_usage(row):
