@@ -1,4 +1,272 @@
 
+from fastapi import APIRouter, Depends, Query, Header, status
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from datetime import datetime, timedelta
+from collections import defaultdict
+import json
+
+router = APIRouter()
+
+@router.get("/get_manager_kyms_app_usage_custom")
+async def get_manager_kyms_app_usage_custom(
+    Authorize=Depends(),
+    authorization: str = Header(None),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    view_type: str = Query("Totals"),
+    date_range: str = Query("custom")
+):
+    try:
+        if not authorization or not authorization.startswith("Bearer"):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Authorization Token Missing"}
+            )
+
+        Authorize.jwt_required()
+        claims = Authorize.get_raw_jwt()
+        manager_id = claims.get("user_id")
+
+        if not manager_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"msg": "Invalid Token Claims"}
+            )
+
+        if date_range.lower() != "custom":
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Only custom date range supported"}
+            )
+
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Invalid date format (YYYY-MM-DD)"}
+            )
+
+        days = (end_dt - start_dt).days + 1
+        prev_end = start_dt - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=days - 1)
+
+        def safe_json(val):
+            if val is None:
+                return {}
+            if isinstance(val, (dict, list)):
+                return val
+            if isinstance(val, (bytes, bytearray)):
+                return json.loads(val.decode("utf-8"))
+            if isinstance(val, str):
+                return json.loads(val)
+            return {}
+
+        def normalize_map(val):
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list):
+                out = {}
+                for item in val:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        out[item[0]] = item[1]
+                return out
+            return {}
+
+        def normalize_usage_summary(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [x for x in val if isinstance(x, dict)]
+            if isinstance(val, dict):
+                return [val]
+            return []
+
+        sql = f"""
+        WITH data AS (
+            SELECT
+                manager_id,
+                day_start,
+                current_application_info_totals,
+                current_total_kyms_info
+            FROM gold_dashboard.manager_summary_daily
+            WHERE manager_id = {manager_id}
+              AND day_start BETWEEN '{prev_start}' AND '{end_dt}'
+        ),
+        app_mappings AS (
+            SELECT
+                m.user_id AS manager_id,
+                collect_list(
+                    named_struct(
+                        'app_name', m.app_name,
+                        'tag_name', t.tag_name,
+                        'tag_color', t.tag_color
+                    )
+                ) AS custom_app_mappings
+            FROM gold_dashboard.analytics_app_mapping m
+            LEFT JOIN gold_dashboard.analytics_app_tagging t
+                ON m.tag_id = t.tag_id
+               AND m.user_type = t.user_type
+               AND m.user_id = t.user_id
+            WHERE m.user_type = 'MGR'
+              AND m.user_id = {manager_id}
+            GROUP BY m.user_id
+        )
+        SELECT
+            d.*,
+            COALESCE(a.custom_app_mappings, array()) AS custom_app_mappings
+        FROM data d
+        LEFT JOIN app_mappings a
+          ON d.manager_id = a.manager_id
+        """
+
+        with DatabricksSession() as conn:
+            rows = execute_query(conn, sql, fetch_mode="dict")
+
+        if not rows:
+            return JSONResponse(
+                status_code=404,
+                content={"msg": "No Data Found"}
+            )
+
+        current_rows, prev_rows = [], []
+
+        for r in rows:
+            d = r["day_start"]
+            if isinstance(d, str):
+                d = datetime.strptime(d[:10], "%Y-%m-%d").date()
+
+            if start_dt <= d <= end_dt:
+                current_rows.append(r)
+            elif prev_start <= d <= prev_end:
+                prev_rows.append(r)
+
+        custom_app_mappings = rows[0].get("custom_app_mappings", [])
+
+        app_curr = defaultdict(lambda: {"active": 0.0, "idle": 0.0})
+        app_prev = defaultdict(lambda: {"active": 0.0, "idle": 0.0})
+
+        usage_curr = defaultdict(int)
+        usage_prev = defaultdict(int)
+        input_curr = defaultdict(float)
+        input_prev = defaultdict(float)
+
+        for r in current_rows:
+            app_map = normalize_map(safe_json(r.get("current_application_info_totals")))
+            for app, v in app_map.items():
+                if isinstance(v, dict):
+                    app_curr[app]["active"] += v.get("active", 0)
+                    app_curr[app]["idle"] += v.get("idle", 0)
+
+            kyms = safe_json(r.get("current_total_kyms_info"))
+            totals = kyms.get("Totals", {})
+            for u in normalize_usage_summary(totals.get("Usage_Summary")):
+                usage_curr[u.get("metric")] += u.get("count", 0)
+            inp = totals.get("InputSummary", {})
+            for k in ["input_event_count_hr", "input_event_count", "key_count", "mouse_count"]:
+                input_curr[k] += inp.get(k, 0)
+
+        for r in prev_rows:
+            app_map = normalize_map(safe_json(r.get("current_application_info_totals")))
+            for app, v in app_map.items():
+                if isinstance(v, dict):
+                    app_prev[app]["active"] += v.get("active", 0)
+                    app_prev[app]["idle"] += v.get("idle", 0)
+
+            kyms = safe_json(r.get("current_total_kyms_info"))
+            totals = kyms.get("Totals", {})
+            for u in normalize_usage_summary(totals.get("Usage_Summary")):
+                usage_prev[u.get("metric")] += u.get("count", 0)
+            inp = totals.get("InputSummary", {})
+            for k in ["input_event_count_hr", "input_event_count", "key_count", "mouse_count"]:
+                input_prev[k] += inp.get(k, 0)
+
+        usage_summary = []
+        for metric, count in usage_curr.items():
+            prev_count = usage_prev.get(metric, 0)
+            usage_summary.append({
+                "metric": metric,
+                "count": count,
+                "prev_count": prev_count,
+                "prev_trend": "Up" if count > prev_count else "Down" if count < prev_count else "No Change",
+                "prev_percent": round(abs((count - prev_count) / prev_count * 100), 1) if prev_count else 0,
+                "percent": round(count / input_curr.get("key_count", 1) * 100, 1)
+            })
+
+        input_summary = {
+            "input_event_count_hr": input_curr["input_event_count_hr"],
+            "input_event_count": input_curr["input_event_count"],
+            "prev_input_event_count": input_prev["input_event_count"],
+            "key_count": input_curr["key_count"],
+            "mouse_count": input_curr["mouse_count"],
+            "prev_trend": "Up" if input_curr["input_event_count"] > input_prev["input_event_count"]
+                          else "Down" if input_curr["input_event_count"] < input_prev["input_event_count"]
+                          else "No Change",
+            "prev_percent": round(
+                abs(input_curr["input_event_count"] - input_prev["input_event_count"]) /
+                input_prev["input_event_count"] * 100, 1
+            ) if input_prev["input_event_count"] else 0
+        }
+
+        app_tag_map = {}
+        for m in custom_app_mappings:
+            app = m.get("app_name")
+            tag = m.get("tag_name")
+            color = m.get("tag_color") or "#CCCCCC"
+            if app and tag:
+                app_tag_map[app.lower().replace(".exe", "")] = {"tag": tag, "color": color}
+
+        tag_curr = defaultdict(lambda: {"val": 0.0, "color": "#CCCCCC"})
+        tag_prev = defaultdict(lambda: {"val": 0.0, "color": "#CCCCCC"})
+
+        for app, v in app_curr.items():
+            norm = app.lower().replace(".exe", "")
+            info = app_tag_map.get(norm, {"tag": "Unlabelled", "color": "#CCCCCC"})
+            tag_curr[info["tag"]]["val"] += v["active"] + v["idle"]
+            tag_curr[info["tag"]]["color"] = info["color"]
+
+        for app, v in app_prev.items():
+            norm = app.lower().replace(".exe", "")
+            info = app_tag_map.get(norm, {"tag": "Unlabelled", "color": "#CCCCCC"})
+            tag_prev[info["tag"]]["val"] += v["active"] + v["idle"]
+            tag_prev[info["tag"]]["color"] = info["color"]
+
+        total_curr = sum(x["val"] for x in tag_curr.values()) or 1
+        total_prev = sum(x["val"] for x in tag_prev.values()) or 1
+
+        app_usage = []
+        for tag, c in tag_curr.items():
+            curr_val = c["val"]
+            prev_val = tag_prev[tag]["val"]
+            app_usage.append({
+                "tag_name": tag,
+                "percentage": round(curr_val / total_curr * 100, 1),
+                "percentage_prev": round(prev_val / total_prev * 100, 1),
+                "prev_trend": "Up" if curr_val > prev_val else "Down" if curr_val < prev_val else "No Change",
+                "prev_percent": round(abs((curr_val - prev_val) / prev_val * 100), 1) if prev_val else 0,
+                "tag_color": c["color"]
+            })
+
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder({
+                "usage_summary": usage_summary,
+                "input_summary": input_summary,
+                "app_usage": app_usage,
+                "custom_app_mappings": custom_app_mappings
+            })
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Error: {str(e)}"}
+        )
+
+
+
 
 Got it 👍
 Below is a clean, end-to-end, production-ready FastAPI endpoint that matches everything you described, with:
