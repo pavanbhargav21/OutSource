@@ -1,4 +1,184 @@
 
+
+
+from fastapi import APIRouter, Depends, Query, Header, status
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from datetime import datetime
+from collections import defaultdict
+
+router = APIRouter()
+
+@router.get("/get_emp_alerts_custom")
+async def get_emp_alerts_custom(
+    Authorize=Depends(),
+    authorization: str = Header(None),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    view_type: str = Query("Totals"),     # not used, kept for consistency
+    date_range: str = Query("custom"),
+    user_type: str = Query("EMP")         # EMP | MGR
+):
+    try:
+        # -------------------- AUTH --------------------
+        if not authorization or not authorization.startswith("Bearer"):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Authorization Token Missing"}
+            )
+
+        Authorize.jwt_required()
+        claims = Authorize.get_raw_jwt()
+
+        emp_id = claims.get("user_id")
+        manager_id = claims.get("manager_id")
+
+        if not emp_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"msg": "Invalid Token Claims"}
+            )
+
+        if date_range.lower() != "custom":
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Only custom date range supported"}
+            )
+
+        # -------------------- DATE VALIDATION --------------------
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Invalid date format (YYYY-MM-DD)"}
+            )
+
+        if start_dt > end_dt:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "start_date cannot be after end_date"}
+            )
+
+        timeframe_days = (end_dt - start_dt).days + 1
+
+        # -------------------- SQL SELECTION --------------------
+        if user_type.upper() == "EMP":
+            where_clause = f"emp_id = {emp_id}"
+        else:
+            where_clause = f"manager_id = {manager_id}"
+
+        # -------------------- DATABRICKS SQL --------------------
+        sql = f"""
+        WITH base AS (
+            SELECT
+                emp_id,
+                manager_id,
+                day_start,
+                EXPLODE(alerts_json.triggered_alerts) AS alert_id
+            FROM gold_dashboard.emp_summary_daily
+            WHERE {where_clause}
+              AND day_start BETWEEN '{start_dt}' AND '{end_dt}'
+              AND alerts_json.triggered_alerts IS NOT NULL
+        ),
+
+        agg AS (
+            SELECT
+                alert_id,
+                COUNT(DISTINCT day_start) AS affected_days,
+                COUNT(DISTINCT emp_id) AS affected_employees
+            FROM base
+            GROUP BY alert_id
+        ),
+
+        team_size AS (
+            SELECT COUNT(DISTINCT emp_id) AS total_team
+            FROM gold_dashboard.emp_summary_daily
+            WHERE manager_id = {manager_id}
+              AND day_start BETWEEN '{start_dt}' AND '{end_dt}'
+        )
+
+        SELECT
+            a.alert_id,
+            a.affected_days,
+            a.affected_employees,
+            t.total_team
+        FROM agg a
+        CROSS JOIN team_size t
+        """
+
+        # -------------------- EXECUTE --------------------
+        with DatabricksSession() as conn:
+            rows = execute_query(conn, sql, fetch_mode="dict")
+
+        if not rows:
+            return JSONResponse(status_code=404, content={"msg": "No Alerts Found"})
+
+        # -------------------- SEVERITY LOGIC --------------------
+        alerts = []
+
+        for r in rows:
+            alert_id = r["alert_id"]
+            affected_days = r["affected_days"]
+
+            if user_type.upper() == "EMP":
+                ratio = affected_days / timeframe_days
+
+                if affected_days >= 3 and ratio > 0.6:
+                    severity = "HIGH"
+                elif affected_days >= 2 and ratio > 0.4:
+                    severity = "MEDIUM"
+                elif affected_days >= 1 and ratio > 0.2:
+                    severity = "LOW"
+                else:
+                    continue
+
+            else:
+                team_ratio = (
+                    r["affected_employees"] / r["total_team"]
+                    if r["total_team"] else 0
+                )
+                time_ratio = affected_days / timeframe_days
+
+                if team_ratio >= 0.6 and time_ratio >= 0.5 and affected_days >= 2:
+                    severity = "HIGH"
+                elif team_ratio >= 0.4 and time_ratio >= 0.5 and affected_days >= 2:
+                    severity = "MEDIUM"
+                elif team_ratio >= 0.2 and time_ratio >= 0.5 and affected_days >= 2:
+                    severity = "LOW"
+                else:
+                    continue
+
+            alerts.append({
+                "alert_id": alert_id,
+                "severity": severity
+            })
+
+        # -------------------- RESPONSE --------------------
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder({
+                "date_range": "custom",
+                "start_date": str(start_dt),
+                "end_date": str(end_dt),
+                "timeframe_days": timeframe_days,
+                "user_type": user_type.upper(),
+                "alerts": alerts
+            })
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Error fetching custom alerts", "error": str(e)}
+        )
+
+
+
+
+
+
 from fastapi import APIRouter, Depends, Query, Header, status
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
