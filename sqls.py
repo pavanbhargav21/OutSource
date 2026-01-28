@@ -1,4 +1,311 @@
 
+from fastapi import APIRouter, Depends, Query, Header, status
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from datetime import datetime, timedelta
+from collections import defaultdict
+import json
+
+router = APIRouter()
+
+@router.get("/get_kyms_app_usage_custom")
+async def get_kyms_app_usage_custom(
+    Authorize=Depends(),
+    authorization: str = Header(None),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    view_type: str = Query("Totals"),     # Totals | Averages
+    date_range: str = Query("custom"),    # only custom supported
+    user_type: str = Query("MGR")         # MGR | EMP
+):
+    try:
+        # -------------------- AUTH --------------------
+        if not authorization or not authorization.startswith("Bearer"):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Authorization Token Missing"}
+            )
+
+        Authorize.jwt_required()
+        claims = Authorize.get_raw_jwt()
+        user_id = claims.get("user_id")
+
+        if not user_id:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"msg": "Invalid Token Claims"}
+            )
+
+        if date_range.lower() != "custom":
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Only custom date range supported"}
+            )
+
+        # -------------------- DATE LOGIC --------------------
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"msg": "Invalid date format (YYYY-MM-DD)"}
+            )
+
+        days = (end_dt - start_dt).days + 1
+        prev_end = start_dt - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=days - 1)
+
+        # -------------------- HELPERS --------------------
+        def safe_json(val):
+            if val is None:
+                return {}
+            if isinstance(val, (dict, list)):
+                return val
+            if isinstance(val, (bytes, bytearray)):
+                return json.loads(val.decode("utf-8"))
+            if isinstance(val, str):
+                return json.loads(val)
+            return {}
+
+        def normalize_map(val):
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list):
+                out = {}
+                for item in val:
+                    if (
+                        isinstance(item, (tuple, list))
+                        and len(item) == 2
+                        and isinstance(item[1], dict)
+                    ):
+                        out[item[0]] = item[1]
+                return out
+            return {}
+
+        def normalize_usage_summary(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [x for x in val if isinstance(x, dict)]
+            if isinstance(val, dict):
+                return [val]
+            return []
+
+        def normalize_kyms(val):
+            val = safe_json(val)
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list) and len(val) == 1:
+                if isinstance(val[0], dict):
+                    return val[0]
+            return {}
+
+        # -------------------- TABLE SELECTION --------------------
+        if user_type.upper() == "MGR":
+            table = "gold_dashboard.manager_summary_daily"
+            id_col = "manager_id"
+            user_type_sql = "MGR"
+        else:
+            table = "gold_dashboard.emp_summary_daily"
+            id_col = "emp_id"
+            user_type_sql = "EMP"
+
+        # -------------------- SQL --------------------
+        sql = f"""
+        WITH data AS (
+            SELECT
+                {id_col},
+                day_start,
+                current_application_info_totals,
+                current_total_kyms_info
+            FROM {table}
+            WHERE {id_col} = {user_id}
+              AND day_start BETWEEN '{prev_start}' AND '{end_dt}'
+        ),
+        app_mappings AS (
+            SELECT
+                m.user_id AS {id_col},
+                collect_list(
+                    named_struct(
+                        'app_name', m.app_name,
+                        'tag_name', t.tag_name,
+                        'tag_color', t.tag_color
+                    )
+                ) AS custom_app_mappings
+            FROM gold_dashboard.analytics_app_mapping m
+            LEFT JOIN gold_dashboard.analytics_app_tagging t
+                ON m.tag_id = t.tag_id
+               AND m.user_type = t.user_type
+               AND m.user_id = t.user_id
+            WHERE m.user_type = '{user_type_sql}'
+              AND m.user_id = {user_id}
+            GROUP BY m.user_id
+        )
+        SELECT
+            d.*,
+            COALESCE(a.custom_app_mappings, array()) AS custom_app_mappings
+        FROM data d
+        LEFT JOIN app_mappings a
+          ON d.{id_col} = a.{id_col}
+        """
+
+        # -------------------- EXECUTE --------------------
+        with DatabricksSession() as conn:
+            rows = execute_query(conn, sql, fetch_mode="dict")
+
+        if not rows:
+            return JSONResponse(status_code=404, content={"msg": "No Data Found"})
+
+        # -------------------- SPLIT PERIODS --------------------
+        current_rows, prev_rows = [], []
+
+        for r in rows:
+            d = r["day_start"]
+            if isinstance(d, str):
+                d = datetime.strptime(d[:10], "%Y-%m-%d").date()
+
+            if start_dt <= d <= end_dt:
+                current_rows.append(r)
+            elif prev_start <= d <= prev_end:
+                prev_rows.append(r)
+
+        custom_app_mappings = rows[0].get("custom_app_mappings", [])
+
+        # -------------------- AGGREGATION --------------------
+        app_curr = defaultdict(lambda: {"active": 0.0, "idle": 0.0})
+        app_prev = defaultdict(lambda: {"active": 0.0, "idle": 0.0})
+
+        usage_curr = defaultdict(float)
+        usage_prev = defaultdict(float)
+        input_curr = defaultdict(float)
+        input_prev = defaultdict(float)
+
+        def aggregate(rows, app_out, usage_out, input_out):
+            for r in rows:
+                # App MAP
+                app_map = normalize_map(
+                    safe_json(r.get("current_application_info_totals"))
+                )
+                for app, v in app_map.items():
+                    app_out[app]["active"] += v.get("active", 0)
+                    app_out[app]["idle"] += v.get("idle", 0)
+
+                # KYMS
+                kyms = normalize_kyms(r.get("current_total_kyms_info"))
+                section = kyms.get("Totals" if view_type == "Totals" else "Averages", {})
+                for u in normalize_usage_summary(section.get("Usage_Summary")):
+                    usage_out[u["metric"]] += u.get("count", 0)
+                inp = section.get("InputSummary", {})
+                for k in ["input_event_count_hr", "input_event_count", "key_count", "mouse_count"]:
+                    input_out[k] += inp.get(k, 0)
+
+        aggregate(current_rows, app_curr, usage_curr, input_curr)
+        aggregate(prev_rows, app_prev, usage_prev, input_prev)
+
+        if view_type == "Averages":
+            n_curr = max(len(current_rows), 1)
+            n_prev = max(len(prev_rows), 1)
+            for d in (app_curr, app_prev):
+                for v in d.values():
+                    v["active"] /= n_curr
+                    v["idle"] /= n_curr
+            for m in usage_curr:
+                usage_curr[m] /= n_curr
+            for m in usage_prev:
+                usage_prev[m] /= n_prev
+            for k in input_curr:
+                input_curr[k] /= n_curr
+            for k in input_prev:
+                input_prev[k] /= n_prev
+
+        # -------------------- BUILD USAGE SUMMARY --------------------
+        usage_summary = []
+        for metric, count in usage_curr.items():
+            prev_count = usage_prev.get(metric, 0)
+            usage_summary.append({
+                "metric": metric,
+                "count": round(count, 2),
+                "prev_count": round(prev_count, 2),
+                "prev_trend": "Up" if count > prev_count else "Down" if count < prev_count else "No Change",
+                "prev_percent": round(abs((count - prev_count) / prev_count * 100), 1) if prev_count else 0,
+                "percent": round(count / input_curr.get("key_count", 1) * 100, 1)
+            })
+
+        # -------------------- BUILD INPUT SUMMARY --------------------
+        input_summary = {
+            "input_event_count_hr": round(input_curr["input_event_count_hr"], 2),
+            "input_event_count": round(input_curr["input_event_count"], 2),
+            "prev_input_event_count": round(input_prev["input_event_count"], 2),
+            "key_count": round(input_curr["key_count"], 2),
+            "mouse_count": round(input_curr["mouse_count"], 2),
+            "prev_trend": "Up" if input_curr["input_event_count"] > input_prev["input_event_count"]
+                          else "Down" if input_curr["input_event_count"] < input_prev["input_event_count"]
+                          else "No Change",
+            "prev_percent": round(
+                abs(input_curr["input_event_count"] - input_prev["input_event_count"]) /
+                input_prev["input_event_count"] * 100, 1
+            ) if input_prev["input_event_count"] else 0
+        }
+
+        # -------------------- APP USAGE (TAG LEVEL) --------------------
+        app_tag_map = {}
+        for m in custom_app_mappings:
+            app = m.get("app_name")
+            tag = m.get("tag_name")
+            color = m.get("tag_color") or "#CCCCCC"
+            if app and tag:
+                app_tag_map[app.lower().replace(".exe", "")] = {"tag": tag, "color": color}
+
+        tag_curr = defaultdict(lambda: {"val": 0.0, "color": "#CCCCCC"})
+        tag_prev = defaultdict(lambda: {"val": 0.0, "color": "#CCCCCC"})
+
+        def tag_agg(app_sum, out):
+            for app, v in app_sum.items():
+                norm = app.lower().replace(".exe", "")
+                info = app_tag_map.get(norm, {"tag": "Unlabelled", "color": "#CCCCCC"})
+                out[info["tag"]]["val"] += v["active"] + v["idle"]
+                out[info["tag"]]["color"] = info["color"]
+
+        tag_agg(app_curr, tag_curr)
+        tag_agg(app_prev, tag_prev)
+
+        total_curr = sum(x["val"] for x in tag_curr.values()) or 1
+        total_prev = sum(x["val"] for x in tag_prev.values()) or 1
+
+        app_usage = []
+        for tag, c in tag_curr.items():
+            curr_val = c["val"]
+            prev_val = tag_prev[tag]["val"]
+            app_usage.append({
+                "tag_name": tag,
+                "percentage": round(curr_val / total_curr * 100, 1),
+                "percentage_prev": round(prev_val / total_prev * 100, 1),
+                "prev_trend": "Up" if curr_val > prev_val else "Down" if curr_val < prev_val else "No Change",
+                "prev_percent": round(abs((curr_val - prev_val) / prev_val * 100), 1) if prev_val else 0,
+                "tag_color": c["color"]
+            })
+
+        # -------------------- RESPONSE --------------------
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder({
+                "usage_summary": usage_summary,
+                "input_summary": input_summary,
+                "app_usage": app_usage,
+                "custom_app_mappings": custom_app_mappings
+            })
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"msg": f"Error: {str(e)}"}
+        )
+
+
+
+
 
 def run_month_emp_pipeline():
 
