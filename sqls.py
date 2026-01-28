@@ -1,5 +1,207 @@
 
 
+def run_month_emp_pipeline():
+
+    from pyspark.sql import SparkSession
+
+    spark = (
+        SparkSession.builder
+        .appName("MonthEmpPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("Starting Month Employee Pipeline")
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW month_emp_alerts_calc AS
+
+        WITH emp_months_to_process AS (
+            SELECT DISTINCT
+                emp_id,
+                month_start
+            FROM gold_dashboard.emp_summary_monthly
+            WHERE month_start = DATE '2026-01-01'
+              AND emp_id IS NOT NULL
+              AND month_start IS NOT NULL
+        ),
+
+        month_bounds AS (
+            SELECT
+                emp_id,
+                month_start,
+                CASE
+                    WHEN month_start = DATE_TRUNC('MONTH', current_date())
+                        THEN DATE_SUB(current_date(), 1)
+                    ELSE LAST_DAY(month_start)
+                END AS month_end
+            FROM emp_months_to_process
+        ),
+
+        month_data AS (
+            SELECT
+                d.emp_id,
+                m.month_start,
+                d.day_start,
+                DATE_TRUNC('WEEK', d.day_start) AS week_start,
+                d.alerts_json.triggered_alerts AS alert_ids
+            FROM gold_dashboard.emp_summary_daily d
+            JOIN month_bounds m
+              ON d.emp_id = m.emp_id
+             AND d.day_start BETWEEN m.month_start AND m.month_end
+            WHERE d.alerts_json.triggered_alerts IS NOT NULL
+              AND SIZE(d.alerts_json.triggered_alerts) > 0
+        ),
+
+        exploded_data AS (
+            SELECT
+                emp_id,
+                month_start,
+                day_start,
+                week_start,
+                EXPLODE(alert_ids) AS alert_id
+            FROM month_data
+        ),
+
+        -- streak grouping per WEEK
+        weekly_streak_base AS (
+            SELECT
+                emp_id,
+                month_start,
+                alert_id,
+                week_start,
+                day_start,
+                DATE_SUB(
+                    day_start,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY emp_id, month_start, alert_id, week_start
+                        ORDER BY day_start
+                    )
+                ) AS grp
+            FROM exploded_data
+        ),
+
+        weekly_stats AS (
+            SELECT
+                emp_id,
+                month_start,
+                alert_id,
+                week_start,
+                grp,
+                COUNT(*) AS consecutive_days
+            FROM weekly_streak_base
+            GROUP BY emp_id, month_start, alert_id, week_start, grp
+        ),
+
+        weekly_aggregated AS (
+            SELECT
+                emp_id,
+                month_start,
+                alert_id,
+                week_start,
+                MAX(consecutive_days) AS max_consecutive_in_week
+            FROM weekly_stats
+            GROUP BY emp_id, month_start, alert_id, week_start
+        ),
+
+        monthly_aggregates AS (
+            SELECT
+                e.emp_id,
+                e.month_start,
+                e.alert_id,
+                COUNT(DISTINCT e.day_start) AS total_affected_days,
+                COLLECT_LIST(
+                    NAMED_STRUCT(
+                        'week_start', w.week_start,
+                        'consecutive_days', w.max_consecutive_in_week
+                    )
+                ) AS weekly_patterns
+            FROM exploded_data e
+            JOIN weekly_aggregated w
+              ON e.emp_id = w.emp_id
+             AND e.month_start = w.month_start
+             AND e.alert_id = w.alert_id
+             AND e.week_start = w.week_start
+            GROUP BY e.emp_id, e.month_start, e.alert_id
+        ),
+
+        severity_assigned AS (
+            SELECT
+                emp_id,
+                month_start,
+                alert_id,
+                total_affected_days,
+                weekly_patterns,
+                CASE
+                    WHEN total_affected_days >= 18 THEN 'HIGH'
+                    WHEN total_affected_days >= 12 THEN 'MEDIUM'
+                    WHEN total_affected_days >= 6  THEN 'LOW'
+                    ELSE NULL
+                END AS severity
+            FROM monthly_aggregates
+            WHERE total_affected_days >= 6
+        ),
+
+        final_results AS (
+            SELECT
+                emp_id,
+                month_start,
+                NAMED_STRUCT(
+                    'month_patterns',
+                    COLLECT_LIST(
+                        NAMED_STRUCT(
+                            'alert_id', alert_id,
+                            'severity', severity,
+                            'total_days', total_affected_days,
+                            'weekly_patterns', weekly_patterns
+                        )
+                    ),
+                    'summary',
+                    NAMED_STRUCT(
+                        'total_alerts', COUNT(*),
+                        'calculated_on', current_timestamp()
+                    )
+                ) AS alerts_json
+            FROM severity_assigned
+            GROUP BY emp_id, month_start
+        )
+
+        SELECT * FROM final_results
+        """)
+
+        # MERGE
+        spark.sql("""
+        MERGE INTO gold_dashboard.emp_summary_monthly target
+        USING month_emp_alerts_calc source
+        ON target.emp_id = source.emp_id
+       AND target.month_start = source.month_start
+        WHEN MATCHED THEN
+          UPDATE SET target.alerts_json = source.alerts_json
+        WHEN NOT MATCHED THEN
+          INSERT (emp_id, month_start, alerts_json)
+          VALUES (source.emp_id, source.month_start, source.alerts_json)
+        """)
+
+        processed = spark.sql(
+            "SELECT COUNT(*) AS cnt FROM month_emp_alerts_calc"
+        ).first().cnt
+
+        print("Month Employee Pipeline completed successfully")
+        print(f"Records processed: {processed}")
+
+        return {
+            "status": "success",
+            "processed": processed
+        }
+
+    except Exception as e:
+        print("Month Employee Pipeline failed")
+        raise e
+
+
+
+
 WITH FilteredEmployees AS (
     SELECT
         emplid,
