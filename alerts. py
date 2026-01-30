@@ -1,5 +1,338 @@
 
 
+
+def run_month_mgr_pipeline():
+
+    from pyspark.sql import SparkSession
+
+    spark = (
+        SparkSession.builder
+        .appName("MonthManagerPipeline")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+    try:
+        print("Starting Month Manager Pipeline")
+
+        # =====================================================
+        # STEP 1: MANAGERS & MONTHS TO PROCESS
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW mgr_months_to_process AS
+        SELECT DISTINCT
+            manager_id,
+            month_start
+        FROM gold_dashboard.manager_summary_monthly
+        WHERE updated_on > current_timestamp() - INTERVAL 4 HOURS
+          AND manager_id IS NOT NULL
+          AND month_start IS NOT NULL
+        """)
+
+        # =====================================================
+        # STEP 2: MONTH BOUNDS
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW month_bounds AS
+        SELECT
+            manager_id,
+            month_start,
+            CASE
+                WHEN month_start = DATE_TRUNC('MONTH', current_date())
+                    THEN DATE_SUB(current_date(), 1)
+                ELSE LAST_DAY(month_start)
+            END AS month_end
+        FROM mgr_months_to_process
+        """)
+
+        # =====================================================
+        # STEP 3: DAILY DATA (ONLY THOSE MANAGERS)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW month_data AS
+        SELECT
+            d.manager_id,
+            d.emp_id,
+            m.month_start,
+            d.day_start,
+            DATE_TRUNC('WEEK', d.day_start) AS week_start,
+            d.alerts_json.triggered_alerts AS alert_ids
+        FROM gold_dashboard.emp_summary_daily d
+        JOIN month_bounds m
+          ON d.manager_id = m.manager_id
+         AND d.day_start BETWEEN m.month_start AND m.month_end
+        WHERE d.alerts_json.triggered_alerts IS NOT NULL
+          AND SIZE(d.alerts_json.triggered_alerts) > 0
+        """)
+
+        # =====================================================
+        # STEP 4: EXPLODE ALERTS
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW exploded_data AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            day_start,
+            week_start,
+            EXPLODE(alert_ids) AS alert_id
+        FROM month_data
+        """)
+
+        # =====================================================
+        # STEP 5: TOTAL AFFECTED DAYS PER EMP (MONTH)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW emp_month_alert_days AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            COUNT(DISTINCT day_start) AS total_affected_days
+        FROM exploded_data
+        GROUP BY manager_id, emp_id, month_start, alert_id
+        """)
+
+        # =====================================================
+        # STEP 6: WEEKLY STREAK BASE (3-DAY LOGIC)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW weekly_streak_base AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            week_start,
+            day_start,
+            DATE_SUB(
+                day_start,
+                ROW_NUMBER() OVER (
+                    PARTITION BY emp_id, month_start, alert_id, week_start
+                    ORDER BY day_start
+                )
+            ) AS grp
+        FROM exploded_data
+        """)
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW weekly_stats AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            week_start,
+            grp,
+            COUNT(*) AS streak_len
+        FROM weekly_streak_base
+        GROUP BY manager_id, emp_id, month_start, alert_id, week_start, grp
+        """)
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW weekly_aggregated AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            week_start,
+            MAX(streak_len) AS max_consecutive_in_week
+        FROM weekly_stats
+        GROUP BY manager_id, emp_id, month_start, alert_id, week_start
+        """)
+
+        # =====================================================
+        # STEP 7: 3-DAY × 2-WEEK FLAG PER EMP
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW weeks_with_3_consec AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            week_start
+        FROM weekly_aggregated
+        WHERE max_consecutive_in_week >= 3
+        """)
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW weeks_3_consec_streaks AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            week_start,
+            DATE_SUB(
+                week_start,
+                7 * ROW_NUMBER() OVER (
+                    PARTITION BY emp_id, month_start, alert_id
+                    ORDER BY week_start
+                )
+            ) AS grp
+        FROM weeks_with_3_consec
+        """)
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW emp_3day_2week_flag AS
+        SELECT
+            manager_id,
+            emp_id,
+            month_start,
+            alert_id,
+            MAX(streak_len) >= 2 AS has_3day_2week_streak
+        FROM (
+            SELECT
+                manager_id,
+                emp_id,
+                month_start,
+                alert_id,
+                grp,
+                COUNT(*) AS streak_len
+            FROM weeks_3_consec_streaks
+            GROUP BY manager_id, emp_id, month_start, alert_id, grp
+        )
+        GROUP BY manager_id, emp_id, month_start, alert_id
+        """)
+
+        # =====================================================
+        # STEP 8: TEAM SIZE (FULL MONTH, ALL EMPLOYEES)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW manager_team_size AS
+        SELECT
+            manager_id,
+            DATE_TRUNC('MONTH', day_start) AS month_start,
+            COUNT(DISTINCT emp_id) AS team_size
+        FROM gold_dashboard.emp_summary_daily
+        GROUP BY manager_id, DATE_TRUNC('MONTH', day_start)
+        """)
+
+        # =====================================================
+        # STEP 9: MANAGER MONTH AGGREGATION (FIXED)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW manager_month_aggregates AS
+        SELECT
+            e.manager_id,
+            e.month_start,
+            e.alert_id,
+
+            -- employees affected for >= 6 days
+            COUNT(DISTINCT CASE
+                WHEN e.total_affected_days >= 6 THEN e.emp_id
+            END) AS affected_employees_6d,
+
+            -- employees meeting 3-day x 2-week rule
+            COUNT(DISTINCT CASE
+                WHEN f.has_3day_2week_streak THEN e.emp_id
+            END) AS employees_with_3day_2week_streak
+        FROM emp_month_alert_days e
+        LEFT JOIN emp_3day_2week_flag f
+          ON e.manager_id = f.manager_id
+         AND e.emp_id = f.emp_id
+         AND e.month_start = f.month_start
+         AND e.alert_id = f.alert_id
+        GROUP BY e.manager_id, e.month_start, e.alert_id
+        """)
+
+        # =====================================================
+        # STEP 10: MANAGER SEVERITY (MONTH RULES)
+        # =====================================================
+
+        spark.sql("""
+        CREATE OR REPLACE TEMP VIEW manager_severity AS
+        SELECT
+            m.manager_id,
+            m.month_start,
+            m.alert_id,
+            CASE
+                WHEN (
+                    (m.affected_employees_6d * 1.0 / t.team_size) >= 0.60
+                    OR m.employees_with_3day_2week_streak >= 3
+                ) THEN 'HIGH'
+
+                WHEN (
+                    (m.affected_employees_6d * 1.0 / t.team_size) >= 0.40
+                    OR m.employees_with_3day_2week_streak >= 2
+                ) THEN 'MEDIUM'
+
+                WHEN (
+                    (m.affected_employees_6d * 1.0 / t.team_size) >= 0.20
+                    OR m.employees_with_3day_2week_streak >= 1
+                ) THEN 'LOW'
+
+                ELSE NULL
+            END AS severity
+        FROM manager_month_aggregates m
+        JOIN manager_team_size t
+          ON m.manager_id = t.manager_id
+         AND m.month_start = t.month_start
+        """)
+
+        # =====================================================
+        # STEP 11: WRITE TO manager_summary_monthly
+        # =====================================================
+
+        spark.sql("""
+        MERGE INTO gold_dashboard.manager_summary_monthly target
+        USING (
+            SELECT
+                manager_id,
+                month_start,
+                NAMED_STRUCT(
+                    'month_patterns',
+                    COLLECT_LIST(
+                        NAMED_STRUCT(
+                            'alert_id', alert_id,
+                            'severity', severity
+                        )
+                    ),
+                    'summary',
+                    NAMED_STRUCT(
+                        'total_alerts', COUNT(*),
+                        'calculated_at', current_timestamp()
+                    )
+                ) AS alerts_json
+            FROM manager_severity
+            WHERE severity IS NOT NULL
+            GROUP BY manager_id, month_start
+        ) source
+        ON target.manager_id = source.manager_id
+       AND target.month_start = source.month_start
+        WHEN MATCHED THEN
+          UPDATE SET target.alerts_json = source.alerts_json
+        WHEN NOT MATCHED THEN
+          INSERT (manager_id, month_start, alerts_json)
+          VALUES (source.manager_id, source.month_start, source.alerts_json)
+        """)
+
+        print("Month Manager Pipeline completed successfully")
+
+    finally:
+        pass
+
+
+
+
+
+
+
+
+
 def run_month_mgr_pipeline():
 
     from pyspark.sql import SparkSession
