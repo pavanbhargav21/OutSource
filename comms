@@ -1,3 +1,42 @@
+
+# This is the only way to get true recursion in Databricks
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, concat
+
+df = spark.table("inbound.hr_employ_central")
+
+# Collect all relationships
+employees = df.collect()
+emp_dict = {row['emp_id']: row['funk_manager_id'] for row in employees}
+
+# Function to get full hierarchy
+def get_hierarchy(emp_id):
+    hierarchy = []
+    current = emp_id
+    level = 0
+    
+    # Go up the chain
+    while current and current in emp_dict:
+        hierarchy.append((current, level))
+        level += 1
+        current = emp_dict.get(current)
+    
+    return hierarchy
+
+# Apply to all employees
+results = []
+for emp in employees:
+    hierarchy = get_hierarchy(emp['emp_id'])
+    for emp_id, level in hierarchy:
+        results.append((emp['emp_id'], emp_id, level))
+
+# Create result DataFrame
+result_df = spark.createDataFrame(results, ["employee", "hierarchy_emp", "level"])
+result_df.show()
+
+
+
+
 WITH RECURSIVE EmployeeHierarchy AS (
     -- Anchor: Start with top-level managers (those with no manager above them)
     SELECT 
