@@ -1,4 +1,477 @@
 
+
+from pyspark.sql import functions as F
+from datetime import datetime, timedelta
+from pyspark.sql.window import Window
+
+# -------------------------
+# Configurations
+# -------------------------
+dbutils.widgets.text("dynamic_hours", "24000")
+try:
+    dynamic_hours = int(dbutils.widgets.get("dynamic_hours"))
+except Exception as e:
+    print(f"Error parsing dynamic_hours: {e}, using default 1")
+    dynamic_hours = 24000
+
+DEFAULT_START = "09:00:00"
+DEFAULT_END = "18:00:00"
+ZERO_TIME = "00:00:00"
+PROCESSING_WINDOW_MINUTES = 60 * dynamic_hours
+print(f"Processing window: {PROCESSING_WINDOW_MINUTES} minutes")
+
+# -------------------------
+# Time Setup
+# -------------------------
+current_time = datetime.now()
+ingestion_threshold = current_time - timedelta(minutes=PROCESSING_WINDOW_MINUTES)
+
+# -------------------------
+# Step 1: Get Pulse Lite Users Data
+# -------------------------
+
+# Get login data for Pulse Lite users (first and last entry per day)
+login_data_df = spark.table("sys_trace.emp_logindata") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .filter(F.col("pulse_lite_version").isNotNull()) \
+    .select("emp_id", "cal_date", "event_time") \
+    .withColumn("is_login_data", F.lit(True))
+
+# Get Window Lock/Unlock activities for Pulse Lite users
+window_events_df = spark.table("app_trace.emp_activity") \
+    .filter(F.col("ingestion_time") >= F.lit(ingestion_threshold)) \
+    .filter(F.col("app_name").isin("Window Lock", "Window Unlock")) \
+    .select("emp_id", "cal_date", "start_time", "app_name") \
+    .withColumn("is_window_lock", F.when(F.col("app_name") == "Window Lock", F.lit(True)).otherwise(F.lit(False))) \
+    .withColumn("is_window_unlock", F.when(F.col("app_name") == "Window Unlock", F.lit(True)).otherwise(F.lit(False)))
+
+# Combine both sources to get all Pulse Lite user-date combinations
+pulse_lite_dates = login_data_df.select("emp_id", "cal_date").distinct().union(
+    window_events_df.select("emp_id", "cal_date").distinct()
+).distinct().withColumn("is_pulse_lite", F.lit(True))
+
+# -------------------------
+# Step 2: Get Manager ID from HR Central
+# -------------------------
+hr_central_df = spark.table("hr_central.employee_master") \
+    .select("emp_id", "func_manager_id") \
+    .withColumnRenamed("emp_id", "hr_emp_id") \
+    .withColumnRenamed("func_manager_id", "manager_id")
+
+# -------------------------
+# Add previous date
+# -------------------------
+emp_dates_df = pulse_lite_dates.withColumn("prev_date", F.date_sub("cal_date", 1))
+
+# Join with manager data
+emp_dates_with_manager = emp_dates_df.join(
+    hr_central_df,
+    emp_dates_df.emp_id == hr_central_df.hr_emp_id,
+    "left"
+).drop("hr_emp_id")
+
+# -------------------------
+# Step 3: Load shift data
+# -------------------------
+shift_df = spark.table("inbound.pulse_emp_shift_info") \
+    .select("emp_id", "shift_date", "start_time", "end_time", "is_week_off")
+
+# -------------------------
+# Step 4: Join current shift
+# -------------------------
+cur_shift = emp_dates_with_manager.join(
+    shift_df,
+    (emp_dates_with_manager.emp_id == shift_df.emp_id) & (emp_dates_with_manager.cal_date == shift_df.shift_date),
+    how='left'
+).select(
+    emp_dates_with_manager.emp_id,
+    emp_dates_with_manager.cal_date,
+    emp_dates_with_manager.prev_date,
+    emp_dates_with_manager.is_pulse_lite,
+    emp_dates_with_manager.manager_id,
+    shift_df.start_time.alias("cur_start_time_raw"),
+    shift_df.end_time.alias("cur_end_time_raw"),
+    shift_df.is_week_off
+)
+
+# Step 5: Join previous shift
+prev_shift = shift_df \
+    .withColumnRenamed("shift_date", "prev_cal_date") \
+    .withColumnRenamed("start_time", "prev_start_time_raw") \
+    .withColumnRenamed("end_time", "prev_end_time_raw") \
+    .withColumnRenamed("emp_id", "emp_id_prev") \
+    .withColumnRenamed("is_week_off", "prev_is_week_off")
+
+cur_with_prev = cur_shift.join(
+    prev_shift,
+    (cur_shift.emp_id == prev_shift.emp_id_prev) & (cur_shift.prev_date == prev_shift.prev_cal_date),
+    how="left"
+).drop("emp_id_prev", "prev_cal_date")
+
+# Step 6: Apply defaults based on missing data and day of week
+final_df = cur_with_prev \
+    .withColumn("dow", F.date_format("cal_date", "E")) \
+    .withColumn("prev_dow", F.date_format("prev_date", "E")) \
+    .withColumn("cur_start_time",
+        F.when(F.col("cur_start_time_raw").isNotNull(), F.col("cur_start_time_raw"))
+         .when(F.col("is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("cur_end_time",
+        F.when(F.col("cur_end_time_raw").isNotNull(), F.col("cur_end_time_raw"))
+         .when(F.col("is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    .withColumn("prev_start_time",
+        F.when(F.col("prev_start_time_raw").isNotNull(), F.col("prev_start_time_raw"))
+         .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_START))
+    ) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev_end_time_raw").isNotNull(), F.col("prev_end_time_raw"))
+         .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+         .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+         .otherwise(F.lit(DEFAULT_END))
+    ) \
+    .withColumn("cur_end_time",
+        F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+               F.date_format(F.expr("cast(cur_end_time as timestamp) + interval 1 day"), "HH:mm:ss")
+        ).otherwise(F.col("cur_end_time"))
+    ) \
+    .withColumn("prev_end_time",
+        F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+               F.date_format(F.expr("cast(prev_end_time as timestamp) + interval 1 day"), "HH:mm:ss")
+        ).otherwise(F.col("prev_end_time"))
+    ) \
+    .withColumn("cur_start_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_start_time"))) \
+    .withColumn("cur_end_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_end_time"))) \
+    .withColumn("prev_start_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_start_time"))) \
+    .withColumn("prev_end_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_end_time"))) \
+    .withColumn("cur_end_time_ts",
+        F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+               F.date_format(F.expr("cast(cur_end_time_ts as timestamp) + interval 1 day"), "yyyy-MM-dd HH:mm:ss")
+        ).otherwise(F.col("cur_end_time_ts"))
+    ) \
+    .withColumn("prev_end_time_ts",
+        F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+               F.date_format(F.expr("cast(prev_end_time_ts as timestamp) + interval 1 day"), "yyyy-MM-dd HH:mm:ss")
+        ).otherwise(F.col("prev_end_time_ts"))
+    ) \
+    .withColumn("is_week_off",
+        F.when(
+            (F.col("cur_start_time") == ZERO_TIME) & (F.col("cur_end_time") == ZERO_TIME),
+            F.lit(True)
+        ).otherwise(F.lit(False))
+    ) \
+    .withColumn("prev_is_week_off",
+        F.when(
+            (F.col("prev_start_time") == ZERO_TIME) & (F.col("prev_end_time") == ZERO_TIME),
+            F.lit(True)
+        ).otherwise(F.lit(False))
+    ) \
+    .select(
+        "emp_id",
+        "cal_date",
+        "prev_date",
+        "is_pulse_lite",
+        "manager_id",
+        "cur_start_time_ts",
+        "cur_end_time_ts",
+        "prev_start_time_ts",
+        "prev_end_time_ts",
+        "is_week_off",
+        "prev_is_week_off"
+    )
+
+# -------------------------
+# Step 7: Join with login data and window events
+# -------------------------
+
+# Get first and last login entry per day from login data
+login_stats_df = login_data_df.groupBy("emp_id", "cal_date").agg(
+    F.min("event_time").alias("first_login_time"),
+    F.max("event_time").alias("last_login_time")
+)
+
+# Get window lock/unlock events
+window_lock_df = window_events_df.filter(F.col("is_window_lock") == True) \
+    .groupBy("emp_id", "cal_date").agg(
+        F.min("start_time").alias("first_window_lock_time"),
+        F.max("start_time").alias("last_window_lock_time")
+    )
+
+window_unlock_df = window_events_df.filter(F.col("is_window_unlock") == True) \
+    .groupBy("emp_id", "cal_date").agg(
+        F.min("start_time").alias("first_window_unlock_time"),
+        F.max("start_time").alias("last_window_unlock_time")
+    )
+
+# Join all data sources
+joined_df = final_df.join(
+    login_stats_df,
+    ["emp_id", "cal_date"],
+    "left"
+).join(
+    window_lock_df,
+    ["emp_id", "cal_date"],
+    "left"
+).join(
+    window_unlock_df,
+    ["emp_id", "cal_date"],
+    "left"
+)
+
+# -------------------------
+# Step 8: Calculate time windows for Pulse Lite
+# -------------------------
+
+jdf_with_windows = joined_df.withColumn(
+    "current_window_start",
+    F.when(
+        (F.col("is_week_off") == True) & (F.col("prev_is_week_off") == False),
+        F.greatest(
+            F.expr("cast(prev_end_time_ts as timestamp) + interval 8 hours"),
+            F.col("cur_start_time_ts")
+        )
+    ).when(
+        F.col("is_week_off") == True,
+        F.col("cur_start_time_ts")
+    ).otherwise(
+        F.expr("cast(cur_start_time_ts as timestamp) - interval 4 hours")
+    )
+).withColumn(
+    "current_window_end",
+    F.when(~F.col("is_week_off"), F.expr("cast(cur_end_time_ts as timestamp) + interval 8 hours"))
+    .when(
+        (F.col("is_week_off") == True) & (F.col("prev_is_week_off") == False),
+        F.concat_ws(" ", F.col("cal_date"), F.lit("23:59:59"))
+    )
+    .otherwise(F.col("cur_end_time_ts"))
+).withColumn(
+    "prev_window_start",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.col("prev_end_time_ts")
+    ).otherwise(F.col("prev_start_time_ts"))
+).withColumn(
+    "prev_window_end",
+    F.when(
+        (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+        ~F.col("prev_is_week_off"),
+        F.expr("cast(prev_end_time_ts as timestamp) + interval 8 hours")
+    ).otherwise(F.col("prev_end_time_ts"))
+)
+
+# -------------------------
+# Step 9: Calculate login and logout times for Pulse Lite with refined logic
+# -------------------------
+
+# Define function to check if timestamp is within current window
+def within_current_window(time_col):
+    return (F.col(time_col) >= F.col("current_window_start")) & \
+           (F.col(time_col) <= F.col("current_window_end"))
+
+login_logout_df = jdf_with_windows.withColumn(
+    "emp_login_time",
+    # Priority 1: First login from login data within window
+    F.when(
+        within_current_window("first_login_time"),
+        F.col("first_login_time")
+    ).when(
+        # Priority 2: First window unlock within window
+        within_current_window("first_window_unlock_time"),
+        F.col("first_window_unlock_time")
+    ).when(
+        # Priority 3: First window lock within window (as last resort)
+        within_current_window("first_window_lock_time"),
+        F.col("first_window_lock_time")
+    )
+).withColumn(
+    "emp_logout_time",
+    # Priority 1: Last window lock within window (latest logout)
+    F.when(
+        within_current_window("last_window_lock_time"),
+        F.col("last_window_lock_time")
+    ).when(
+        # Priority 2: Last login data entry within window
+        within_current_window("last_login_time"),
+        F.col("last_login_time")
+    ).when(
+        # Priority 3: Last window unlock within window
+        within_current_window("last_window_unlock_time"),
+        F.col("last_window_unlock_time")
+    ).when(
+        # Priority 4: First window lock within window
+        within_current_window("first_window_lock_time"),
+        F.col("first_window_lock_time")
+    ).when(
+        # Priority 5: First login data entry within window
+        within_current_window("first_login_time"),
+        F.col("first_login_time")
+    ).when(
+        # Priority 6: First window unlock within window
+        within_current_window("first_window_unlock_time"),
+        F.col("first_window_unlock_time")
+    )
+)
+
+# For cases where no event falls within current window, look for any event on that day
+login_logout_df = login_logout_df.withColumn(
+    "emp_login_time",
+    F.coalesce(
+        F.col("emp_login_time"),
+        F.col("first_login_time"),
+        F.col("first_window_unlock_time"),
+        F.col("first_window_lock_time")
+    )
+).withColumn(
+    "emp_logout_time",
+    F.coalesce(
+        F.col("emp_logout_time"),
+        F.col("last_window_lock_time"),
+        F.col("last_login_time"),
+        F.col("last_window_unlock_time"),
+        F.col("emp_login_time")  # Fallback to login time if nothing else
+    )
+)
+
+# -------------------------
+# Step 10: Handle previous day logout updates
+# -------------------------
+
+# Check if window unlock in current day should be considered as previous day logout
+prev_day_updates = login_logout_df.filter(
+    (F.col("first_window_unlock_time").isNotNull()) &
+    (F.col("prev_date").isNotNull()) &
+    (F.col("first_window_unlock_time") >= F.col("prev_window_start")) &
+    (F.col("first_window_unlock_time") <= F.col("prev_window_end"))
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.col("prev_date").alias("update_date"),
+    F.col("first_window_unlock_time").alias("new_logout_time"),
+    F.lit("window_unlock").alias("update_source")
+)
+
+# -------------------------
+# Step 11: Prepare final output
+# -------------------------
+
+final_output = login_logout_df.select(
+    "emp_id",
+    "cal_date",
+    "emp_login_time",
+    "emp_logout_time",
+    "cur_start_time_ts",
+    "cur_end_time_ts",
+    "is_week_off",
+    "is_pulse_lite",
+    "manager_id"
+).filter(
+    (F.col("emp_id").isNotNull()) &
+    (F.col("cal_date").isNotNull()) &
+    (F.col("emp_login_time").isNotNull()) &
+    (F.col("emp_logout_time").isNotNull())
+).withColumn(
+    "emp_logout_time",
+    F.when(
+        F.col("emp_logout_time") < F.col("emp_login_time"),
+        # If logout is before login, use login time as logout (edge case handling)
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+).orderBy("emp_id", "cal_date")
+
+# -------------------------
+# Step 12: Create or update target table with manager_id
+# -------------------------
+
+# Create or update target table
+spark.sql("""
+CREATE TABLE IF NOT EXISTS gold_dashboard.analytics_emp_login_logout_pulse_lite (
+    EMP_ID int,
+    EMP_CONTRACTED_HOURS string,
+    START_TIME string,
+    END_TIME string,
+    START_TIME_THRESHOLD string,
+    END_TIME_THRESHOLD string,
+    EMP_LOGIN_TIME string,
+    EMP_LOGOUT_TIME string,
+    SHIFT_DATE date,
+    SHIFT_COMPLETED string,
+    ATTENDENCE_STATUS string,
+    LOGIN_STATUS string,
+    LOGOUT_STATUS string,
+    WORKING_HOURS float,
+    MANAGER_ID int,
+    UPDATED_ON TIMESTAMP,
+    IS_WEEK_OFF BOOLEAN,
+    IS_PULSE_LITE BOOLEAN,
+    IS_HOLIDAY BOOLEAN
+) USING DELTA
+""")
+
+spark.sql("""ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN UPDATED_ON SET DEFAULT current_timestamp()""")
+spark.sql("""ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN IS_HOLIDAY SET DEFAULT FALSE""")
+spark.sql("""ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN IS_PULSE_LITE SET DEFAULT TRUE""")
+
+# Merge data into target table - Manager ID inserted only once, never updated
+final_output.createOrReplaceTempView("temp_pulse_lite_login_logout")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout_pulse_lite AS target
+USING temp_pulse_lite_login_logout AS source
+ON target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.cal_date
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.EMP_LOGIN_TIME = CASE 
+            WHEN source.emp_login_time < target.EMP_LOGIN_TIME OR target.EMP_LOGIN_TIME IS NULL 
+            THEN source.emp_login_time 
+            ELSE target.EMP_LOGIN_TIME 
+        END,
+        target.EMP_LOGOUT_TIME = CASE
+            WHEN source.emp_logout_time > target.EMP_LOGOUT_TIME OR target.EMP_LOGOUT_TIME IS NULL
+            THEN source.emp_logout_time
+            ELSE target.EMP_LOGOUT_TIME
+        END,
+        target.START_TIME = CASE
+            WHEN target.START_TIME IS NULL THEN source.cur_start_time_ts
+            ELSE target.START_TIME
+        END,
+        target.END_TIME = CASE
+            WHEN target.END_TIME IS NULL THEN source.cur_end_time_ts
+            ELSE target.END_TIME
+        END,
+        target.IS_WEEK_OFF = CASE
+            WHEN target.IS_WEEK_OFF IS NULL THEN source.is_week_off
+            ELSE target.IS_WEEK_OFF
+        END
+        -- Note: MANAGER_ID is NOT updated here - it's set only on insert
+WHEN NOT MATCHED THEN
+    INSERT (EMP_ID, START_TIME, END_TIME, EMP_LOGIN_TIME, EMP_LOGOUT_TIME, 
+            SHIFT_DATE, IS_WEEK_OFF, IS_PULSE_LITE, MANAGER_ID)
+    VALUES (source.emp_id, source.cur_start_time_ts, source.cur_end_time_ts,
+            source.emp_login_time, source.emp_logout_time, source.cal_date,
+            source.is_week_off, source.is_pulse_lite, source.manager_id)
+""")
+
+# Update previous day's logout times if needed (only update logout time, not manager_id)
+prev_day_updates.createOrReplaceTempView("temp_prev_day_updates_lite")
+spark.sql("""
+MERGE INTO gold_dashboard.analytics_emp_login_logout_pulse_lite AS target
+USING temp_prev_day_updates_lite AS source
+ON target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date
+WHEN MATCHED AND 
+    (target.EMP_LOGOUT_TIME IS NULL OR source.new_logout_time > target.EMP_LOGOUT_TIME) THEN 
+    UPDATE SET target.EMP_LOGOUT_TIME = source.new_logout_time
+""")
+
+print(f"Processed {final_output.count()} Pulse Lite login/logout records")
+
+
+
+
 # day_emp_pipeline_udf.py
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf
