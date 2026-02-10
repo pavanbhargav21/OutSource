@@ -1,4 +1,174 @@
+WITH RECURSIVE EmployeeHierarchy AS (
+    -- Anchor: Start with top-level managers (those with no manager above them)
+    SELECT 
+        emp_id,
+        emp_name,
+        funk_manager_id,
+        emp_name AS top_manager,
+        1 AS level,
+        CAST(emp_id AS VARCHAR(100)) AS hierarchy_path
+    FROM inbound.hr_employ_central
+    WHERE funk_manager_id IS NULL  -- Top-level employees
+    
+    UNION ALL
+    
+    -- Recursive: Get subordinates
+    SELECT 
+        e.emp_id,
+        e.emp_name,
+        e.funk_manager_id,
+        h.top_manager,
+        h.level + 1 AS level,
+        CAST(h.hierarchy_path || '->' || CAST(e.emp_id AS VARCHAR) AS VARCHAR(100))
+    FROM inbound.hr_employ_central e
+    INNER JOIN EmployeeHierarchy h 
+        ON e.funk_manager_id = h.emp_id
+)
+SELECT 
+    emp_id,
+    emp_name,
+    funk_manager_id,
+    top_manager,
+    level,
+    hierarchy_path
+FROM EmployeeHierarchy
+ORDER BY top_manager, level, emp_name;
 
+
+WITH RECURSIVE ManagerChain AS (
+    -- Anchor: Start with a specific employee or all employees
+    SELECT 
+        emp_id,
+        emp_name,
+        funk_manager_id,
+        1 AS level,
+        CAST(emp_name AS VARCHAR(500)) AS management_chain
+    FROM inbound.hr_employ_central
+    -- Remove WHERE clause to get for all employees
+    -- WHERE emp_id = 'specific_employee_id'  -- For specific employee
+    
+    UNION ALL
+    
+    -- Recursive: Go up the hierarchy
+    SELECT 
+        m.emp_id,
+        m.emp_name,
+        e.funk_manager_id,
+        m.level + 1 AS level,
+        CAST(m.management_chain || ' → ' || e.emp_name AS VARCHAR(500))
+    FROM ManagerChain m
+    INNER JOIN inbound.hr_employ_central e 
+        ON m.funk_manager_id = e.emp_id
+)
+SELECT 
+    emp_id,
+    emp_name,
+    level,
+    management_chain AS full_management_chain
+FROM ManagerChain
+ORDER BY emp_id, level DESC;
+
+
+
+WITH RECURSIVE OrgHierarchy AS (
+    -- Top-level employees
+    SELECT 
+        emp_id,
+        emp_name,
+        funk_manager_id,
+        emp_name AS hierarchy_tree,
+        1 AS level,
+        1 AS sort_order
+    FROM inbound.hr_employ_central
+    WHERE funk_manager_id IS NULL
+    
+    UNION ALL
+    
+    -- Subordinates
+    SELECT 
+        e.emp_id,
+        e.emp_name,
+        e.funk_manager_id,
+        h.hierarchy_tree || ' > ' || e.emp_name,
+        h.level + 1,
+        h.sort_order * 100 + ROW_NUMBER() OVER (PARTITION BY e.funk_manager_id ORDER BY e.emp_name)
+    FROM inbound.hr_employ_central e
+    INNER JOIN OrgHierarchy h 
+        ON e.funk_manager_id = h.emp_id
+)
+SELECT 
+    level,
+    LPAD('', (level - 1) * 4, ' ') || emp_name AS indented_name,
+    emp_id,
+    funk_manager_id,
+    hierarchy_tree,
+    sort_order
+FROM OrgHierarchy
+ORDER BY sort_order;
+
+
+
+
+-- First, get upward chain (managers above)
+WITH RECURSIVE UpwardChain AS (
+    SELECT 
+        emp_id,
+        emp_name,
+        funk_manager_id,
+        0 AS level
+    FROM inbound.hr_employ_central
+    WHERE emp_id = 'your_employee_id_here'  -- Specify employee
+    
+    UNION ALL
+    
+    SELECT 
+        m.emp_id,
+        m.emp_name,
+        m.funk_manager_id,
+        uc.level - 1
+    FROM inbound.hr_employ_central m
+    INNER JOIN UpwardChain uc 
+        ON m.emp_id = uc.funk_manager_id
+),
+-- Then get downward chain (employees below)
+DownwardChain AS (
+    SELECT 
+        emp_id,
+        emp_name,
+        funk_manager_id,
+        0 AS level
+    FROM inbound.hr_employ_central
+    WHERE emp_id = 'your_employee_id_here'  -- Same employee
+    
+    UNION ALL
+    
+    SELECT 
+        e.emp_id,
+        e.emp_name,
+        e.funk_manager_id,
+        dc.level + 1
+    FROM inbound.hr_employ_central e
+    INNER JOIN DownwardChain dc 
+        ON e.funk_manager_id = dc.emp_id
+)
+-- Combine results
+SELECT 'Manager Above' AS relation_type, level, emp_id, emp_name, funk_manager_id
+FROM UpwardChain
+WHERE level < 0
+
+UNION ALL
+
+SELECT 'Employee' AS relation_type, 0, emp_id, emp_name, funk_manager_id
+FROM UpwardChain
+WHERE level = 0
+
+UNION ALL
+
+SELECT 'Subordinate' AS relation_type, level, emp_id, emp_name, funk_manager_id
+FROM DownwardChain
+WHERE level > 0
+
+ORDER BY relation_type DESC, level;
 
 from pyspark.sql import functions as F
 from datetime import datetime, timedelta
