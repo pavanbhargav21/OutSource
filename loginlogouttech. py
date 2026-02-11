@@ -1,4 +1,181 @@
 
+# ============================================================================
+# STEP A4: CALCULATE LOGOUT TIME (PRIORITY ORDER - NO BETWEEN BUFFER LOCKS)
+# ============================================================================
+print("Calculating logout times with priority order...")
+
+full_with_logout = full_with_login.withColumn(
+    # Extract timestamps for max/min operations - SAFE CAST
+    "window_locks_in_buffer_times",
+    F.when(
+        F.col("window_locks_in_buffer").isNotNull(),
+        F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "logins_in_buffer_times",
+    F.when(
+        F.col("logins_in_buffer").isNotNull(),
+        F.expr("transform(logins_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "window_unlocks_in_buffer_times",
+    F.when(
+        F.col("window_unlocks_in_buffer").isNotNull(),
+        F.expr("transform(window_unlocks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    # LOGOUT PRIORITY 1: Window Lock in buffer (LATEST lock time)
+    "logout_priority_1_time",
+    F.when(
+        F.size("window_locks_in_buffer_times") > 0,
+        F.array_max("window_locks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_1_method",
+    F.when(F.col("logout_priority_1_time").isNotNull(), F.lit("WINDOW_LOCK"))
+).withColumn(
+    # LOGOUT PRIORITY 2: Login in buffer (LATEST login)
+    "logout_priority_2_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        (F.size("logins_in_buffer_times") > 0),
+        F.array_max("logins_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_2_method",
+    F.when(F.col("logout_priority_2_time").isNotNull(), F.lit("LOGIN"))
+).withColumn(
+    # LOGOUT PRIORITY 3: Window Unlock in buffer (LATEST unlock)
+    "logout_priority_3_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        (F.size("window_unlocks_in_buffer_times") > 0),
+        F.array_max("window_unlocks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_3_method",
+    F.when(F.col("logout_priority_3_time").isNotNull(), F.lit("WINDOW_UNLOCK"))
+).withColumn(
+    # LOGOUT PRIORITY 4: Fallback - same as login (if login exists)
+    "logout_priority_4_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        F.col("logout_priority_3_time").isNull() &
+        F.col("emp_login_time").isNotNull(),
+        F.col("emp_login_time")
+    )
+).withColumn(
+    "logout_priority_4_method",
+    F.when(F.col("logout_priority_4_time").isNotNull(), F.lit("SAME_AS_LOGIN"))
+).withColumn(
+    # FINAL LOGOUT TIME - coalesce all priorities
+    "emp_logout_time",
+    F.coalesce(
+        F.col("logout_priority_1_time"),
+        F.col("logout_priority_2_time"),
+        F.col("logout_priority_3_time"),
+        F.col("logout_priority_4_time")
+        # DO NOT include NULL here - let it be NULL if all are NULL
+    )
+).withColumn(
+    "logout_method",
+    F.coalesce(
+        F.col("logout_priority_1_method"),
+        F.col("logout_priority_2_method"),
+        F.col("logout_priority_3_method"),
+        F.col("logout_priority_4_method")
+        # DO NOT include NULL here - let it be NULL if all are NULL
+    )
+).withColumn(
+    # Ensure logout time is not less than login time (if both exist)
+    "emp_logout_time",
+    F.when(
+        F.col("emp_login_time").isNotNull() &
+        F.col("emp_logout_time").isNotNull() &
+        (F.col("emp_logout_time") < F.col("emp_login_time")),
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+)
+
+# ============================================================================
+# STEP A5: PREVIOUS DAY UPDATES (Window Locks/Unlocks BETWEEN buffers)
+# ============================================================================
+print("Processing previous day updates from between-buffer events...")
+
+# Window Locks between buffers → Update previous day logout to BUFFER END TIME
+lock_between_updates = full_with_logout.filter(
+    F.size("window_locks_between_buffers") > 0
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.date_sub(F.col("cal_date"), 1).alias("update_date"),
+    F.col("current_window_end").alias("new_logout_time"),
+    F.lit("BUFFER_END_WITH_LOCK").alias("update_source")
+)
+
+# Window Unlocks between buffers → Update previous day logout to EARLIEST UNLOCK TIME
+unlock_between_updates = full_with_logout.filter(
+    F.size("window_unlocks_between_buffers_times") > 0
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.date_sub(F.col("cal_date"), 1).alias("update_date"),
+    F.array_min("window_unlocks_between_buffers_times").alias("new_logout_time"),
+    F.lit("EARLY_MORNING_UNLOCK").alias("update_source")
+)
+
+# Combine both types of previous day updates
+previous_day_updates = lock_between_updates.union(unlock_between_updates).filter(
+    F.col("new_logout_time").isNotNull()
+)
+
+print(f"  - Lock between buffers updates: {lock_between_updates.count()}")
+print(f"  - Unlock between buffers updates: {unlock_between_updates.count()}")
+print(f"  - Total previous day updates: {previous_day_updates.count()}")
+
+# ============================================================================
+# STEP A6: PREPARE FINAL OUTPUT FOR FULL PROCESSING
+# ============================================================================
+print("Preparing final output for full processing...")
+
+# Determine if record should exist based on having ANY activity
+full_final_output = full_with_logout.withColumn(
+    "has_any_activity",
+    F.size("all_events") > 0
+).withColumn(
+    "has_valid_login_or_logout",
+    F.col("emp_login_time").isNotNull() | 
+    F.col("emp_logout_time").isNotNull() |
+    F.col("has_any_activity")
+).filter(
+    # ONLY KEEP RECORDS THAT HAVE:
+    # 1. At least one event, OR
+    # 2. A valid login time, OR
+    # 3. A valid logout time
+    F.col("has_valid_login_or_logout") == True
+).select(
+    F.col("emp_id"),
+    F.col("cal_date").alias("shift_date"),
+    F.col("emp_login_time"),
+    F.col("login_method"),
+    F.col("emp_logout_time"),
+    F.col("logout_method"),
+    F.col("cur_start_time_ts").alias("start_time"),
+    F.col("cur_end_time_ts").alias("end_time"),
+    F.col("current_window_start").alias("start_time_threshold"),
+    F.col("current_window_end").alias("end_time_threshold"),
+    F.col("is_week_off"),
+    F.col("is_pulse_lite"),
+    F.col("manager_id")
+)
+
+print(f"Full processing output records: {full_final_output.count()}")
+print(f"  - With login NOT NULL: {full_final_output.filter(F.col('emp_login_time').isNotNull()).count()}")
+print(f"  - With logout NOT NULL: {full_final_output.filter(F.col('emp_logout_time').isNotNull()).count()}")
+print(f"  - Both NULL (activity only): {full_final_output.filter(F.col('emp_login_time').isNull() & F.col('emp_logout_time').isNull()).count()}")
+
+
+
 
 # ============================================================================
 # AFTER full_with_buffers - COMPLETE PROCESSING PIPELINE
