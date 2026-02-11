@@ -1,5 +1,329 @@
 
 # ============================================================================
+# PART B: CATEGORY B (ONLY_LOCK) - UPDATE ONLY PROCESSING
+# ============================================================================
+print("\n" + "="*80)
+print("PART B: CATEGORY B (ONLY_LOCK) - UPDATE ONLY PROCESSING")
+print("="*80)
+
+# Get existing records from target table (for UPDATE ONLY operations)
+try:
+    existing_records = spark.table("gold_dashboard.analytics_emp_login_logout_pulse_lite") \
+        .select(
+            F.col("EMP_ID").alias("emp_id"),
+            F.col("SHIFT_DATE").alias("cal_date"),
+            F.to_timestamp(F.col("EMP_LOGOUT_TIME")).alias("existing_logout"),
+            F.col("EMP_LOGIN_TIME").alias("existing_login")
+        )
+    print(f"Existing records in target table: {existing_records.count()}")
+except Exception as e:
+    print(f"Target table does not exist or is empty: {e}")
+    existing_records = spark.createDataFrame([], 
+        "emp_id int, cal_date date, existing_logout timestamp, existing_login string")
+
+# ----------------------------------------------------------------------------
+# STEP B1: GET CATEGORY B EMP-DATES (ONLY_LOCK)
+# ----------------------------------------------------------------------------
+if events_only_lock.count() > 0:
+    
+    # Get distinct emp-dates for Category B
+    only_lock_dates = events_only_lock.select("emp_id", "cal_date").distinct() \
+        .withColumn("is_pulse_lite", F.lit(True)) \
+        .withColumn("prev_date", F.date_sub("cal_date", 1))
+    
+    print(f"Category B emp-dates: {only_lock_dates.count()}")
+    
+    # Join with manager data (but manager ID won't be used for UPDATE ONLY)
+    only_lock_with_manager = only_lock_dates.join(
+        manager_df,
+        only_lock_dates.emp_id == manager_df.hr_emp_id,
+        "left"
+    ).drop("hr_emp_id")
+    
+    # Join with current shift
+    only_lock_cur_shift = only_lock_with_manager.join(
+        shift_df,
+        ["emp_id", "cal_date"],
+        "left"
+    ).select(
+        only_lock_with_manager.emp_id,
+        only_lock_with_manager.cal_date,
+        only_lock_with_manager.prev_date,
+        only_lock_with_manager.is_pulse_lite,
+        only_lock_with_manager.manager_id,
+        shift_df.start_time.alias("cur_start_time_raw"),
+        shift_df.end_time.alias("cur_end_time_raw"),
+        shift_df.is_week_off.alias("cur_is_week_off")
+    )
+    
+    # Join with previous shift
+    only_lock_prev_shift = shift_df.select(
+        F.col("emp_id").alias("prev_emp_id"),
+        F.col("cal_date").alias("prev_cal_date"),
+        F.col("start_time").alias("prev_start_time_raw"),
+        F.col("end_time").alias("prev_end_time_raw"),
+        F.col("is_week_off").alias("prev_is_week_off")
+    )
+    
+    only_lock_shift_df = only_lock_cur_shift.join(
+        only_lock_prev_shift,
+        (only_lock_cur_shift.emp_id == only_lock_prev_shift.prev_emp_id) & 
+        (only_lock_cur_shift.prev_date == only_lock_prev_shift.prev_cal_date),
+        "left"
+    ).drop("prev_emp_id", "prev_cal_date")
+    
+    # ----------------------------------------------------------------------------
+    # STEP B2: APPLY SHIFT DEFAULTS (SAME AS CATEGORY A)
+    # ----------------------------------------------------------------------------
+    only_lock_shift_df = only_lock_shift_df \
+        .withColumn("dow", F.date_format("cal_date", "E")) \
+        .withColumn("prev_dow", F.date_format("prev_date", "E")) \
+        .withColumn("cur_start_time",
+            F.when(F.col("cur_start_time_raw").isNotNull(), F.col("cur_start_time_raw"))
+             .when(F.col("cur_is_week_off") == True, F.lit(ZERO_TIME))
+             .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+             .otherwise(F.lit(DEFAULT_START))
+        ) \
+        .withColumn("cur_end_time",
+            F.when(F.col("cur_end_time_raw").isNotNull(), F.col("cur_end_time_raw"))
+             .when(F.col("cur_is_week_off") == True, F.lit(ZERO_TIME))
+             .when(F.col("dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+             .otherwise(F.lit(DEFAULT_END))
+        ) \
+        .withColumn("prev_start_time",
+            F.when(F.col("prev_start_time_raw").isNotNull(), F.col("prev_start_time_raw"))
+             .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+             .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+             .otherwise(F.lit(DEFAULT_START))
+        ) \
+        .withColumn("prev_end_time",
+            F.when(F.col("prev_end_time_raw").isNotNull(), F.col("prev_end_time_raw"))
+             .when(F.col("prev_is_week_off") == True, F.lit(ZERO_TIME))
+             .when(F.col("prev_dow").isin("Sat", "Sun"), F.lit(ZERO_TIME))
+             .otherwise(F.lit(DEFAULT_END))
+        ) \
+        .withColumn("cur_end_time",
+            F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+                F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(cur_end_time, 'HH:mm:ss'))"), "HH:mm:ss")
+            ).otherwise(F.col("cur_end_time"))
+        ) \
+        .withColumn("prev_end_time",
+            F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+                F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(prev_end_time, 'HH:mm:ss'))"), "HH:mm:ss")
+            ).otherwise(F.col("prev_end_time"))
+        ) \
+        .withColumn("cur_start_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_start_time"))) \
+        .withColumn("cur_end_time_ts", F.concat_ws(" ", F.col("cal_date"), F.col("cur_end_time"))) \
+        .withColumn("prev_start_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_start_time"))) \
+        .withColumn("prev_end_time_ts", F.concat_ws(" ", F.col("prev_date"), F.col("prev_end_time"))) \
+        .withColumn("cur_end_time_ts",
+            F.when(F.col("cur_start_time") > F.col("cur_end_time"),
+                F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(cur_end_time_ts, 'yyyy-MM-dd HH:mm:ss'))"), "yyyy-MM-dd HH:mm:ss")
+            ).otherwise(F.col("cur_end_time_ts"))
+        ) \
+        .withColumn("prev_end_time_ts",
+            F.when(F.col("prev_start_time") > F.col("prev_end_time"),
+                F.date_format(F.expr("timestampadd(DAY, 1, to_timestamp(prev_end_time_ts, 'yyyy-MM-dd HH:mm:ss'))"), "yyyy-MM-dd HH:mm:ss")
+            ).otherwise(F.col("prev_end_time_ts"))
+        ) \
+        .withColumn("is_week_off",
+            F.when(
+                (F.col("cur_start_time") == ZERO_TIME) & (F.col("cur_end_time") == ZERO_TIME),
+                F.lit(True)
+            ).otherwise(F.lit(False))
+        ) \
+        .withColumn("prev_is_week_off",
+            F.when(
+                (F.col("prev_start_time") == ZERO_TIME) & (F.col("prev_end_time") == ZERO_TIME),
+                F.lit(True)
+            ).otherwise(F.lit(False))
+        ) \
+        .select(
+            "emp_id",
+            "cal_date",
+            "prev_date",
+            "is_pulse_lite",
+            "manager_id",
+            "cur_start_time_ts",
+            "cur_end_time_ts",
+            "prev_start_time_ts",
+            "prev_end_time_ts",
+            "is_week_off",
+            "prev_is_week_off"
+        )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B3: JOIN WITH ONLY_LOCK EVENTS
+    # ----------------------------------------------------------------------------
+    only_lock_joined = only_lock_shift_df.join(
+        events_only_lock,
+        ["emp_id", "cal_date"],
+        "left"
+    )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B4: CALCULATE BUFFERS (SAME AS CATEGORY A)
+    # ----------------------------------------------------------------------------
+    only_lock_with_buffers = only_lock_joined \
+        .withColumn(
+            "current_window_start",
+            F.when(
+                (F.col("is_week_off") == True) & (F.col("prev_is_week_off") == False),
+                F.greatest(
+                    F.expr("timestampadd(HOUR, 8, prev_end_time_ts)"),
+                    F.to_timestamp(F.col("cur_start_time_ts"))
+                )
+            )
+            .when(F.col("is_week_off") == True, F.col("cur_start_time_ts"))
+            .otherwise(F.expr("timestampadd(HOUR, -4, cur_start_time_ts)"))
+            .alias("current_window_start")
+        ) \
+        .withColumn(
+            "current_window_end",
+            F.when(F.col("is_week_off") == True, F.expr("timestampadd(HOUR, 8, cur_end_time_ts)"))
+             .when(
+                (F.col("is_week_off") == True) & (F.col("prev_is_week_off") == False),
+                F.concat_ws(" ", F.col("cal_date"), F.lit("23:59:59"))
+             )
+             .otherwise(F.col("cur_end_time_ts"))
+             .alias("current_window_end")
+        ) \
+        .withColumn(
+            "prev_window_start",
+            F.when(
+                (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+                (~F.col("prev_is_week_off")),
+                F.col("prev_start_time_ts")
+            ).otherwise(F.col("prev_start_time_ts"))
+            .alias("prev_window_start")
+        ) \
+        .withColumn(
+            "prev_window_end",
+            F.when(
+                (F.col("prev_date") == F.date_sub(F.col("cal_date"), 1)) &
+                (~F.col("prev_is_week_off")),
+                F.expr("timestampadd(HOUR, 8, prev_end_time_ts)")
+            ).otherwise(F.col("prev_end_time_ts"))
+            .alias("prev_window_end")
+        )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B5: GROUP EVENTS FOR CATEGORY B
+    # ----------------------------------------------------------------------------
+    only_lock_grouped = only_lock_with_buffers.groupBy(
+        "emp_id", 
+        "cal_date", 
+        "current_window_start",
+        "current_window_end",
+        "prev_window_end",
+        "cur_start_time_ts",
+        "cur_end_time_ts",
+        "is_week_off",
+        "is_pulse_lite",
+        "manager_id"
+    ).agg(
+        F.collect_list(
+            F.struct(
+                F.col("event_time").cast("timestamp").alias("event_time"),
+                F.col("event_type")
+            )
+        ).alias("all_events")
+    )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B6: CALCULATE LOGOUT TIME FOR CATEGORY B (ONLY WINDOW LOCKS)
+    # ----------------------------------------------------------------------------
+    only_lock_logout = only_lock_grouped.withColumn(
+        # Window Locks in buffer
+        "window_locks_in_buffer",
+        F.expr("""
+            filter(all_events, 
+                event -> event.event_type = 'WINDOW_LOCK'
+                       AND event.event_time >= current_window_start 
+                       AND event.event_time <= current_window_end)
+        """)
+    ).withColumn(
+        # Window Locks between buffers
+        "window_locks_between_buffers",
+        F.expr("""
+            filter(all_events,
+                event -> event.event_type = 'WINDOW_LOCK'
+                       AND event.event_time > current_window_end
+                       AND event.event_time < timestampadd(DAY, 1, 
+                           to_timestamp(concat(cast(cal_date as string), ' ', 
+                               date_format(current_window_start, 'HH:mm:ss')))))
+        """)
+    ).withColumn(
+        # Extract lock times
+        "window_locks_in_buffer_times",
+        F.when(
+            F.col("window_locks_in_buffer").isNotNull(),
+            F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+        ).otherwise(F.array())
+    ).withColumn(
+        # LOGOUT PRIORITY 1: Window Lock in buffer (LATEST lock time)
+        "logout_priority_1_time",
+        F.when(
+            F.size("window_locks_in_buffer_times") > 0,
+            F.array_max("window_locks_in_buffer_times")
+        )
+    ).withColumn(
+        # LOGOUT PRIORITY 2: Window Lock between buffers (use buffer end time)
+        "logout_priority_2_time",
+        F.when(
+            F.col("logout_priority_1_time").isNull() &
+            (F.size("window_locks_between_buffers") > 0),
+            F.col("current_window_end")
+        )
+    ).withColumn(
+        # FINAL LOGOUT TIME
+        "calculated_logout",
+        F.coalesce(
+            F.col("logout_priority_1_time"),
+            F.col("logout_priority_2_time")
+        )
+    )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B7: JOIN WITH EXISTING RECORDS - INNER JOIN = UPDATE ONLY, NEVER INSERT
+    # ----------------------------------------------------------------------------
+    only_lock_updates = only_lock_logout.join(
+        existing_records,
+        ["emp_id", "cal_date"],
+        "inner"  # CRITICAL: Only update existing records, never insert
+    ).filter(
+        # Only update if new logout time is greater than existing
+        F.col("calculated_logout").isNotNull() &
+        (F.col("calculated_logout") > F.coalesce(
+            F.col("existing_logout"),
+            F.lit("1900-01-01 00:00:00").cast("timestamp")
+        ))
+    ).groupBy(
+        "emp_id", "cal_date"
+    ).agg(
+        F.max("calculated_logout").alias("new_logout_time"),  # Latest lock
+        F.lit("ONLY_LOCK_UPDATE").alias("update_source")
+    ).select(
+        F.col("emp_id").alias("update_emp_id"),
+        F.col("cal_date").alias("update_date"),
+        F.col("new_logout_time"),
+        F.col("update_source")
+    )
+    
+    print(f"Category B updates (existing records only): {only_lock_updates.count()}")
+    
+else:
+    print("No Category B events to process")
+    only_lock_updates = spark.createDataFrame([], 
+        "update_emp_id int, update_date date, new_logout_time timestamp, update_source string")
+
+
+
+
+
+
+
+# ============================================================================
 # STEP A4: CALCULATE LOGOUT TIME (PRIORITY ORDER - NO BETWEEN BUFFER LOCKS)
 # ============================================================================
 print("Calculating logout times with priority order...")
