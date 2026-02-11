@@ -1,4 +1,622 @@
 
+
+# ============================================================================
+# AFTER full_with_buffers - COMPLETE PROCESSING PIPELINE
+# ============================================================================
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# ============================================================================
+# PART A: FULL PROCESSING FOR CATEGORY A (HAS_UNLOCK) AND CATEGORY C (FROM_LOGIN)
+# ============================================================================
+
+print("\n" + "="*80)
+print("PART A: FULL PROCESSING - CALCULATING LOGIN/LOGOUT TIMES")
+print("="*80)
+
+# ----------------------------------------------------------------------------
+# STEP A1: GROUP ALL EVENTS BY EMPLOYEE AND DATE
+# ----------------------------------------------------------------------------
+full_grouped = full_with_buffers.groupBy(
+    "emp_id", 
+    "cal_date", 
+    "current_window_start",
+    "current_window_end",
+    "prev_window_end",
+    "cur_start_time_ts",
+    "cur_end_time_ts",
+    "is_week_off",
+    "is_pulse_lite",
+    "manager_id"
+).agg(
+    F.collect_list(
+        F.struct(
+            F.col("event_time").cast("timestamp").alias("event_time"),
+            F.col("event_type")
+        )
+    ).alias("all_events")
+)
+
+# ----------------------------------------------------------------------------
+# STEP A2: FILTER EVENTS BY BUFFER WINDOWS
+# ----------------------------------------------------------------------------
+full_with_filters = full_grouped.withColumn(
+    # Events that occurred WITHIN current buffer window
+    "events_in_buffer",
+    F.expr("""
+        filter(all_events, 
+            event -> event.event_time >= current_window_start 
+                   AND event.event_time <= current_window_end)
+    """)
+).withColumn(
+    # Window Unlock events in buffer
+    "window_unlocks_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'WINDOW_UNLOCK')")
+).withColumn(
+    # Window Lock events in buffer
+    "window_locks_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'WINDOW_LOCK')")
+).withColumn(
+    # Login events in buffer
+    "logins_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'LOGIN')")
+).withColumn(
+    # Window Unlock events BETWEEN buffers (for login Priority 2)
+    "window_unlocks_between_buffers",
+    F.expr("""
+        filter(all_events, 
+            event -> event.event_type = 'WINDOW_UNLOCK'
+                   AND event.event_time > prev_window_end
+                   AND event.event_time < current_window_start)
+    """)
+).withColumn(
+    # Window Locks BETWEEN buffers (for previous day updates ONLY)
+    "window_locks_between_buffers",
+    F.expr("""
+        filter(all_events,
+            event -> event.event_type = 'WINDOW_LOCK'
+                   AND event.event_time > current_window_end
+                   AND event.event_time < timestampadd(DAY, 1, 
+                       to_timestamp(concat(cast(cal_date as string), ' ', 
+                           date_format(current_window_start, 'HH:mm:ss')))))
+    """)
+).withColumn(
+    # Window Unlocks BETWEEN buffers (for previous day updates ONLY)
+    "window_unlocks_between_buffers_times",
+    F.expr("""
+        transform(
+            filter(all_events,
+                event -> event.event_type = 'WINDOW_UNLOCK'
+                       AND event.event_time > current_window_end
+                       AND event.event_time < timestampadd(DAY, 1,
+                           to_timestamp(concat(cast(cal_date as string), ' ',
+                               date_format(current_window_start, 'HH:mm:ss'))))),
+            event -> event.event_time)
+    """)
+)
+
+# ----------------------------------------------------------------------------
+# STEP A3: CALCULATE LOGIN TIME (PRIORITY ORDER)
+# ----------------------------------------------------------------------------
+print("Calculating login times with priority order...")
+
+full_with_login = full_with_filters.withColumn(
+    # Create login candidates from Priority 1 sources
+    "login_candidates",
+    F.expr("""
+        concat(
+            transform(window_unlocks_in_buffer,
+                event -> struct(event.event_time as time, 'WINDOW_UNLOCK' as method)),
+            transform(logins_in_buffer,
+                event -> struct(event.event_time as time, 'LOGIN' as method))
+        )
+    """)
+).withColumn(
+    "earliest_login_candidate",
+    F.when(F.size("login_candidates") > 0,
+        F.array_min("login_candidates"))
+).withColumn(
+    # LOGIN TIME - CAN BE NULL (no valid login event)
+    "emp_login_time",
+    F.coalesce(
+        F.col("earliest_login_candidate.time"),                          # Priority 1
+        F.when(F.size("window_unlocks_between_buffers") > 0, 
+               F.col("current_window_start")),                          # Priority 2
+        F.lit(None).cast("timestamp")                                   # Priority 3: NULL
+    )
+).withColumn(
+    "login_method",
+    F.coalesce(
+        F.col("earliest_login_candidate.method"),                       # Method from Priority 1
+        F.when(F.size("window_unlocks_between_buffers") > 0, 
+               F.lit("BUFFER_START_WITH_UNLOCK")),                     # Method from Priority 2
+        F.lit(None)                                                    # No login method
+    )
+)
+
+# ----------------------------------------------------------------------------
+# STEP A4: CALCULATE LOGOUT TIME (PRIORITY ORDER - NO BETWEEN BUFFER LOCKS)
+# ----------------------------------------------------------------------------
+print("Calculating logout times with priority order...")
+
+full_with_logout = full_with_login.withColumn(
+    # Extract timestamps for max/min operations
+    "window_locks_in_buffer_times",
+    F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+).withColumn(
+    "logins_in_buffer_times",
+    F.expr("transform(logins_in_buffer, event -> event.event_time)")
+).withColumn(
+    "window_unlocks_in_buffer_times",
+    F.expr("transform(window_unlocks_in_buffer, event -> event.event_time)")
+).withColumn(
+    # LOGOUT PRIORITY 1: Window Lock in buffer (LATEST lock time)
+    "logout_priority_1_time",
+    F.when(
+        F.size("window_locks_in_buffer_times") > 0,
+        F.array_max("window_locks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_1_method",
+    F.when(F.col("logout_priority_1_time").isNotNull(), F.lit("WINDOW_LOCK"))
+).withColumn(
+    # LOGOUT PRIORITY 2: Login in buffer (LATEST login)
+    "logout_priority_2_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.size("logins_in_buffer_times") > 0,
+        F.array_max("logins_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_2_method",
+    F.when(F.col("logout_priority_2_time").isNotNull(), F.lit("LOGIN"))
+).withColumn(
+    # LOGOUT PRIORITY 3: Window Unlock in buffer (LATEST unlock)
+    "logout_priority_3_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        F.size("window_unlocks_in_buffer_times") > 0,
+        F.array_max("window_unlocks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_3_method",
+    F.when(F.col("logout_priority_3_time").isNotNull(), F.lit("WINDOW_UNLOCK"))
+).withColumn(
+    # LOGOUT PRIORITY 4: Fallback - same as login (if login exists)
+    "logout_priority_4_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        F.col("logout_priority_3_time").isNull() &
+        F.col("emp_login_time").isNotNull(),
+        F.col("emp_login_time")
+    )
+).withColumn(
+    "logout_priority_4_method",
+    F.when(F.col("logout_priority_4_time").isNotNull(), F.lit("SAME_AS_LOGIN"))
+).withColumn(
+    # FINAL LOGOUT TIME - coalesce all priorities
+    "emp_logout_time",
+    F.coalesce(
+        F.col("logout_priority_1_time"),
+        F.col("logout_priority_2_time"),
+        F.col("logout_priority_3_time"),
+        F.col("logout_priority_4_time"),
+        F.lit(None).cast("timestamp")  # NULL if no logout events
+    )
+).withColumn(
+    "logout_method",
+    F.coalesce(
+        F.col("logout_priority_1_method"),
+        F.col("logout_priority_2_method"),
+        F.col("logout_priority_3_method"),
+        F.col("logout_priority_4_method"),
+        F.lit(None)  # NULL method if no logout
+    )
+).withColumn(
+    # Ensure logout time is not less than login time (if both exist)
+    "emp_logout_time",
+    F.when(
+        F.col("emp_login_time").isNotNull() &
+        F.col("emp_logout_time").isNotNull() &
+        F.col("emp_logout_time") < F.col("emp_login_time"),
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+)
+
+# ----------------------------------------------------------------------------
+# STEP A5: PREVIOUS DAY UPDATES (Window Locks/Unlocks BETWEEN buffers)
+# ----------------------------------------------------------------------------
+print("Processing previous day updates from between-buffer events...")
+
+# Window Locks between buffers → Update previous day logout to BUFFER END TIME
+lock_between_updates = full_with_logout.filter(
+    F.size("window_locks_between_buffers") > 0
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.date_sub(F.col("cal_date"), 1).alias("update_date"),
+    F.col("current_window_end").alias("new_logout_time"),  # Buffer end time
+    F.lit("BUFFER_END_WITH_LOCK").alias("update_source")
+)
+
+# Window Unlocks between buffers → Update previous day logout to EARLIEST UNLOCK TIME
+unlock_between_updates = full_with_logout.filter(
+    F.size("window_unlocks_between_buffers_times") > 0
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.date_sub(F.col("cal_date"), 1).alias("update_date"),
+    F.array_min("window_unlocks_between_buffers_times").alias("new_logout_time"),
+    F.lit("EARLY_MORNING_UNLOCK").alias("update_source")
+)
+
+# Combine both types of previous day updates
+previous_day_updates = lock_between_updates.union(unlock_between_updates).filter(
+    F.col("new_logout_time").isNotNull()
+)
+
+print(f"  - Lock between buffers updates: {lock_between_updates.count()}")
+print(f"  - Unlock between buffers updates: {unlock_between_updates.count()}")
+print(f"  - Total previous day updates: {previous_day_updates.count()}")
+
+# ----------------------------------------------------------------------------
+# STEP A6: PREPARE FINAL OUTPUT FOR FULL PROCESSING
+# ----------------------------------------------------------------------------
+print("Preparing final output for full processing...")
+
+# Determine if record should exist based on having ANY activity
+full_final_output = full_with_logout.withColumn(
+    "has_any_activity",
+    F.size("all_events") > 0
+).withColumn(
+    "has_valid_login_or_logout",
+    F.col("emp_login_time").isNotNull() | 
+    F.col("emp_logout_time").isNotNull() |
+    F.col("has_any_activity")
+).filter(
+    # ONLY KEEP RECORDS THAT HAVE:
+    # 1. At least one event, OR
+    # 2. A valid login time, OR
+    # 3. A valid logout time
+    F.col("has_valid_login_or_logout") == True
+).select(
+    F.col("emp_id"),
+    F.col("cal_date").alias("shift_date"),
+    F.col("emp_login_time"),
+    F.col("login_method"),
+    F.col("emp_logout_time"),
+    F.col("logout_method"),
+    F.col("cur_start_time_ts").alias("start_time"),
+    F.col("cur_end_time_ts").alias("end_time"),
+    F.col("current_window_start").alias("start_time_threshold"),
+    F.col("current_window_end").alias("end_time_threshold"),
+    F.col("is_week_off"),
+    F.col("is_pulse_lite"),
+    F.col("manager_id")
+)
+
+print(f"Full processing output records: {full_final_output.count()}")
+print(f"  - With login NOT NULL: {full_final_output.filter(F.col('emp_login_time').isNotNull()).count()}")
+print(f"  - With logout NOT NULL: {full_final_output.filter(F.col('emp_logout_time').isNotNull()).count()}")
+print(f"  - Both NULL (activity only): {full_final_output.filter(F.col('emp_login_time').isNull() & F.col('emp_logout_time').isNull()).count()}")
+
+# ============================================================================
+# PART B: CATEGORY B (ONLY_LOCK) - UPDATE ONLY PROCESSING
+# ============================================================================
+print("\n" + "="*80)
+print("PART B: CATEGORY B (ONLY_LOCK) - UPDATE ONLY PROCESSING")
+print("="*80)
+
+# Get existing records from target table (for UPDATE ONLY operations)
+try:
+    existing_records = spark.table("gold_dashboard.analytics_emp_login_logout_pulse_lite") \
+        .select(
+            F.col("EMP_ID").alias("emp_id"),
+            F.col("SHIFT_DATE").alias("cal_date"),
+            F.to_timestamp(F.col("EMP_LOGOUT_TIME")).alias("existing_logout"),
+            F.col("EMP_LOGIN_TIME").alias("existing_login")
+        )
+    print(f"Existing records in target table: {existing_records.count()}")
+except Exception as e:
+    print(f"Target table does not exist or is empty: {e}")
+    existing_records = spark.createDataFrame([], 
+        "emp_id int, cal_date date, existing_logout timestamp, existing_login string")
+
+# ----------------------------------------------------------------------------
+# STEP B1: GET CATEGORY B EVENTS WITH SHIFT DATA
+# ----------------------------------------------------------------------------
+if events_only_lock.count() > 0 and existing_records.count() > 0:
+    
+    # Get shift data for Category B users
+    only_lock_shift = events_only_lock.join(
+        shift_df.select("emp_id", "cal_date", "end_time", "is_week_off"),
+        ["emp_id", "cal_date"],
+        "left"
+    ).withColumn(
+        "end_time",
+        F.when(F.col("end_time").isNotNull(), F.col("end_time"))
+         .otherwise(F.lit(DEFAULT_END))
+    ).withColumn(
+        "is_week_off",
+        F.when(F.col("is_week_off").isNull(), F.lit(False))
+         .otherwise(F.col("is_week_off"))
+    ).withColumn(
+        "end_time_ts",
+        F.concat_ws(" ", F.col("cal_date"), F.col("end_time"))
+    ).withColumn(
+        "shift_end_buffer",
+        F.expr("timestampadd(HOUR, 8, cast(end_time_ts as timestamp))")
+    ).withColumn(
+        "next_day_start",
+        F.concat_ws(" ", F.date_add(F.col("cal_date"), 1).cast("string"), F.lit(DEFAULT_START))
+    ).withColumn(
+        "next_day_buffer_start",
+        F.expr("timestampadd(HOUR, -4, cast(next_day_start as timestamp))")
+    ).withColumn(
+        "event_time_ts",
+        F.col("event_time").cast("timestamp")
+    )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B2: CLASSIFY WINDOW LOCKS
+    # ----------------------------------------------------------------------------
+    only_lock_classified = only_lock_shift.withColumn(
+        "is_lock_in_buffer",
+        F.col("event_time_ts") <= F.col("shift_end_buffer")
+    ).withColumn(
+        "is_lock_between_buffers",
+        (F.col("event_time_ts") > F.col("shift_end_buffer")) &
+        (F.col("event_time_ts") < F.col("next_day_buffer_start"))
+    ).withColumn(
+        # Logout time calculation for Category B
+        "calculated_logout",
+        F.when(
+            F.col("is_lock_in_buffer") == True,
+            F.col("event_time_ts")  # Actual lock time if in buffer
+        ).when(
+            F.col("is_lock_between_buffers") == True,
+            F.col("shift_end_buffer")  # Buffer end time if between buffers
+        ).otherwise(F.col("event_time_ts"))
+    )
+    
+    # ----------------------------------------------------------------------------
+    # STEP B3: JOIN WITH EXISTING RECORDS - INNER JOIN = UPDATE ONLY, NEVER INSERT
+    # ----------------------------------------------------------------------------
+    only_lock_updates = only_lock_classified.join(
+        existing_records,
+        ["emp_id", "cal_date"],
+        "inner"  # CRITICAL: Only update existing records, never insert
+    ).filter(
+        # Only update if new logout time is greater than existing
+        F.col("calculated_logout") > F.coalesce(
+            F.col("existing_logout"),
+            F.lit("1900-01-01 00:00:00").cast("timestamp")
+        )
+    ).groupBy(
+        "emp_id", "cal_date"
+    ).agg(
+        F.max("calculated_logout").alias("new_logout_time"),  # Latest lock
+        F.lit("ONLY_LOCK_UPDATE").alias("update_source")
+    ).select(
+        F.col("emp_id").alias("update_emp_id"),
+        F.col("cal_date").alias("update_date"),
+        F.col("new_logout_time"),
+        F.col("update_source")
+    )
+    
+    print(f"Category B updates (existing records only): {only_lock_updates.count()}")
+else:
+    print("No Category B updates to process")
+    only_lock_updates = spark.createDataFrame([], 
+        "update_emp_id int, update_date date, new_logout_time timestamp, update_source string")
+
+# ============================================================================
+# STEP C: CREATE/ENSURE TARGET TABLE
+# ============================================================================
+print("\n" + "="*80)
+print("STEP C: Creating/ensuring target table")
+print("="*80)
+
+spark.sql("""
+CREATE TABLE IF NOT EXISTS gold_dashboard.analytics_emp_login_logout_pulse_lite (
+    EMP_ID int,
+    EMP_CONTRACTED_HOURS string,
+    START_TIME string,
+    END_TIME string,
+    START_TIME_THRESHOLD string,
+    END_TIME_THRESHOLD string,
+    EMP_LOGIN_TIME string,
+    EMP_LOGOUT_TIME string,
+    LOGIN_METHOD string,
+    LOGOUT_METHOD string,
+    SHIFT_DATE date,
+    SHIFT_COMPLETED string,
+    ATTENDENCE_STATUS string,
+    LOGIN_STATUS string,
+    LOGOUT_STATUS string,
+    WORKING_HOURS float,
+    MANAGER_ID int,
+    UPDATED_ON TIMESTAMP,
+    IS_WEEK_OFF BOOLEAN,
+    IS_PULSE_LITE BOOLEAN,
+    IS_HOLIDAY BOOLEAN
+) USING DELTA
+""")
+
+spark.sql("ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN UPDATED_ON SET DEFAULT current_timestamp()")
+spark.sql("ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN IS_HOLIDAY SET DEFAULT FALSE")
+spark.sql("ALTER TABLE gold_dashboard.analytics_emp_login_logout_pulse_lite ALTER COLUMN IS_PULSE_LITE SET DEFAULT TRUE")
+
+print("Target table ready")
+
+# ============================================================================
+# STEP D: MERGE OPERATIONS
+# ============================================================================
+print("\n" + "="*80)
+print("STEP D: Executing MERGE operations")
+print("="*80)
+
+# ----------------------------------------------------------------------------
+# MERGE 1: FULL PROCESSING - Category A & Category C
+# ----------------------------------------------------------------------------
+if full_final_output.count() > 0:
+    full_final_output.createOrReplaceTempView("temp_full_processing")
+    
+    merge_result1 = spark.sql("""
+    MERGE INTO gold_dashboard.analytics_emp_login_logout_pulse_lite AS target
+    USING (
+        SELECT 
+            emp_id,
+            shift_date,
+            start_time,
+            end_time,
+            start_time_threshold,
+            end_time_threshold,
+            emp_login_time,
+            emp_logout_time,
+            login_method,
+            logout_method,
+            is_week_off,
+            is_pulse_lite,
+            manager_id
+        FROM temp_full_processing
+    ) AS source
+    ON target.EMP_ID = source.emp_id AND target.SHIFT_DATE = source.shift_date
+    WHEN MATCHED THEN
+        UPDATE SET 
+            -- Login: Keep earliest
+            target.EMP_LOGIN_TIME = CASE 
+                WHEN source.emp_login_time < target.EMP_LOGIN_TIME OR target.EMP_LOGIN_TIME IS NULL 
+                THEN source.emp_login_time 
+                ELSE target.EMP_LOGIN_TIME 
+            END,
+            -- Logout: Keep latest  
+            target.EMP_LOGOUT_TIME = CASE
+                WHEN source.emp_logout_time > target.EMP_LOGOUT_TIME OR target.EMP_LOGOUT_TIME IS NULL
+                THEN source.emp_logout_time
+                ELSE target.EMP_LOGOUT_TIME
+            END,
+            -- Update methods if times changed
+            target.LOGIN_METHOD = CASE
+                WHEN source.emp_login_time < target.EMP_LOGIN_TIME OR target.EMP_LOGIN_TIME IS NULL
+                THEN source.login_method
+                ELSE target.LOGIN_METHOD
+            END,
+            target.LOGOUT_METHOD = CASE
+                WHEN source.emp_logout_time > target.EMP_LOGOUT_TIME OR target.EMP_LOGOUT_TIME IS NULL
+                THEN source.logout_method
+                ELSE target.LOGOUT_METHOD
+            END,
+            -- Set metadata on first insert only
+            target.START_TIME = COALESCE(target.START_TIME, source.start_time),
+            target.END_TIME = COALESCE(target.END_TIME, source.end_time),
+            target.START_TIME_THRESHOLD = COALESCE(target.START_TIME_THRESHOLD, source.start_time_threshold),
+            target.END_TIME_THRESHOLD = COALESCE(target.END_TIME_THRESHOLD, source.end_time_threshold),
+            target.IS_WEEK_OFF = COALESCE(target.IS_WEEK_OFF, source.is_week_off),
+            -- MANAGER_ID: SET ONCE, NEVER UPDATE
+            target.MANAGER_ID = COALESCE(target.MANAGER_ID, source.manager_id),
+            target.UPDATED_ON = current_timestamp()
+    WHEN NOT MATCHED THEN
+        INSERT (
+            EMP_ID, START_TIME, END_TIME, START_TIME_THRESHOLD, END_TIME_THRESHOLD,
+            EMP_LOGIN_TIME, EMP_LOGOUT_TIME, LOGIN_METHOD, LOGOUT_METHOD, SHIFT_DATE,
+            IS_WEEK_OFF, IS_PULSE_LITE, MANAGER_ID, UPDATED_ON
+        )
+        VALUES (
+            source.emp_id, source.start_time, source.end_time, source.start_time_threshold,
+            source.end_time_threshold, source.emp_login_time, source.emp_logout_time,
+            source.login_method, source.logout_method, source.shift_date,
+            source.is_week_off, source.is_pulse_lite, source.manager_id, current_timestamp()
+        )
+    """)
+    print("MERGE 1 (Full processing - Category A & C) completed")
+
+# ----------------------------------------------------------------------------
+# MERGE 2: CATEGORY B (ONLY_LOCK) - UPDATE ONLY, NEVER INSERT
+# ----------------------------------------------------------------------------
+if only_lock_updates.count() > 0:
+    only_lock_updates.createOrReplaceTempView("temp_only_lock_updates")
+    
+    merge_result2 = spark.sql("""
+    MERGE INTO gold_dashboard.analytics_emp_login_logout_pulse_lite AS target
+    USING temp_only_lock_updates AS source
+    ON target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date
+    WHEN MATCHED THEN
+        UPDATE SET 
+            target.EMP_LOGOUT_TIME = source.new_logout_time,
+            target.LOGOUT_METHOD = 'ONLY_LOCK_UPDATE',
+            target.UPDATED_ON = current_timestamp()
+    """)
+    print("MERGE 2 (Category B - ONLY_LOCK updates) completed")
+
+# ----------------------------------------------------------------------------
+# MERGE 3: PREVIOUS DAY UPDATES (Buffer end with lock & Early morning unlock)
+# ----------------------------------------------------------------------------
+if previous_day_updates.count() > 0:
+    previous_day_updates.createOrReplaceTempView("temp_prev_day_updates")
+    
+    merge_result3 = spark.sql("""
+    MERGE INTO gold_dashboard.analytics_emp_login_logout_pulse_lite AS target
+    USING temp_prev_day_updates AS source
+    ON target.EMP_ID = source.update_emp_id AND target.SHIFT_DATE = source.update_date
+    WHEN MATCHED AND (
+        target.EMP_LOGOUT_TIME IS NULL OR 
+        source.new_logout_time > target.EMP_LOGOUT_TIME
+    ) THEN 
+        UPDATE SET 
+            target.EMP_LOGOUT_TIME = source.new_logout_time,
+            target.LOGOUT_METHOD = source.update_source,
+            target.UPDATED_ON = current_timestamp()
+    """)
+    print("MERGE 3 (Previous day updates) completed")
+
+# ============================================================================
+# STEP E: FINAL VALIDATION AND SUMMARY
+# ============================================================================
+print("\n" + "="*80)
+print("PULSE LITE LOGIN/LOGOUT PIPELINE COMPLETED SUCCESSFULLY")
+print("="*80)
+print(f"Total Pulse Lite users identified: {pulse_lite_users_distinct.count()}")
+print(f"Total emp-date combinations processed: {pulse_lite_all.count()}")
+print(f"  - Category A (Has Window Unlock): {pulse_lite_with_unlock.count()}")
+print(f"  - Category B (Only Window Lock - UPDATE ONLY): {pulse_lite_only_lock.count()}")
+print(f"  - Category C (FROM_LOGIN - pulse_lite_version): {pulse_lite_from_login.count()}")
+print("-" * 40)
+print(f"PART A Output: {full_final_output.count()} records")
+print(f"  - With Login: {full_final_output.filter(F.col('emp_login_time').isNotNull()).count()}")
+print(f"  - With Logout: {full_final_output.filter(F.col('emp_logout_time').isNotNull()).count()}")
+print(f"  - Activity Only (Both NULL): {full_final_output.filter(F.col('emp_login_time').isNull() & F.col('emp_logout_time').isNull()).count()}")
+print(f"PART B Updates: {only_lock_updates.count()} records")
+print(f"Previous Day Updates: {previous_day_updates.count()} records")
+print("-" * 40)
+print(f"MERGE 1 (Full): {full_final_output.count()} records processed")
+print(f"MERGE 2 (Only Lock): {only_lock_updates.count()} updates")
+print(f"MERGE 3 (Previous Day): {previous_day_updates.count()} updates")
+print("="*80)
+
+# Display sample of final data
+print("\nSample of processed data (last 7 days):")
+spark.sql("""
+    SELECT 
+        EMP_ID, 
+        SHIFT_DATE, 
+        EMP_LOGIN_TIME, 
+        LOGIN_METHOD, 
+        EMP_LOGOUT_TIME, 
+        LOGOUT_METHOD,
+        IS_WEEK_OFF,
+        MANAGER_ID
+    FROM gold_dashboard.analytics_emp_login_logout_pulse_lite
+    WHERE SHIFT_DATE >= date_sub(current_date(), 7)
+    ORDER BY EMP_ID, SHIFT_DATE DESC
+    LIMIT 20
+""").show(20, truncate=False)
+
+
+
+
+
 from pyspark.sql import functions as F
 from datetime import datetime, timedelta
 from pyspark.sql.window import Window
