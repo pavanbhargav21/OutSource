@@ -1,4 +1,275 @@
 
+
+# ============================================================================
+# AFTER full_with_buffers - EXACT CHANGES REQUIRED
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# STEP A1: GET DISTINCT BUFFER WINDOWS (NO EVENTS YET)
+# ----------------------------------------------------------------------------
+distinct_windows = full_with_buffers.select(
+    "emp_id",
+    "cal_date",
+    "current_window_start",
+    "current_window_end",
+    "prev_window_end",
+    "cur_start_time_ts",
+    "cur_end_time_ts",
+    "is_week_off",
+    "is_pulse_lite",
+    "manager_id"
+).distinct()
+
+# ----------------------------------------------------------------------------
+# STEP A2: GET ALL EVENTS FOR THESE EMPLOYEES (WITH TIMESTAMP CAST)
+# ----------------------------------------------------------------------------
+all_events_for_windows = events_full_processing.union(login_full_processing).distinct() \
+    .select(
+        "emp_id",
+        F.col("event_time").cast("timestamp").alias("event_time"),
+        "event_type"
+    )
+
+# ----------------------------------------------------------------------------
+# STEP A3: JOIN EVENTS TO WINDOWS USING RANGE CONDITION (NOT cal_date)
+# ----------------------------------------------------------------------------
+window_with_events = distinct_windows.join(
+    all_events_for_windows,
+    (distinct_windows.emp_id == all_events_for_windows.emp_id) &
+    (all_events_for_windows.event_time > distinct_windows.prev_window_end) &
+    (all_events_for_windows.event_time <= distinct_windows.current_window_end),
+    "left"
+)
+
+# ----------------------------------------------------------------------------
+# STEP A4: GROUP BY WINDOW TO COLLECT ALL EVENTS
+# ----------------------------------------------------------------------------
+full_grouped = window_with_events.groupBy(
+    "emp_id",
+    "cal_date",
+    "current_window_start",
+    "current_window_end",
+    "prev_window_end",
+    "cur_start_time_ts",
+    "cur_end_time_ts",
+    "is_week_off",
+    "is_pulse_lite",
+    "manager_id"
+).agg(
+    F.collect_list(
+        F.struct(
+            F.col("event_time"),
+            F.col("event_type")
+        )
+    ).alias("all_events")
+)
+
+# ----------------------------------------------------------------------------
+# STEP A5: FILTER EVENTS BY BUFFER WINDOWS (ORIGINAL LOGIC, NOW ON all_events)
+# ----------------------------------------------------------------------------
+full_with_filters = full_grouped.withColumn(
+    # Events that occurred WITHIN current buffer window
+    "events_in_buffer",
+    F.expr("""
+        filter(all_events, 
+            event -> event.event_time >= current_window_start 
+                   AND event.event_time <= current_window_end)
+    """)
+).withColumn(
+    "window_unlocks_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'WINDOW_UNLOCK')")
+).withColumn(
+    "window_locks_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'WINDOW_LOCK')")
+).withColumn(
+    "logins_in_buffer",
+    F.expr("filter(events_in_buffer, event -> event.event_type = 'LOGIN')")
+).withColumn(
+    # Window Unlock events BETWEEN buffers - FOR CURRENT DAY LOGIN ONLY
+    "window_unlocks_between_buffers",
+    F.expr("""
+        filter(all_events, 
+            event -> event.event_type = 'WINDOW_UNLOCK'
+                   AND event.event_time > prev_window_end
+                   AND event.event_time < current_window_start)
+    """)
+).withColumn(
+    # Window Locks BETWEEN buffers - FOR PREVIOUS DAY LOGOUT UPDATES ONLY
+    "window_locks_between_buffers",
+    F.expr("""
+        filter(all_events,
+            event -> event.event_type = 'WINDOW_LOCK'
+                   AND event.event_time > prev_window_end
+                   AND event.event_time < current_window_start)
+    """)
+)
+
+# ----------------------------------------------------------------------------
+# STEP A6: CONTINUE WITH LOGIN CALCULATION (NO CHANGE)
+# ----------------------------------------------------------------------------
+full_with_login = full_with_filters.withColumn(
+    "login_candidates",
+    F.expr("""
+        concat(
+            transform(window_unlocks_in_buffer,
+                event -> struct(event.event_time as time, 'WINDOW_UNLOCK' as method)),
+            transform(logins_in_buffer,
+                event -> struct(event.event_time as time, 'LOGIN' as method))
+        )
+    """)
+).withColumn(
+    "earliest_login_candidate",
+    F.when(F.size("login_candidates") > 0,
+        F.array_min("login_candidates"))
+).withColumn(
+    "emp_login_time",
+    F.coalesce(
+        F.col("earliest_login_candidate.time"),
+        F.when(F.size("window_unlocks_between_buffers") > 0, 
+               F.col("current_window_start")),
+        F.lit(None).cast("timestamp")
+    )
+).withColumn(
+    "login_method",
+    F.coalesce(
+        F.col("earliest_login_candidate.method"),
+        F.when(F.size("window_unlocks_between_buffers") > 0, 
+               F.lit("BUFFER_START_WITH_UNLOCK")),
+        F.lit(None)
+    )
+)
+
+# ----------------------------------------------------------------------------
+# STEP A7: LOGOUT CALCULATION (NO CHANGE)
+# ----------------------------------------------------------------------------
+full_with_logout = full_with_login.withColumn(
+    "window_locks_in_buffer_times",
+    F.when(
+        F.col("window_locks_in_buffer").isNotNull(),
+        F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "logins_in_buffer_times",
+    F.when(
+        F.col("logins_in_buffer").isNotNull(),
+        F.expr("transform(logins_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "window_unlocks_in_buffer_times",
+    F.when(
+        F.col("window_unlocks_in_buffer").isNotNull(),
+        F.expr("transform(window_unlocks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "logout_priority_1_time",
+    F.when(
+        F.size("window_locks_in_buffer_times") > 0,
+        F.array_max("window_locks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_1_method",
+    F.when(F.col("logout_priority_1_time").isNotNull(), F.lit("WINDOW_LOCK"))
+).withColumn(
+    "logout_priority_2_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        (F.size("logins_in_buffer_times") > 0),
+        F.array_max("logins_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_2_method",
+    F.when(F.col("logout_priority_2_time").isNotNull(), F.lit("LOGIN"))
+).withColumn(
+    "logout_priority_3_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        (F.size("window_unlocks_in_buffer_times") > 0),
+        F.array_max("window_unlocks_in_buffer_times")
+    )
+).withColumn(
+    "logout_priority_3_method",
+    F.when(F.col("logout_priority_3_time").isNotNull(), F.lit("WINDOW_UNLOCK"))
+).withColumn(
+    "logout_priority_4_time",
+    F.when(
+        F.col("logout_priority_1_time").isNull() &
+        F.col("logout_priority_2_time").isNull() &
+        F.col("logout_priority_3_time").isNull() &
+        F.col("emp_login_time").isNotNull(),
+        F.col("emp_login_time")
+    )
+).withColumn(
+    "logout_priority_4_method",
+    F.when(F.col("logout_priority_4_time").isNotNull(), F.lit("SAME_AS_LOGIN"))
+).withColumn(
+    "emp_logout_time",
+    F.coalesce(
+        F.col("logout_priority_1_time"),
+        F.col("logout_priority_2_time"),
+        F.col("logout_priority_3_time"),
+        F.col("logout_priority_4_time")
+    )
+).withColumn(
+    "logout_method",
+    F.coalesce(
+        F.col("logout_priority_1_method"),
+        F.col("logout_priority_2_method"),
+        F.col("logout_priority_3_method"),
+        F.col("logout_priority_4_method")
+    )
+).withColumn(
+    "emp_logout_time",
+    F.when(
+        F.col("emp_login_time").isNotNull() &
+        F.col("emp_logout_time").isNotNull() &
+        (F.col("emp_logout_time") < F.col("emp_login_time")),
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+)
+
+# ----------------------------------------------------------------------------
+# STEP A8: PREVIOUS DAY UPDATES (ONLY WINDOW LOCKS BETWEEN BUFFERS)
+# ----------------------------------------------------------------------------
+previous_day_updates = full_with_logout.filter(
+    F.size("window_locks_between_buffers") > 0
+).select(
+    F.col("emp_id").alias("update_emp_id"),
+    F.date_sub(F.col("cal_date"), 1).alias("update_date"),
+    F.col("prev_window_end").alias("new_logout_time"),
+    F.lit("BUFFER_END_WITH_LOCK").alias("update_source")
+)
+
+# ----------------------------------------------------------------------------
+# STEP A9: PREPARE FINAL OUTPUT
+# ----------------------------------------------------------------------------
+full_final_output = full_with_logout.withColumn(
+    "has_any_activity",
+    F.size("all_events") > 0
+).withColumn(
+    "has_valid_login_or_logout",
+    F.col("emp_login_time").isNotNull() | 
+    F.col("emp_logout_time").isNotNull() |
+    F.col("has_any_activity")
+).filter(
+    F.col("has_valid_login_or_logout") == True
+).select(
+    F.col("emp_id"),
+    F.col("cal_date").alias("shift_date"),
+    F.col("emp_login_time"),
+    F.col("login_method"),
+    F.col("emp_logout_time"),
+    F.col("logout_method"),
+    F.col("cur_start_time_ts").alias("start_time"),
+    F.col("cur_end_time_ts").alias("end_time"),
+    F.col("current_window_start").alias("start_time_threshold"),
+    F.col("current_window_end").alias("end_time_threshold"),
+    F.col("is_week_off"),
+    F.col("is_pulse_lite"),
+    F.col("manager_id")
+)
+
+
 # ============================================================================
 # PART B: CATEGORY B (ONLY_LOCK) - UPDATE ONLY PROCESSING
 # ============================================================================
