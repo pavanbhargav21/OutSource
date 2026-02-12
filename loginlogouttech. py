@@ -1,6 +1,106 @@
 
 
 # ============================================================================
+# STEP A4: CALCULATE LOGOUT TIME - MAX OF ALL PRIORITY CANDIDATES
+# ============================================================================
+print("Calculating logout times - max of all priority candidates...")
+
+full_with_logout = full_with_login.withColumn(
+    # Extract timestamps
+    "window_locks_in_buffer_times",
+    F.when(
+        F.col("window_locks_in_buffer").isNotNull(),
+        F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "logins_in_buffer_times",
+    F.when(
+        F.col("logins_in_buffer").isNotNull(),
+        F.expr("transform(logins_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "window_unlocks_in_buffer_times",
+    F.when(
+        F.col("window_unlocks_in_buffer").isNotNull(),
+        F.expr("transform(window_unlocks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    # PRIORITY 1: Latest Window Lock in buffer
+    "logout_priority_1_time",
+    F.when(F.size("window_locks_in_buffer_times") > 0, 
+           F.array_max("window_locks_in_buffer_times"))
+).withColumn(
+    "logout_priority_1_method",
+    F.when(F.col("logout_priority_1_time").isNotNull(), F.lit("WINDOW_LOCK"))
+).withColumn(
+    # PRIORITY 2: Latest Login in buffer
+    "logout_priority_2_time",
+    F.when(F.size("logins_in_buffer_times") > 0,
+           F.array_max("logins_in_buffer_times"))
+).withColumn(
+    "logout_priority_2_method",
+    F.when(F.col("logout_priority_2_time").isNotNull(), F.lit("LOGIN"))
+).withColumn(
+    # PRIORITY 3: Latest Window Unlock in buffer
+    "logout_priority_3_time",
+    F.when(F.size("window_unlocks_in_buffer_times") > 0,
+           F.array_max("window_unlocks_in_buffer_times"))
+).withColumn(
+    "logout_priority_3_method",
+    F.when(F.col("logout_priority_3_time").isNotNull(), F.lit("WINDOW_UNLOCK"))
+).withColumn(
+    # PRIORITY 4: Login time (fallback)
+    "logout_priority_4_time",
+    F.col("emp_login_time")
+).withColumn(
+    "logout_priority_4_method",
+    F.when(F.col("logout_priority_4_time").isNotNull(), F.lit("SAME_AS_LOGIN"))
+)
+
+# Find MAX time and corresponding method
+full_with_logout = full_with_logout.withColumn(
+    "emp_logout_time",
+    F.greatest(
+        F.col("logout_priority_1_time"),
+        F.col("logout_priority_2_time"), 
+        F.col("logout_priority_3_time"),
+        F.col("logout_priority_4_time")
+    )
+).withColumn(
+    "logout_method",
+    F.when(F.col("emp_logout_time") == F.col("logout_priority_1_time"), F.col("logout_priority_1_method"))
+     .when(F.col("emp_logout_time") == F.col("logout_priority_2_time"), F.col("logout_priority_2_method"))
+     .when(F.col("emp_logout_time") == F.col("logout_priority_3_time"), F.col("logout_priority_3_method"))
+     .when(F.col("emp_logout_time") == F.col("logout_priority_4_time"), F.col("logout_priority_4_method"))
+     .otherwise(F.lit(None))
+).withColumn(
+    # If all candidates are null, set logout to null
+    "emp_logout_time",
+    F.when(F.col("emp_logout_time") == F.lit(None), F.lit(None))
+     .otherwise(F.col("emp_logout_time"))
+).withColumn(
+    # Ensure logout is not less than login
+    "emp_logout_time",
+    F.when(
+        F.col("emp_login_time").isNotNull() &
+        F.col("emp_logout_time").isNotNull() &
+        (F.col("emp_logout_time") < F.col("emp_login_time")),
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+).withColumn(
+    "logout_method",
+    F.when(
+        F.col("emp_logout_time") == F.col("emp_login_time"),
+        F.lit("SAME_AS_LOGIN")
+    ).otherwise(F.col("logout_method"))
+)
+
+
+
+
+
+
+# ============================================================================
 # STEP A4: CALCULATE LOGOUT TIME - GET ALL CANDIDATES, THEN TAKE MAX
 # ============================================================================
 print("Calculating logout times - get all candidates, then take latest...")
