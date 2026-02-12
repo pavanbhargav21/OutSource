@@ -1,6 +1,124 @@
 
 
 # ============================================================================
+# STEP A4: CALCULATE LOGOUT TIME - GET ALL CANDIDATES, THEN TAKE MAX
+# ============================================================================
+print("Calculating logout times - get all candidates, then take latest...")
+
+full_with_logout = full_with_login.withColumn(
+    # Extract timestamps for all event types in buffer
+    "window_locks_in_buffer_times",
+    F.when(
+        F.col("window_locks_in_buffer").isNotNull(),
+        F.expr("transform(window_locks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "logins_in_buffer_times",
+    F.when(
+        F.col("logins_in_buffer").isNotNull(),
+        F.expr("transform(logins_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    "window_unlocks_in_buffer_times",
+    F.when(
+        F.col("window_unlocks_in_buffer").isNotNull(),
+        F.expr("transform(window_unlocks_in_buffer, event -> event.event_time)")
+    ).otherwise(F.array())
+).withColumn(
+    # CANDIDATE 1: Latest Window Lock in buffer (if exists)
+    "logout_candidate_1_time",
+    F.when(
+        F.size("window_locks_in_buffer_times") > 0,
+        F.array_max("window_locks_in_buffer_times")
+    )
+).withColumn(
+    "logout_candidate_1_method",
+    F.when(F.col("logout_candidate_1_time").isNotNull(), F.lit("WINDOW_LOCK"))
+).withColumn(
+    # CANDIDATE 2: Latest Login in buffer (if exists)
+    "logout_candidate_2_time",
+    F.when(
+        F.size("logins_in_buffer_times") > 0,
+        F.array_max("logins_in_buffer_times")
+    )
+).withColumn(
+    "logout_candidate_2_method",
+    F.when(F.col("logout_candidate_2_time").isNotNull(), F.lit("LOGIN"))
+).withColumn(
+    # CANDIDATE 3: Latest Window Unlock in buffer (if exists)
+    "logout_candidate_3_time",
+    F.when(
+        F.size("window_unlocks_in_buffer_times") > 0,
+        F.array_max("window_unlocks_in_buffer_times")
+    )
+).withColumn(
+    "logout_candidate_3_method",
+    F.when(F.col("logout_candidate_3_time").isNotNull(), F.lit("WINDOW_UNLOCK"))
+).withColumn(
+    # CANDIDATE 4: Fallback - Same as login (if login exists)
+    "logout_candidate_4_time",
+    F.when(
+        F.col("emp_login_time").isNotNull(),
+        F.col("emp_login_time")
+    )
+).withColumn(
+    "logout_candidate_4_method",
+    F.when(F.col("logout_candidate_4_time").isNotNull(), F.lit("SAME_AS_LOGIN"))
+).withColumn(
+    # Create array of ALL candidate times with their methods
+    "all_logout_candidates",
+    F.expr("""
+        array_remove(
+            array(
+                struct(logout_candidate_1_time as time, logout_candidate_1_method as method),
+                struct(logout_candidate_2_time as time, logout_candidate_2_method as method),
+                struct(logout_candidate_3_time as time, logout_candidate_3_method as method),
+                struct(logout_candidate_4_time as time, logout_candidate_4_method as method)
+            ),
+            null
+        )
+    """)
+).withColumn(
+    # Find the LATEST time among all candidates
+    "latest_logout_candidate",
+    F.when(
+        F.size("all_logout_candidates") > 0,
+        F.expr("array_max(all_logout_candidates.time)")
+    )
+).withColumn(
+    "emp_logout_time",
+    F.col("latest_logout_candidate")
+).withColumn(
+    # Get the method corresponding to the latest time
+    "logout_method",
+    F.when(
+        F.col("latest_logout_candidate").isNotNull(),
+        F.expr("""
+            filter(all_logout_candidates, 
+                candidate -> candidate.time = latest_logout_candidate
+            )[0].method
+        """)
+    )
+).withColumn(
+    # Ensure logout time is not less than login time
+    "emp_logout_time",
+    F.when(
+        F.col("emp_login_time").isNotNull() &
+        F.col("emp_logout_time").isNotNull() &
+        (F.col("emp_logout_time") < F.col("emp_login_time")),
+        F.col("emp_login_time")
+    ).otherwise(F.col("emp_logout_time"))
+).withColumn(
+    "logout_method",
+    F.when(
+        F.col("emp_logout_time") == F.col("emp_login_time"),
+        F.lit("SAME_AS_LOGIN")
+    ).otherwise(F.col("logout_method"))
+)
+
+
+
+# ============================================================================
 # AFTER full_with_buffers - EXACT CHANGES REQUIRED
 # ============================================================================
 
